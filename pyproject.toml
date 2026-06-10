@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rawforge"
+version = "0.1.0"
+description = "A modular, device-agnostic RAW image processing (ISP) pipeline where every stage is a swappable plugin."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Eric Tang" }]
+dependencies = [
+    "numpy>=1.24",
+    "pyyaml>=6.0",
+    "pillow>=10.0",
+]
+
+[project.optional-dependencies]
+raw = ["rawpy>=0.19"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+rawforge = "rawforge.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["rawforge*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

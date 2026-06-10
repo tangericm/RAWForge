@@ -1,0 +1,6 @@
+name: minimal
+stages:
+  - type: BlackLevel
+  - type: BilinearDemosaic
+  - type: GrayWorldWB
+  - type: SRGBEncode
