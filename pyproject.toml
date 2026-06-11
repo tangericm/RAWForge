@@ -18,7 +18,8 @@ dependencies = [
 
 [project.optional-dependencies]
 raw = ["rawpy>=0.19"]
-dev = ["pytest>=8.0"]
+web = ["fastapi>=0.110", "uvicorn>=0.29", "python-multipart>=0.0.9"]
+dev = ["pytest>=8.0", "httpx>=0.27"]
 
 [project.scripts]
 rawforge = "rawforge.cli:main"

@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RAWForge</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>RAW<span>Forge</span></h1>
+    <div id="queue-status" class="muted"></div>
+  </header>
+
+  <div class="layout">
+    <aside>
+      <section>
+        <h2>Files</h2>
+        <div id="dropzone" tabindex="0">
+          drop a RAW file here<br><span class="muted">or click to browse</span>
+          <input type="file" id="file-input" accept=".dng,.arw,.cr2,.cr3,.nef,.raf,.rw2,.orf" hidden>
+        </div>
+        <ul id="file-list" class="selectable"></ul>
+      </section>
+
+      <section>
+        <h2>Pipeline</h2>
+        <select id="config-select"></select>
+        <div id="config-stages" class="chips"></div>
+      </section>
+
+      <button id="run-btn" disabled>Run</button>
+    </aside>
+
+    <main>
+      <section id="detail" hidden>
+        <div class="detail-head">
+          <h2 id="detail-title"></h2>
+          <div class="detail-actions">
+            <button id="compare-btn" class="ghost">Compare</button>
+            <a id="fullres-link" class="ghost button" target="_blank">Full res ↗</a>
+          </div>
+        </div>
+
+        <div id="filmstrip"></div>
+
+        <div id="compare-bar" hidden>
+          <label>A <select id="select-a"></select></label>
+          <label>B <select id="select-b"></select></label>
+          <span class="muted">drag the divider to compare</span>
+        </div>
+
+        <div id="stage-viewer">
+          <img id="img-a" alt="">
+          <img id="img-b" alt="" hidden>
+          <div id="divider" hidden></div>
+          <div id="stage-label"></div>
+        </div>
+
+        <div class="meta-grid">
+          <div>
+            <h3>Stage timings</h3>
+            <div id="timings"></div>
+          </div>
+          <div>
+            <h3>Frame</h3>
+            <table id="frame-info"></table>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Jobs</h2>
+        <div id="active-jobs"></div>
+        <div id="job-list" class="cards"></div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

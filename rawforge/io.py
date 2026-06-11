@@ -80,4 +80,6 @@ def save_png(data: np.ndarray, path: str | Path) -> None:
     if data.ndim != 3 or data.shape[2] != 3:
         raise ValueError("save_png expects an H x W x 3 RGB array")
     img = (np.clip(data, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
-    Image.fromarray(img, mode="RGB").save(str(path))
+    # compress_level=1: ~4x faster than the default on full-res frames for a
+    # modestly larger file — the right trade for interactive use.
+    Image.fromarray(img, mode="RGB").save(str(path), compress_level=1)

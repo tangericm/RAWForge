@@ -79,7 +79,14 @@ class Pipeline:
             built.append(STAGE_REGISTRY[stage_type](**entry.get("params", {})))
         return cls(built, name=config.get("name", "pipeline"))
 
-    def run(self, frame: RawFrame, ctx: PipelineContext | None = None) -> RawFrame:
+    def run(
+        self,
+        frame: RawFrame,
+        ctx: PipelineContext | None = None,
+        on_stage: Callable[[int, str, RawFrame], None] | None = None,
+    ) -> RawFrame:
+        """Run all stages. `on_stage(index, name, frame)` fires after each stage
+        with the intermediate result (used for per-stage preview snapshots)."""
         ctx = ctx or PipelineContext()
         total = len(self.stages)
         for i, stage in enumerate(self.stages):
@@ -89,6 +96,8 @@ class Pipeline:
             ctx.timings.append(
                 {"stage": stage.name, "seconds": round(time.perf_counter() - start, 4)}
             )
+            if on_stage is not None:
+                on_stage(i, stage.name, frame)
         ctx.progress("done", 1.0)
         return frame
 

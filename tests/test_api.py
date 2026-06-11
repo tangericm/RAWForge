@@ -34,6 +34,32 @@ def test_run_job_creates_job_directory(flat_mosaic, tmp_path):
     assert len(meta["timings"]) == 4
 
 
+def test_run_job_save_intermediates(flat_mosaic, tmp_path):
+    result = run_job(
+        flat_mosaic, MINIMAL_CONFIG, runs_dir=tmp_path / "runs", save_intermediates=True
+    )
+    meta = json.loads((result.job_dir / "metadata.json").read_text(encoding="utf-8"))
+    previews = meta["stage_previews"]
+    # Input snapshot + one per stage.
+    assert [p["name"] for p in previews] == [
+        "Input",
+        "BlackLevel",
+        "BilinearDemosaic",
+        "GrayWorldWB",
+        "SRGBEncode",
+    ]
+    for p in previews:
+        f = result.job_dir / p["preview"]
+        assert f.is_file() and f.stat().st_size > 0
+
+
+def test_run_job_no_intermediates_by_default(flat_mosaic, tmp_path):
+    result = run_job(flat_mosaic, MINIMAL_CONFIG, runs_dir=tmp_path / "runs")
+    assert not (result.job_dir / "stages").exists()
+    meta = json.loads((result.job_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert meta["stage_previews"] == []
+
+
 def test_run_job_progress_callback(flat_mosaic, tmp_path):
     events = []
     run_job(
