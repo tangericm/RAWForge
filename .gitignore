@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# C++ / CMake
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+*.so
+*.pyd
+*.dll
+*.o
+*.a
+_skbuild/
+wheelhouse/
+
+# Datasets and artifacts — never commit data
+data/
+datasets/
+images/
+captures/
+runs/
+outputs/
+checkpoints/
+*.dng
+*.DNG
+*.bag
+*.vrs
+*.ckpt
+*.pth
+*.onnx
+*.mlpackage
+*.engine
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local scratch
+.research/
+scratch/
