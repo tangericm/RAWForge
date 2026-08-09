@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RAWForge — station flow prototype</title>
+<style>
+  :root {
+    --accent: #b4530a;
+    --ink: #1a1a1a;
+    --dim: #6b6b6b;
+    --line: #e0ddd8;
+    --bg: #faf9f7;
+    --panel: #fff;
+    --bad: #a11;
+    --ok: #2a6a2a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 40px 32px 80px;
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    color: var(--ink); background: var(--bg);
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  h1 { font-size: 24px; margin: 0 0 6px; letter-spacing: -0.01em; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--dim);
+       margin: 0 0 12px; font-weight: 600; }
+  .lede { color: var(--dim); max-width: 70ch; margin: 0 0 8px; }
+  .question { max-width: 70ch; margin: 18px 0 28px; padding: 16px 18px;
+              background: #fff; border-left: 3px solid var(--accent); border-radius: 2px; }
+  .question strong { display: block; margin-bottom: 6px; }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; align-items: start; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 4px;
+           padding: 18px 20px; margin-bottom: 24px; }
+  .phase { font-size: 20px; font-weight: 600; color: var(--accent); margin-bottom: 2px; }
+  .phase-note { color: var(--dim); font-size: 13px; margin-bottom: 16px; }
+  table.state { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  table.state td { padding: 5px 0; vertical-align: top; border-bottom: 1px solid #f0eeea; }
+  table.state td:first-child { color: var(--dim); width: 44%; padding-right: 12px; }
+  .changed { background: #fff4e8; }
+  .btns { display: flex; flex-wrap: wrap; gap: 7px; }
+  button {
+    font: inherit; font-size: 13px; padding: 6px 11px; border-radius: 3px;
+    border: 1px solid var(--line); background: #fff; color: var(--ink); cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  button:disabled { opacity: 0.32; cursor: not-allowed; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.primary:hover:not(:disabled) { color: #fff; opacity: 0.9; }
+  button.danger:hover:not(:disabled) { border-color: var(--bad); color: var(--bad); }
+  .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+  .tabs button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+  .scenario-desc { font-size: 13.5px; color: var(--dim); margin-bottom: 14px; max-width: 60ch; }
+  .scenario-desc em { color: var(--ink); font-style: normal; font-weight: 600; }
+  ol.steps { margin: 0; padding-left: 22px; font-size: 13.5px; }
+  ol.steps li { margin-bottom: 7px; }
+  ol.steps li.done { color: #a8a49e; }
+  ol.steps li.now button { border-color: var(--accent); }
+  .log { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+         max-height: 340px; overflow-y: auto; }
+  .log div { padding: 3px 0; border-bottom: 1px solid #f4f2ee; }
+  .log .t { color: var(--accent); }
+  .log .m { color: var(--dim); }
+  .shotlist { font-size: 13px; margin: 0; padding: 0; list-style: none; }
+  .shotlist li { padding: 5px 8px; border-bottom: 1px solid #f4f2ee; display: flex; gap: 8px; }
+  .shotlist li.active { background: #fff4e8; font-weight: 600; }
+  .shotlist li.done { color: #a8a49e; }
+  .tag { font-size: 11px; padding: 1px 5px; border-radius: 2px; background: #f0eeea; color: var(--dim); }
+  .warn { color: var(--bad); font-weight: 600; }
+  .foot { margin-top: 40px; color: var(--dim); font-size: 12.5px; max-width: 70ch; }
+  code { background: #f2f0ec; padding: 1px 4px; border-radius: 2px; font-size: 12.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>RAWForge — station flow</h1>
+<p class="lede">A throwaway prototype for
+   <a href="https://github.com/tangericm/RAWForge/issues/10">issue #10</a>. Not production code.</p>
+
+<div class="question">
+  <strong>The question this answers</strong>
+  A <em>station</em> is a pose. One station may hold several capture sets across the three rear
+  sensors, and swapping sensor means reconfiguring the capture session — a visible pause with the
+  photographer holding still. Does that model survive the awkward cases: a bracket that fails its
+  clipping check, a station disturbed halfway through, the app being killed mid-capture, a
+  single-frame set that is not a bracket at all, and a shot list authored in an order that costs
+  extra swaps? Press the buttons and watch the state and the event log.
+</div>
+
+<div class="cols">
+  <div>
+    <div class="panel">
+      <h2>Current state</h2>
+      <div class="phase" id="phase">—</div>
+      <div class="phase-note" id="phaseNote"></div>
+      <table class="state" id="stateTable"></table>
+    </div>
+
+    <div class="panel">
+      <h2>Shot list at this station</h2>
+      <ul class="shotlist" id="shotlist"></ul>
+    </div>
+
+    <div class="panel">
+      <h2>Free play — every action, any order</h2>
+      <div class="btns" id="freeplay"></div>
+    </div>
+  </div>
+
+  <div>
+    <div class="panel">
+      <h2>Guided walkthroughs</h2>
+      <div class="tabs" id="tabs"></div>
+      <div class="scenario-desc" id="scenarioDesc"></div>
+      <ol class="steps" id="steps"></ol>
+    </div>
+
+    <div class="panel">
+      <h2>Capture log — the events written to disk</h2>
+      <div class="log" id="log"></div>
+    </div>
+  </div>
+</div>
+
+<p class="foot">
+  Every line in the capture log is an event the real app would append to its JSONL, per
+  issue #9. The point of showing it here is that the state machine and the log schema are the same
+  design seen from two sides — if a situation can be reached that the log cannot describe, that is a
+  bug in the idea, not in the code.
+</p>
+
+</div>
+
+<script>
+/* ==========================================================================
+   THE MODULE UNDER TEST — pure, no DOM. This is the bit worth keeping.
+   A station state machine that emits capture-log events.
+   ========================================================================== */
+
+const SENSORS = { wide: '1x wide', ultra: '0.5x ultra-wide', tele: '3x telephoto' };
+
+// Two orderings of the same five capture sets, per issue #8:
+// grouped by sensor (2 swaps) versus authored order (4 swaps).
+const SHOT_LISTS = {
+  grouped: [
+    { id: 'A',  sensor: 'wide',  name: 'sweep 1/2000-1s',  frames: 3, isBracket: true  },
+    { id: 'R1', sensor: 'wide',  name: 'single reference', frames: 1, isBracket: false },
+    { id: 'B',  sensor: 'ultra', name: 'sweep 1/2000-1s',  frames: 3, isBracket: true  },
+    { id: 'C',  sensor: 'tele',  name: 'sweep 1/2000-1s',  frames: 3, isBracket: true  },
+    { id: 'R2', sensor: 'tele',  name: 'single reference', frames: 1, isBracket: false }
+  ],
+  authored: [
+    { id: 'A',  sensor: 'wide',  name: 'sweep 1/2000-1s',  frames: 3, isBracket: true  },
+    { id: 'B',  sensor: 'ultra', name: 'sweep 1/2000-1s',  frames: 3, isBracket: true  },
+    { id: 'R1', sensor: 'wide',  name: 'single reference', frames: 1, isBracket: false },
+    { id: 'C',  sensor: 'tele',  name: 'sweep 1/2000-1s',  frames: 3, isBracket: true  },
+    { id: 'R2', sensor: 'tele',  name: 'single reference', frames: 1, isBracket: false }
+  ]
+};
+
+const MB_PER_FRAME = 10;
+
+function initialState() {
+  return {
+    phase: 'no_session',
+    ordering: 'grouped',
+    sessionId: null,
+    stationSeq: 0,
+    stationId: null,
+    stationDisturbed: false,
+    activeSensor: null,
+    shotList: [],
+    cursor: 0,            // index into shotList
+    frameIndex: 0,        // frames captured within the current set
+    settled: false,
+    swaps: 0,
+    attempt: 1,           // re-shoot lineage for the current set
+    lastVerdict: null,
+    freeSpaceMB: 900,
+    framesOnDisk: 0,
+    unclosedSession: false,
+    events: [],
+    clock: 0              // stands in for the monotonic clock
+  };
+}
+
+function currentSet(s) { return s.shotList[s.cursor] || null; }
+
+function emit(s, type, detail) {
+  s.clock += 1;
+  s.events.push({ seq: s.events.length + 1, mono: s.clock, type, detail: detail || '' });
+}
+
+// Which actions are legal right now — this is half the question.
+function legal(s, action) {
+  const set = currentSet(s);
+  switch (action) {
+    case 'OPEN_SESSION':    return s.phase === 'no_session';
+    case 'RELAUNCH':        return s.phase === 'killed';
+    case 'DECLARE_STATION': return s.phase === 'session_open';
+    case 'TOGGLE_ORDER':    return s.phase === 'session_open' || s.phase === 'no_session';
+    case 'BEGIN_SET':       return s.phase === 'station_open' && !!set;
+    case 'SETTLE_DONE':     return s.phase === 'settling';
+    case 'CAPTURE_FRAME':   return s.phase === 'capturing';
+    case 'SWAP_DONE':       return s.phase === 'swapping';
+    case 'VERDICT_PASS':
+    case 'VERDICT_FAIL':    return s.phase === 'verifying';
+    case 'RESHOOT':
+    case 'ACCEPT':          return s.phase === 'awaiting_response';
+    case 'ABORT_SET':       return ['settling','capturing','swapping'].includes(s.phase);
+    case 'MARK_DISTURBED':  return ['station_open','settling','capturing','swapping','verifying','awaiting_response'].includes(s.phase);
+    case 'CLOSE_STATION':   return s.phase === 'station_open' && s.cursor >= s.shotList.length;
+    case 'CLOSE_SESSION':   return s.phase === 'session_open';
+    case 'KILL_APP':        return s.phase !== 'no_session' && s.phase !== 'killed';
+    case 'BURN_SPACE':      return s.phase !== 'no_session' && s.phase !== 'killed';
+    default: return false;
+  }
+}
+
+function reduce(state, action) {
+  if (!legal(state, action)) return state;
+  const s = JSON.parse(JSON.stringify(state));
+  const set = currentSet(s);
+
+  switch (action) {
+
+    case 'TOGGLE_ORDER':
+      s.ordering = s.ordering === 'grouped' ? 'authored' : 'grouped';
+      break;
+
+    case 'OPEN_SESSION':
+      s.phase = 'session_open';
+      s.sessionId = '20260809T1500Z';
+      s.unclosedSession = true;
+      emit(s, 'session_open', 'protocol coastal-hdr v3 · capability probe recorded');
+      break;
+
+    case 'DECLARE_STATION':
+      s.stationSeq += 1;
+      s.stationId = 's' + String(s.stationSeq).padStart(3, '0');
+      s.stationDisturbed = false;
+      s.shotList = JSON.parse(JSON.stringify(SHOT_LISTS[s.ordering]));
+      s.cursor = 0; s.frameIndex = 0; s.attempt = 1; s.swaps = 0;
+      s.activeSensor = null; s.lastVerdict = null;
+      s.phase = 'station_open';
+      emit(s, 'station_open', s.stationId + ' · ' + s.shotList.length + ' sets · ' + s.ordering + ' order');
+      break;
+
+    case 'BEGIN_SET': {
+      const needMB = set.frames * MB_PER_FRAME;
+      // Space is reserved before a set fires, per issue #11.
+      if (s.freeSpaceMB < needMB) {
+        emit(s, 'set_refused_insufficient_space',
+             set.id + ' needs ' + needMB + ' MB, ' + s.freeSpaceMB + ' MB free');
+        break;
+      }
+      if (s.activeSensor && s.activeSensor !== set.sensor) {
+        s.phase = 'swapping';
+        emit(s, 'sensor_swap_start', s.activeSensor + ' -> ' + set.sensor);
+      } else {
+        s.activeSensor = set.sensor;
+        s.phase = 'settling';
+        s.settled = false;
+        emit(s, 'set_start', set.id + ' · ' + SENSORS[set.sensor] + ' · attempt ' + s.attempt);
+      }
+      break;
+    }
+
+    case 'SWAP_DONE':
+      s.swaps += 1;
+      s.activeSensor = set.sensor;
+      s.phase = 'settling';
+      emit(s, 'sensor_swap_complete', 'now ' + SENSORS[set.sensor] + ' · swap #' + s.swaps);
+      emit(s, 'stillness_observation', 'across swap #' + s.swaps + ' — recorded, not enforced');
+      emit(s, 'set_start', set.id + ' · ' + SENSORS[set.sensor] + ' · attempt ' + s.attempt);
+      break;
+
+    case 'SETTLE_DONE':
+      s.settled = true;
+      s.phase = 'capturing';
+      emit(s, 'exposure_settled', 'requested parameters confirmed applied');
+      break;
+
+    case 'CAPTURE_FRAME': {
+      s.frameIndex += 1;
+      s.framesOnDisk += 1;
+      s.freeSpaceMB -= MB_PER_FRAME;
+      emit(s, 'frame_captured',
+           set.id + ' frame ' + s.frameIndex + '/' + set.frames + ' · requested + achieved recorded');
+      if (s.frameIndex >= set.frames) {
+        s.phase = 'verifying';
+        emit(s, 'set_end', set.id + ' · ' + set.frames + ' frames');
+      } else {
+        s.phase = 'settling';
+        s.settled = false;
+      }
+      break;
+    }
+
+    case 'VERDICT_PASS':
+      // Per-frame statistics always; a stack verdict only where the protocol
+      // declares itself a bracket (issue #12 / #8).
+      s.lastVerdict = set.isBracket ? 'pass' : 'stats only (not a bracket)';
+      emit(s, 'verification',
+           set.isBracket ? set.id + ' · stack verdict PASS' : set.id + ' · per-frame stats only, no stack verdict');
+      s.cursor += 1; s.frameIndex = 0; s.attempt = 1;
+      s.phase = 'station_open';
+      break;
+
+    case 'VERDICT_FAIL':
+      if (!set.isBracket) {
+        // A single-frame set cannot fail a stack check — there is no stack.
+        s.lastVerdict = 'stats only (not a bracket)';
+        emit(s, 'verification', set.id + ' · per-frame stats only, no stack verdict possible');
+        s.cursor += 1; s.frameIndex = 0; s.attempt = 1;
+        s.phase = 'station_open';
+      } else {
+        s.lastVerdict = 'FAIL — highlight coverage';
+        emit(s, 'verification', set.id + ' · stack verdict FAIL · every frame clipped (green)');
+        s.phase = 'awaiting_response';
+      }
+      break;
+
+    case 'RESHOOT':
+      s.attempt += 1;
+      s.frameIndex = 0;
+      emit(s, 'reshoot_requested', set.id + ' · attempt ' + s.attempt + ' supersedes attempt ' + (s.attempt - 1));
+      s.phase = 'station_open';
+      break;
+
+    case 'ACCEPT':
+      emit(s, 'verdict_accepted', set.id + ' · failed and knowingly accepted by photographer');
+      s.cursor += 1; s.frameIndex = 0; s.attempt = 1;
+      s.phase = 'station_open';
+      break;
+
+    case 'ABORT_SET':
+      emit(s, 'set_aborted', (set ? set.id : '?') + ' · ' + s.frameIndex + ' of ' + (set ? set.frames : '?') + ' frames captured');
+      s.frameIndex = 0;
+      s.phase = 'station_open';
+      break;
+
+    case 'MARK_DISTURBED':
+      s.stationDisturbed = true;
+      emit(s, 'station_disturbed', s.stationId + ' · pose no longer trusted');
+      break;
+
+    case 'CLOSE_STATION':
+      emit(s, 'station_close',
+           s.stationId + ' · ' + s.swaps + ' swaps' + (s.stationDisturbed ? ' · DISTURBED' : ''));
+      s.phase = 'session_open';
+      s.stationId = null; s.activeSensor = null; s.shotList = []; s.cursor = 0;
+      break;
+
+    case 'CLOSE_SESSION':
+      emit(s, 'session_close', s.framesOnDisk + ' frames · ' + s.stationSeq + ' stations');
+      s.unclosedSession = false;
+      s.phase = 'no_session';
+      break;
+
+    case 'KILL_APP':
+      // Nothing is emitted — that is the point. The log simply stops.
+      s.phase = 'killed';
+      break;
+
+    case 'RELAUNCH':
+      if (s.unclosedSession) {
+        emit(s, 'session_abandoned', 'found unclosed session ' + s.sessionId + ' on launch');
+        s.unclosedSession = false;
+      }
+      s.phase = 'no_session';
+      s.stationId = null; s.activeSensor = null; s.shotList = []; s.cursor = 0; s.frameIndex = 0;
+      break;
+
+    case 'BURN_SPACE':
+      s.freeSpaceMB = 15;
+      break;
+  }
+  return s;
+}
+
+/* ==========================================================================
+   THROWAWAY PAGE — everything below is the shell, not the model.
+   ========================================================================== */
+
+const ACTIONS = [
+  ['OPEN_SESSION',    'Open session'],
+  ['DECLARE_STATION', 'Declare station'],
+  ['BEGIN_SET',       'Begin next capture set'],
+  ['SWAP_DONE',       'Sensor swap finishes'],
+  ['SETTLE_DONE',     'Exposure settles'],
+  ['CAPTURE_FRAME',   'Capture one frame'],
+  ['VERDICT_PASS',    'Verification passes'],
+  ['VERDICT_FAIL',    'Verification fails'],
+  ['RESHOOT',         'Re-shoot the set'],
+  ['ACCEPT',          'Accept the failure'],
+  ['ABORT_SET',       'Abort the set'],
+  ['MARK_DISTURBED',  'Station was bumped'],
+  ['CLOSE_STATION',   'Close station'],
+  ['CLOSE_SESSION',   'Close session'],
+  ['BURN_SPACE',      'Fill up the storage'],
+  ['KILL_APP',        'Phone dies'],
+  ['RELAUNCH',        'Relaunch app'],
+  ['TOGGLE_ORDER',    'Toggle shot-list order']
+];
+
+const PHASE_NOTES = {
+  no_session:      'Nothing open. Declaring a station requires a session.',
+  session_open:    'A session is open with no station. This is where you walk to the next pose.',
+  station_open:    'Standing at the pose. The next capture set can begin.',
+  swapping:        'Reconfiguring the capture session for a different sensor. Hold the pose.',
+  settling:        'Waiting for the requested exposure to actually take effect. Never fire early.',
+  capturing:       'Ready to fire the next frame of this set.',
+  verifying:       'Set complete. Clipping statistics computed from the real Bayer payload.',
+  awaiting_response:'The stack failed its check. Re-shoot, or accept it knowingly.',
+  killed:          'The app is gone. Notice that the log simply stopped — nothing was written.'
+};
+
+const SCENARIOS = [
+  {
+    name: 'Happy path',
+    desc: 'One station, five capture sets, grouped by sensor. Watch the <em>swap count reach 2</em> — ' +
+          'the whole point of grouping — and note the settle step before every single frame.',
+    steps: ['OPEN_SESSION','DECLARE_STATION',
+            'BEGIN_SET','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','VERDICT_PASS',
+            'BEGIN_SET','SETTLE_DONE','CAPTURE_FRAME','VERDICT_PASS',
+            'BEGIN_SET','SWAP_DONE','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','VERDICT_PASS',
+            'BEGIN_SET','SWAP_DONE','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','VERDICT_PASS',
+            'BEGIN_SET','SETTLE_DONE','CAPTURE_FRAME','VERDICT_PASS',
+            'CLOSE_STATION','CLOSE_SESSION']
+  },
+  {
+    name: 'Failed stack, re-shot',
+    desc: 'The first bracket clips everywhere. The app warns and offers a re-shoot; it never blocks. ' +
+          'Watch the log keep <em>both attempts</em> with an explicit supersession — the failed frames ' +
+          'are not deleted.',
+    steps: ['OPEN_SESSION','DECLARE_STATION',
+            'BEGIN_SET','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME',
+            'VERDICT_FAIL','RESHOOT',
+            'BEGIN_SET','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','VERDICT_PASS']
+  },
+  {
+    name: 'Failed stack, accepted',
+    desc: 'Same failure, but the photographer knows the scene and accepts it. The log records ' +
+          '<em>knowingly accepted</em> — which is a different fact from never having noticed.',
+    steps: ['OPEN_SESSION','DECLARE_STATION',
+            'BEGIN_SET','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME',
+            'VERDICT_FAIL','ACCEPT']
+  },
+  {
+    name: 'Single frame, not a bracket',
+    desc: 'The second set is one frame. Try failing its verification — it <em>cannot</em> fail a stack ' +
+          'check, because there is no stack. Per-frame statistics are still recorded.',
+    steps: ['OPEN_SESSION','DECLARE_STATION',
+            'BEGIN_SET','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','VERDICT_PASS',
+            'BEGIN_SET','SETTLE_DONE','CAPTURE_FRAME','VERDICT_FAIL']
+  },
+  {
+    name: 'Bumped mid-station',
+    desc: 'Two sets already shot from this pose, then the tripod is knocked. The station is marked ' +
+          'disturbed but <em>stays one station</em> — the model does not split. Watch what the close ' +
+          'event carries.',
+    steps: ['OPEN_SESSION','DECLARE_STATION',
+            'BEGIN_SET','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','VERDICT_PASS',
+            'BEGIN_SET','SETTLE_DONE','CAPTURE_FRAME','VERDICT_PASS',
+            'BEGIN_SET','MARK_DISTURBED','ABORT_SET']
+  },
+  {
+    name: 'Phone dies mid-bracket',
+    desc: 'Killed halfway through a set. Nothing is written at the moment of death — the log simply ' +
+          'stops. On relaunch the app notices and writes <em>session_abandoned</em>, turning an ' +
+          'ambiguous silence into a stated fact.',
+    steps: ['OPEN_SESSION','DECLARE_STATION',
+            'BEGIN_SET','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME',
+            'KILL_APP','RELAUNCH']
+  },
+  {
+    name: 'Out of space',
+    desc: 'Storage is filled before a bracket fires. Space is checked <em>before</em> the set starts, ' +
+          'so you get a refusal instead of a half-written bracket. A broken set is worse than one that ' +
+          'never began.',
+    steps: ['OPEN_SESSION','DECLARE_STATION','BURN_SPACE','BEGIN_SET']
+  },
+  {
+    name: 'Authored order costs swaps',
+    desc: 'The same five sets in the order they were written rather than grouped by sensor. ' +
+          'Run it and compare the final swap count against the happy path — <em>4 instead of 2</em>, ' +
+          'each one a pose risk.',
+    steps: ['TOGGLE_ORDER','OPEN_SESSION','DECLARE_STATION',
+            'BEGIN_SET','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','VERDICT_PASS',
+            'BEGIN_SET','SWAP_DONE','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','VERDICT_PASS',
+            'BEGIN_SET','SWAP_DONE','SETTLE_DONE','CAPTURE_FRAME','VERDICT_PASS',
+            'BEGIN_SET','SWAP_DONE','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','VERDICT_PASS',
+            'BEGIN_SET','SWAP_DONE','SETTLE_DONE','CAPTURE_FRAME','VERDICT_PASS']
+  }
+];
+
+let state = initialState();
+let prev = null;
+let scenarioIdx = 0;
+let stepIdx = 0;
+const label = a => (ACTIONS.find(x => x[0] === a) || [a, a])[1];
+
+function dispatch(action) {
+  prev = state;
+  state = reduce(state, action);
+  render();
+}
+
+function runStep(i) {
+  dispatch(SCENARIOS[scenarioIdx].steps[i]);
+  stepIdx = i + 1;
+  render();
+}
+
+function selectScenario(i) {
+  scenarioIdx = i; stepIdx = 0;
+  state = initialState(); prev = null;
+  render();
+}
+
+function render() {
+  const s = state, p = prev;
+  document.getElementById('phase').textContent = s.phase.replace(/_/g, ' ');
+  document.getElementById('phaseNote').textContent = PHASE_NOTES[s.phase] || '';
+
+  const set = currentSet(s);
+  const rows = [
+    ['Session', s.sessionId || '—'],
+    ['Station', s.stationId ? s.stationId + (s.stationDisturbed ? '  ⚠ disturbed' : '') : '—'],
+    ['Active sensor', s.activeSensor ? SENSORS[s.activeSensor] : '—'],
+    ['Current set', set ? set.id + ' · ' + set.name + (set.isBracket ? '' : ' · not a bracket') : '— all sets done —'],
+    ['Frames in set', set ? s.frameIndex + ' of ' + set.frames : '—'],
+    ['Attempt', s.attempt],
+    ['Sensor swaps at this station', s.swaps],
+    ['Last verdict', s.lastVerdict || '—'],
+    ['Shot-list order', s.ordering],
+    ['Free space', s.freeSpaceMB + ' MB'],
+    ['Frames on disk', s.framesOnDisk],
+    ['Unclosed session on record', s.unclosedSession ? 'yes' : 'no']
+  ];
+  const prevRows = p ? {
+    'Session': p.sessionId || '—',
+    'Station': p.stationId ? p.stationId + (p.stationDisturbed ? '  ⚠ disturbed' : '') : '—',
+    'Active sensor': p.activeSensor ? SENSORS[p.activeSensor] : '—',
+    'Current set': (currentSet(p) ? currentSet(p).id + ' · ' + currentSet(p).name + (currentSet(p).isBracket ? '' : ' · not a bracket') : '— all sets done —'),
+    'Frames in set': currentSet(p) ? p.frameIndex + ' of ' + currentSet(p).frames : '—',
+    'Attempt': p.attempt,
+    'Sensor swaps at this station': p.swaps,
+    'Last verdict': p.lastVerdict || '—',
+    'Shot-list order': p.ordering,
+    'Free space': p.freeSpaceMB + ' MB',
+    'Frames on disk': p.framesOnDisk,
+    'Unclosed session on record': p.unclosedSession ? 'yes' : 'no'
+  } : {};
+  document.getElementById('stateTable').innerHTML = rows.map(([k, v]) => {
+    const chg = p && String(prevRows[k]) !== String(v);
+    return '<tr class="' + (chg ? 'changed' : '') + '"><td>' + k + '</td><td>' + v + '</td></tr>';
+  }).join('');
+
+  document.getElementById('shotlist').innerHTML = s.shotList.length
+    ? s.shotList.map((x, i) =>
+        '<li class="' + (i < s.cursor ? 'done' : i === s.cursor ? 'active' : '') + '">' +
+        '<span class="tag">' + SENSORS[x.sensor] + '</span>' + x.id + ' · ' + x.name +
+        (x.isBracket ? '' : ' <span class="tag">single</span>') + '</li>').join('')
+    : '<li style="color:#a8a49e">no station open</li>';
+
+  document.getElementById('freeplay').innerHTML = ACTIONS.map(([a, l]) =>
+    '<button ' + (legal(s, a) ? '' : 'disabled ') +
+    'class="' + (a === 'KILL_APP' || a === 'MARK_DISTURBED' || a === 'ABORT_SET' ? 'danger' : '') + '" ' +
+    'onclick="dispatch(\'' + a + '\')">' + l + '</button>').join('');
+
+  document.getElementById('tabs').innerHTML = SCENARIOS.map((sc, i) =>
+    '<button class="' + (i === scenarioIdx ? 'on' : '') + '" onclick="selectScenario(' + i + ')">' +
+    sc.name + '</button>').join('');
+  document.getElementById('scenarioDesc').innerHTML = SCENARIOS[scenarioIdx].desc;
+  document.getElementById('steps').innerHTML = SCENARIOS[scenarioIdx].steps.map((a, i) =>
+    '<li class="' + (i < stepIdx ? 'done' : i === stepIdx ? 'now' : '') + '">' +
+    '<button ' + (i === stepIdx ? 'class="primary"' : i < stepIdx ? 'disabled' : 'disabled') + ' ' +
+    'onclick="runStep(' + i + ')">' + label(a) + '</button></li>').join('');
+
+  document.getElementById('log').innerHTML = s.events.length
+    ? s.events.slice().reverse().map(e =>
+        '<div><span class="t">' + e.type + '</span> <span class="m">mono+' + e.mono +
+        (e.detail ? ' · ' + e.detail : '') + '</span></div>').join('')
+    : '<div class="m">nothing written yet</div>';
+}
+
+selectScenario(0);
+</script>
+</body>
+</html>
