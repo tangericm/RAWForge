@@ -35,7 +35,7 @@
   .phase-note { color: var(--dim); font-size: 13px; margin-bottom: 16px; }
   table.state { width: 100%; border-collapse: collapse; font-size: 13.5px; }
   table.state td { padding: 5px 0; vertical-align: top; border-bottom: 1px solid #f0eeea; }
-  table.state td:first-child { color: var(--dim); width: 44%; padding-right: 12px; }
+  table.state td:first-child { color: var(--dim); width: 46%; padding-right: 12px; }
   .changed { background: #fff4e8; }
   .btns { display: flex; flex-wrap: wrap; gap: 7px; }
   button {
@@ -55,18 +55,23 @@
   ol.steps li { margin-bottom: 7px; }
   ol.steps li.done { color: #a8a49e; }
   ol.steps li.now button { border-color: var(--accent); }
-  .log { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
-         max-height: 340px; overflow-y: auto; }
-  .log div { padding: 3px 0; border-bottom: 1px solid #f4f2ee; }
-  .log .t { color: var(--accent); }
-  .log .m { color: var(--dim); }
+  .rec { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+         max-height: 260px; overflow-y: auto; }
+  .rec div { padding: 4px 0; border-bottom: 1px solid #f4f2ee; }
+  .rec .t { color: var(--accent); }
+  .rec .m { color: var(--dim); }
+  .rec .x { color: var(--bad); }
+  .buf { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+         max-height: 190px; overflow-y: auto; background: #fbf8f3;
+         border: 1px dashed var(--line); border-radius: 3px; padding: 8px 10px; }
+  .buf div { padding: 2px 0; color: var(--dim); }
   .shotlist { font-size: 13px; margin: 0; padding: 0; list-style: none; }
   .shotlist li { padding: 5px 8px; border-bottom: 1px solid #f4f2ee; display: flex; gap: 8px; }
   .shotlist li.active { background: #fff4e8; font-weight: 600; }
   .shotlist li.done { color: #a8a49e; }
   .tag { font-size: 11px; padding: 1px 5px; border-radius: 2px; background: #f0eeea; color: var(--dim); }
-  .warn { color: var(--bad); font-weight: 600; }
   .foot { margin-top: 40px; color: var(--dim); font-size: 12.5px; max-width: 70ch; }
+  .foot strong { color: var(--ink); }
   code { background: #f2f0ec; padding: 1px 4px; border-radius: 2px; font-size: 12.5px; }
 </style>
 </head>
@@ -75,16 +80,17 @@
 
 <h1>RAWForge — station flow</h1>
 <p class="lede">A throwaway prototype for
-   <a href="https://github.com/tangericm/RAWForge/issues/10">issue #10</a>. Not production code.</p>
+   <a href="https://github.com/tangericm/RAWForge/issues/10">issue #10</a>, rebuilt against the
+   <a href="https://github.com/tangericm/RAWForge/issues/1">simplification pass</a>. Not production code.</p>
 
 <div class="question">
   <strong>The question this answers</strong>
-  A <em>station</em> is a pose. One station may hold several capture sets across the three rear
-  sensors, and swapping sensor means reconfiguring the capture session — a visible pause with the
-  photographer holding still. Does that model survive the awkward cases: a bracket that fails its
-  clipping check, a station disturbed halfway through, the app being killed mid-capture, a
-  single-frame set that is not a bracket at all, and a shot list authored in an order that costs
-  extra swaps? Press the buttons and watch the state and the event log.
+  A <em>station</em> is a pose, and it may hold several capture sets across the three rear sensors.
+  Under the simplification pass there is exactly one failure rule: a hard fault <em>flags, aborts the
+  station, and deletes that station's frames</em> — stations already banked survive. Does that hold
+  up? Watch two things: the frame count on disk when a station aborts, and the fact that the session
+  file stays <em>silent</em> until a station completes. The log's write unit and the abort unit are
+  the same thing, which is why nothing partial ever needs interpreting.
 </div>
 
 <div class="cols">
@@ -116,17 +122,24 @@
     </div>
 
     <div class="panel">
-      <h2>Capture log — the events written to disk</h2>
-      <div class="log" id="log"></div>
+      <h2>Session file on disk</h2>
+      <div class="rec" id="written"></div>
+    </div>
+
+    <div class="panel">
+      <h2>In flight — buffered, not yet on disk</h2>
+      <div class="buf" id="buffer"></div>
     </div>
   </div>
 </div>
 
 <p class="foot">
-  Every line in the capture log is an event the real app would append to its JSONL, per
-  issue #9. The point of showing it here is that the state machine and the log schema are the same
-  design seen from two sides — if a situation can be reached that the log cannot describe, that is a
-  bug in the idea, not in the code.
+  The lower pane is memory, not disk. Everything in it is lost when a station aborts or the phone
+  dies, and that is the design rather than a limitation: <strong>a station either completed or never
+  existed</strong>, so there is no partial record to reconcile later. Clipping statistics are computed
+  and recorded but never judged — no verdict, no prompt, no re-shoot. Calibration sessions are the one
+  carve-out and are not modelled here: a dark run has no poses, so it aborts by capture set rather
+  than losing the whole run (<a href="https://github.com/tangericm/RAWForge/issues/15">#15</a>).
 </p>
 
 </div>
@@ -134,7 +147,9 @@
 <script>
 /* ==========================================================================
    THE MODULE UNDER TEST — pure, no DOM. This is the bit worth keeping.
-   A station state machine that emits capture-log events.
+   A station state machine under one failure rule: fault -> abort station,
+   delete its frames. The session file is written one record per COMPLETED
+   station, so write granularity and abort granularity are the same thing.
    ========================================================================== */
 
 const SENSORS = { wide: '1x wide', ultra: '0.5x ultra-wide', tele: '3x telephoto' };
@@ -143,22 +158,39 @@ const SENSORS = { wide: '1x wide', ultra: '0.5x ultra-wide', tele: '3x telephoto
 // grouped by sensor (2 swaps) versus authored order (4 swaps).
 const SHOT_LISTS = {
   grouped: [
-    { id: 'A',  sensor: 'wide',  name: 'sweep 1/2000-1s',  frames: 3, isBracket: true  },
-    { id: 'R1', sensor: 'wide',  name: 'single reference', frames: 1, isBracket: false },
-    { id: 'B',  sensor: 'ultra', name: 'sweep 1/2000-1s',  frames: 3, isBracket: true  },
-    { id: 'C',  sensor: 'tele',  name: 'sweep 1/2000-1s',  frames: 3, isBracket: true  },
-    { id: 'R2', sensor: 'tele',  name: 'single reference', frames: 1, isBracket: false }
+    { id: 'A',  sensor: 'wide',  name: 'sweep 1/2000-1s',  frames: 3 },
+    { id: 'R1', sensor: 'wide',  name: 'single reference', frames: 1 },
+    { id: 'B',  sensor: 'ultra', name: 'sweep 1/2000-1s',  frames: 3 },
+    { id: 'C',  sensor: 'tele',  name: 'sweep 1/2000-1s',  frames: 3 },
+    { id: 'R2', sensor: 'tele',  name: 'single reference', frames: 1 }
   ],
   authored: [
-    { id: 'A',  sensor: 'wide',  name: 'sweep 1/2000-1s',  frames: 3, isBracket: true  },
-    { id: 'B',  sensor: 'ultra', name: 'sweep 1/2000-1s',  frames: 3, isBracket: true  },
-    { id: 'R1', sensor: 'wide',  name: 'single reference', frames: 1, isBracket: false },
-    { id: 'C',  sensor: 'tele',  name: 'sweep 1/2000-1s',  frames: 3, isBracket: true  },
-    { id: 'R2', sensor: 'tele',  name: 'single reference', frames: 1, isBracket: false }
+    { id: 'A',  sensor: 'wide',  name: 'sweep 1/2000-1s',  frames: 3 },
+    { id: 'B',  sensor: 'ultra', name: 'sweep 1/2000-1s',  frames: 3 },
+    { id: 'C',  sensor: 'tele',  name: 'sweep 1/2000-1s',  frames: 3 },
+    { id: 'R1', sensor: 'wide',  name: 'single reference', frames: 1 },
+    { id: 'R2', sensor: 'tele',  name: 'single reference', frames: 1 }
   ]
 };
 
+// Fixed so a walkthrough replays identically. Green channel, fraction of
+// pixels at white level, over the ActiveArea crop, normalised — recorded,
+// never judged (issue #12).
+const CLIP = { A: 0.0341, R1: 0.0002, B: 0.0009, C: 0.0004, R2: 0.0001 };
+
 const MB_PER_FRAME = 10;
+
+// The protocol is inlined in the session, not referenced by id (issue #8).
+const PROTOCOL = 'coastal-hdr v3 — 5 sets, geometric 1/2000-1s';
+
+const FAULTS = {
+  MOTION_FAULT:  'motion over threshold',
+  STORAGE_FAULT: 'storage exhausted',
+  THERMAL_FAULT: 'thermal limit',
+  CAPTURE_ERROR: 'capture API error'
+};
+
+const STATION_PHASES = ['station_open','swapping','stilling','settling','capturing'];
 
 function initialState() {
   return {
@@ -167,48 +199,61 @@ function initialState() {
     sessionId: null,
     stationSeq: 0,
     stationId: null,
-    stationDisturbed: false,
     activeSensor: null,
     shotList: [],
     cursor: 0,            // index into shotList
     frameIndex: 0,        // frames captured within the current set
-    settled: false,
     swaps: 0,
-    attempt: 1,           // re-shoot lineage for the current set
-    lastVerdict: null,
+    stationFrames: 0,     // frames captured at the in-flight station
+    buffer: [],           // in-memory records for the in-flight station
+    written: [],          // records actually on disk
+    aborts: 0,
     freeSpaceMB: 900,
     framesOnDisk: 0,
     unclosedSession: false,
-    events: [],
     clock: 0              // stands in for the monotonic clock
   };
 }
 
 function currentSet(s) { return s.shotList[s.cursor] || null; }
 
-function emit(s, type, detail) {
+function buffer(s, text) { s.clock += 1; s.buffer.push({ mono: s.clock, text }); }
+function write(s, type, text, bad) {
   s.clock += 1;
-  s.events.push({ seq: s.events.length + 1, mono: s.clock, type, detail: detail || '' });
+  s.written.push({ seq: s.written.length + 1, mono: s.clock, type, text, bad: !!bad });
 }
 
-// Which actions are legal right now — this is half the question.
+// Everything a station was holding in memory dies with it.
+function abortStation(s, fault) {
+  s.framesOnDisk -= s.stationFrames;
+  s.freeSpaceMB += s.stationFrames * MB_PER_FRAME;
+  s.aborts += 1;
+  // The station's own record is never written — it never existed. The session
+  // still flags that a fault happened and where, which is the "flag" half of
+  // "flag and abort".
+  write(s, 'station_aborted',
+        s.stationId + ' · ' + FAULTS[fault] + ' · ' + s.stationFrames +
+        ' frames deleted · station not recorded', true);
+  s.buffer = [];
+  s.stationFrames = 0;
+  s.stationId = null; s.activeSensor = null; s.shotList = []; s.cursor = 0; s.frameIndex = 0;
+  s.phase = 'session_open';
+}
+
+// Which actions are legal right now.
 function legal(s, action) {
   const set = currentSet(s);
+  if (FAULTS[action]) return STATION_PHASES.includes(s.phase);
   switch (action) {
     case 'OPEN_SESSION':    return s.phase === 'no_session';
     case 'RELAUNCH':        return s.phase === 'killed';
     case 'DECLARE_STATION': return s.phase === 'session_open';
     case 'TOGGLE_ORDER':    return s.phase === 'session_open' || s.phase === 'no_session';
     case 'BEGIN_SET':       return s.phase === 'station_open' && !!set;
+    case 'SWAP_DONE':       return s.phase === 'swapping';
+    case 'STILL_OK':        return s.phase === 'stilling';
     case 'SETTLE_DONE':     return s.phase === 'settling';
     case 'CAPTURE_FRAME':   return s.phase === 'capturing';
-    case 'SWAP_DONE':       return s.phase === 'swapping';
-    case 'VERDICT_PASS':
-    case 'VERDICT_FAIL':    return s.phase === 'verifying';
-    case 'RESHOOT':
-    case 'ACCEPT':          return s.phase === 'awaiting_response';
-    case 'ABORT_SET':       return ['settling','capturing','swapping'].includes(s.phase);
-    case 'MARK_DISTURBED':  return ['station_open','settling','capturing','swapping','verifying','awaiting_response'].includes(s.phase);
     case 'CLOSE_STATION':   return s.phase === 'station_open' && s.cursor >= s.shotList.length;
     case 'CLOSE_SESSION':   return s.phase === 'session_open';
     case 'KILL_APP':        return s.phase !== 'no_session' && s.phase !== 'killed';
@@ -222,6 +267,8 @@ function reduce(state, action) {
   const s = JSON.parse(JSON.stringify(state));
   const set = currentSet(s);
 
+  if (FAULTS[action]) { abortStation(s, action); return s; }
+
   switch (action) {
 
     case 'TOGGLE_ORDER':
@@ -230,38 +277,32 @@ function reduce(state, action) {
 
     case 'OPEN_SESSION':
       s.phase = 'session_open';
-      s.sessionId = '20260809T1500Z';
+      s.sessionId = '20260810T1500Z';
       s.unclosedSession = true;
-      emit(s, 'session_open', 'protocol coastal-hdr v3 · capability probe recorded');
+      write(s, 'session_open', PROTOCOL + ' · capability probe recorded · protocol inlined');
       break;
 
     case 'DECLARE_STATION':
       s.stationSeq += 1;
       s.stationId = 's' + String(s.stationSeq).padStart(3, '0');
-      s.stationDisturbed = false;
       s.shotList = JSON.parse(JSON.stringify(SHOT_LISTS[s.ordering]));
-      s.cursor = 0; s.frameIndex = 0; s.attempt = 1; s.swaps = 0;
-      s.activeSensor = null; s.lastVerdict = null;
+      s.cursor = 0; s.frameIndex = 0; s.swaps = 0; s.stationFrames = 0;
+      s.activeSensor = null; s.buffer = [];
       s.phase = 'station_open';
-      emit(s, 'station_open', s.stationId + ' · ' + s.shotList.length + ' sets · ' + s.ordering + ' order');
+      buffer(s, 'station ' + s.stationId + ' opened · ' + s.shotList.length + ' sets · ' + s.ordering + ' order');
       break;
 
     case 'BEGIN_SET': {
-      const needMB = set.frames * MB_PER_FRAME;
-      // Space is reserved before a set fires, per issue #11.
-      if (s.freeSpaceMB < needMB) {
-        emit(s, 'set_refused_insufficient_space',
-             set.id + ' needs ' + needMB + ' MB, ' + s.freeSpaceMB + ' MB free');
-        break;
-      }
+      // Storage is no longer a separate posture — running out is a hard fault
+      // like any other, and it takes the station with it (issue #11).
+      if (s.freeSpaceMB < set.frames * MB_PER_FRAME) { abortStation(s, 'STORAGE_FAULT'); break; }
       if (s.activeSensor && s.activeSensor !== set.sensor) {
         s.phase = 'swapping';
-        emit(s, 'sensor_swap_start', s.activeSensor + ' -> ' + set.sensor);
+        buffer(s, 'sensor swap ' + s.activeSensor + ' -> ' + set.sensor);
       } else {
         s.activeSensor = set.sensor;
-        s.phase = 'settling';
-        s.settled = false;
-        emit(s, 'set_start', set.id + ' · ' + SENSORS[set.sensor] + ' · attempt ' + s.attempt);
+        s.phase = 'stilling';
+        buffer(s, 'set ' + set.id + ' · ' + SENSORS[set.sensor] + ' · waiting for stillness');
       }
       break;
     }
@@ -269,111 +310,84 @@ function reduce(state, action) {
     case 'SWAP_DONE':
       s.swaps += 1;
       s.activeSensor = set.sensor;
+      s.phase = 'stilling';
+      buffer(s, 'swap #' + s.swaps + ' complete · now ' + SENSORS[set.sensor]);
+      break;
+
+    case 'STILL_OK':
+      // The gate has no override. It is a wait, not a decision (issue #10).
       s.phase = 'settling';
-      emit(s, 'sensor_swap_complete', 'now ' + SENSORS[set.sensor] + ' · swap #' + s.swaps);
-      emit(s, 'stillness_observation', 'across swap #' + s.swaps + ' — recorded, not enforced');
-      emit(s, 'set_start', set.id + ' · ' + SENSORS[set.sensor] + ' · attempt ' + s.attempt);
+      buffer(s, 'stillness gate passed');
       break;
 
     case 'SETTLE_DONE':
-      s.settled = true;
       s.phase = 'capturing';
-      emit(s, 'exposure_settled', 'requested parameters confirmed applied');
+      buffer(s, 'exposure settled · requested parameters confirmed applied');
       break;
 
     case 'CAPTURE_FRAME': {
       s.frameIndex += 1;
+      s.stationFrames += 1;
       s.framesOnDisk += 1;
       s.freeSpaceMB -= MB_PER_FRAME;
-      emit(s, 'frame_captured',
-           set.id + ' frame ' + s.frameIndex + '/' + set.frames + ' · requested + achieved recorded');
+      buffer(s, 'frame ' + set.id + '/' + s.frameIndex + ' of ' + set.frames +
+                ' · requested + achieved + motion summary');
       if (s.frameIndex >= set.frames) {
-        s.phase = 'verifying';
-        emit(s, 'set_end', set.id + ' · ' + set.frames + ' frames');
+        s.frameIndex = 0;
+        s.cursor += 1;
+        s.phase = 'station_open';
+        buffer(s, 'set ' + set.id + ' done · green clip ' +
+                  (CLIP[set.id] * 100).toFixed(2) + '% — recorded, not judged');
       } else {
-        s.phase = 'settling';
-        s.settled = false;
+        s.phase = 'settling';   // settle before every frame; gate only once per set
       }
       break;
     }
 
-    case 'VERDICT_PASS':
-      // Per-frame statistics always; a stack verdict only where the protocol
-      // declares itself a bracket (issue #12 / #8).
-      s.lastVerdict = set.isBracket ? 'pass' : 'stats only (not a bracket)';
-      emit(s, 'verification',
-           set.isBracket ? set.id + ' · stack verdict PASS' : set.id + ' · per-frame stats only, no stack verdict');
-      s.cursor += 1; s.frameIndex = 0; s.attempt = 1;
-      s.phase = 'station_open';
-      break;
-
-    case 'VERDICT_FAIL':
-      if (!set.isBracket) {
-        // A single-frame set cannot fail a stack check — there is no stack.
-        s.lastVerdict = 'stats only (not a bracket)';
-        emit(s, 'verification', set.id + ' · per-frame stats only, no stack verdict possible');
-        s.cursor += 1; s.frameIndex = 0; s.attempt = 1;
-        s.phase = 'station_open';
-      } else {
-        s.lastVerdict = 'FAIL — highlight coverage';
-        emit(s, 'verification', set.id + ' · stack verdict FAIL · every frame clipped (green)');
-        s.phase = 'awaiting_response';
-      }
-      break;
-
-    case 'RESHOOT':
-      s.attempt += 1;
-      s.frameIndex = 0;
-      emit(s, 'reshoot_requested', set.id + ' · attempt ' + s.attempt + ' supersedes attempt ' + (s.attempt - 1));
-      s.phase = 'station_open';
-      break;
-
-    case 'ACCEPT':
-      emit(s, 'verdict_accepted', set.id + ' · failed and knowingly accepted by photographer');
-      s.cursor += 1; s.frameIndex = 0; s.attempt = 1;
-      s.phase = 'station_open';
-      break;
-
-    case 'ABORT_SET':
-      emit(s, 'set_aborted', (set ? set.id : '?') + ' · ' + s.frameIndex + ' of ' + (set ? set.frames : '?') + ' frames captured');
-      s.frameIndex = 0;
-      s.phase = 'station_open';
-      break;
-
-    case 'MARK_DISTURBED':
-      s.stationDisturbed = true;
-      emit(s, 'station_disturbed', s.stationId + ' · pose no longer trusted');
-      break;
-
     case 'CLOSE_STATION':
-      emit(s, 'station_close',
-           s.stationId + ' · ' + s.swaps + ' swaps' + (s.stationDisturbed ? ' · DISTURBED' : ''));
+      write(s, 'station_complete',
+            s.stationId + ' · ' + s.shotList.length + ' sets · ' + s.stationFrames +
+            ' frames · ' + s.swaps + ' swaps · SHA-256 manifest');
+      s.buffer = [];
       s.phase = 'session_open';
-      s.stationId = null; s.activeSensor = null; s.shotList = []; s.cursor = 0;
+      s.stationId = null; s.activeSensor = null; s.shotList = []; s.cursor = 0; s.stationFrames = 0;
       break;
 
     case 'CLOSE_SESSION':
-      emit(s, 'session_close', s.framesOnDisk + ' frames · ' + s.stationSeq + ' stations');
+      write(s, 'session_close', s.framesOnDisk + ' frames · ' + (s.stationSeq - s.aborts) +
+            ' stations recorded · ' + s.aborts + ' aborted');
       s.unclosedSession = false;
       s.phase = 'no_session';
       break;
 
     case 'KILL_APP':
-      // Nothing is emitted — that is the point. The log simply stops.
+      // Nothing is written. Whatever the in-flight station buffered is gone.
       s.phase = 'killed';
       break;
 
     case 'RELAUNCH':
+      // Banked stations survive — that is the whole point of aborting at station
+      // level rather than session level. Only the in-flight station is dropped.
+      if (s.stationFrames > 0) {
+        s.framesOnDisk -= s.stationFrames;
+        s.freeSpaceMB += s.stationFrames * MB_PER_FRAME;
+        s.aborts += 1;
+        write(s, 'station_aborted',
+              s.stationId + ' · app did not survive · ' + s.stationFrames +
+              ' frames deleted on relaunch', true);
+      }
       if (s.unclosedSession) {
-        emit(s, 'session_abandoned', 'found unclosed session ' + s.sessionId + ' on launch');
+        write(s, 'session_close', s.framesOnDisk + ' frames · ' + (s.stationSeq - s.aborts) +
+              ' stations recorded · closed on relaunch');
         s.unclosedSession = false;
       }
+      s.buffer = []; s.stationFrames = 0;
       s.phase = 'no_session';
       s.stationId = null; s.activeSensor = null; s.shotList = []; s.cursor = 0; s.frameIndex = 0;
       break;
 
     case 'BURN_SPACE':
-      s.freeSpaceMB = 15;
+      s.freeSpaceMB = 5;   // below one frame — the next BEGIN_SET faults out
       break;
   }
   return s;
@@ -388,16 +402,15 @@ const ACTIONS = [
   ['DECLARE_STATION', 'Declare station'],
   ['BEGIN_SET',       'Begin next capture set'],
   ['SWAP_DONE',       'Sensor swap finishes'],
+  ['STILL_OK',        'Stillness gate passes'],
   ['SETTLE_DONE',     'Exposure settles'],
   ['CAPTURE_FRAME',   'Capture one frame'],
-  ['VERDICT_PASS',    'Verification passes'],
-  ['VERDICT_FAIL',    'Verification fails'],
-  ['RESHOOT',         'Re-shoot the set'],
-  ['ACCEPT',          'Accept the failure'],
-  ['ABORT_SET',       'Abort the set'],
-  ['MARK_DISTURBED',  'Station was bumped'],
   ['CLOSE_STATION',   'Close station'],
   ['CLOSE_SESSION',   'Close session'],
+  ['MOTION_FAULT',    'Fault: excessive motion'],
+  ['STORAGE_FAULT',   'Fault: storage exhausted'],
+  ['THERMAL_FAULT',   'Fault: thermal limit'],
+  ['CAPTURE_ERROR',   'Fault: capture error'],
   ['BURN_SPACE',      'Fill up the storage'],
   ['KILL_APP',        'Phone dies'],
   ['RELAUNCH',        'Relaunch app'],
@@ -405,93 +418,73 @@ const ACTIONS = [
 ];
 
 const PHASE_NOTES = {
-  no_session:      'Nothing open. Declaring a station requires a session.',
-  session_open:    'A session is open with no station. This is where you walk to the next pose.',
-  station_open:    'Standing at the pose. The next capture set can begin.',
-  swapping:        'Reconfiguring the capture session for a different sensor. Hold the pose.',
-  settling:        'Waiting for the requested exposure to actually take effect. Never fire early.',
-  capturing:       'Ready to fire the next frame of this set.',
-  verifying:       'Set complete. Clipping statistics computed from the real Bayer payload.',
-  awaiting_response:'The stack failed its check. Re-shoot, or accept it knowingly.',
-  killed:          'The app is gone. Notice that the log simply stopped — nothing was written.'
+  no_session:   'Nothing open. Declaring a station requires a session.',
+  session_open: 'A session is open with no station. This is where you walk to the next pose.',
+  station_open: 'Standing at the pose. The next capture set can begin.',
+  swapping:     'Reconfiguring the capture session for a different sensor. Hold the pose.',
+  stilling:     'Waiting for the device to be still. A wait, not a prompt — there is no override.',
+  settling:     'Waiting for the requested exposure to actually take effect. Never fire early.',
+  capturing:    'Ready to fire the next frame of this set.',
+  killed:       'The app is gone. Nothing was written — the buffered station goes with it.'
 };
+
+const SET1 = ['BEGIN_SET','STILL_OK','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME'];
+const SET1SWAP = ['BEGIN_SET','SWAP_DONE','STILL_OK','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME'];
+const SINGLE = ['BEGIN_SET','STILL_OK','SETTLE_DONE','CAPTURE_FRAME'];
+const SINGLESWAP = ['BEGIN_SET','SWAP_DONE','STILL_OK','SETTLE_DONE','CAPTURE_FRAME'];
 
 const SCENARIOS = [
   {
     name: 'Happy path',
-    desc: 'One station, five capture sets, grouped by sensor. Watch the <em>swap count reach 2</em> — ' +
-          'the whole point of grouping — and note the settle step before every single frame.',
+    desc: 'One station, five capture sets, grouped by sensor. Watch the <em>swap count reach 2</em>, ' +
+          'the stillness gate once per set and the settle before every frame — and note the session ' +
+          'file stays empty until the station closes.',
     steps: ['OPEN_SESSION','DECLARE_STATION',
-            'BEGIN_SET','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','VERDICT_PASS',
-            'BEGIN_SET','SETTLE_DONE','CAPTURE_FRAME','VERDICT_PASS',
-            'BEGIN_SET','SWAP_DONE','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','VERDICT_PASS',
-            'BEGIN_SET','SWAP_DONE','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','VERDICT_PASS',
-            'BEGIN_SET','SETTLE_DONE','CAPTURE_FRAME','VERDICT_PASS',
+            ...SET1, ...SINGLE, ...SET1SWAP, ...SET1SWAP, ...SINGLE,
             'CLOSE_STATION','CLOSE_SESSION']
   },
   {
-    name: 'Failed stack, re-shot',
-    desc: 'The first bracket clips everywhere. The app warns and offers a re-shoot; it never blocks. ' +
-          'Watch the log keep <em>both attempts</em> with an explicit supersession — the failed frames ' +
-          'are not deleted.',
-    steps: ['OPEN_SESSION','DECLARE_STATION',
-            'BEGIN_SET','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME',
-            'VERDICT_FAIL','RESHOOT',
-            'BEGIN_SET','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','VERDICT_PASS']
+    name: 'Motion fault at station 2',
+    desc: 'Station 1 completes and is written. Station 2 takes a knock four frames in. Watch ' +
+          '<em>frames on disk drop back</em> to station 1\'s count — station 2 is deleted and never ' +
+          'recorded, while everything banked survives.',
+    steps: ['OPEN_SESSION','DECLARE_STATION', ...SET1, ...SINGLE, ...SET1SWAP, ...SET1SWAP, ...SINGLE,
+            'CLOSE_STATION',
+            'DECLARE_STATION', ...SET1, 'BEGIN_SET','STILL_OK','MOTION_FAULT',
+            'CLOSE_SESSION']
   },
   {
-    name: 'Failed stack, accepted',
-    desc: 'Same failure, but the photographer knows the scene and accepts it. The log records ' +
-          '<em>knowingly accepted</em> — which is a different fact from never having noticed.',
-    steps: ['OPEN_SESSION','DECLARE_STATION',
-            'BEGIN_SET','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME',
-            'VERDICT_FAIL','ACCEPT']
+    name: 'Storage exhausted',
+    desc: 'Storage fills mid-station. Under the pass this is not a special refusal posture any more ' +
+          '— it is <em>the same fault as any other</em> and takes the station with it. Simpler to ' +
+          'reason about, and simpler to remember at arm\'s length.',
+    steps: ['OPEN_SESSION','DECLARE_STATION', ...SET1, 'BURN_SPACE','BEGIN_SET','CLOSE_SESSION']
   },
   {
-    name: 'Single frame, not a bracket',
-    desc: 'The second set is one frame. Try failing its verification — it <em>cannot</em> fail a stack ' +
-          'check, because there is no stack. Per-frame statistics are still recorded.',
-    steps: ['OPEN_SESSION','DECLARE_STATION',
-            'BEGIN_SET','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','VERDICT_PASS',
-            'BEGIN_SET','SETTLE_DONE','CAPTURE_FRAME','VERDICT_FAIL']
-  },
-  {
-    name: 'Bumped mid-station',
-    desc: 'Two sets already shot from this pose, then the tripod is knocked. The station is marked ' +
-          'disturbed but <em>stays one station</em> — the model does not split. Watch what the close ' +
-          'event carries.',
-    steps: ['OPEN_SESSION','DECLARE_STATION',
-            'BEGIN_SET','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','VERDICT_PASS',
-            'BEGIN_SET','SETTLE_DONE','CAPTURE_FRAME','VERDICT_PASS',
-            'BEGIN_SET','MARK_DISTURBED','ABORT_SET']
-  },
-  {
-    name: 'Phone dies mid-bracket',
-    desc: 'Killed halfway through a set. Nothing is written at the moment of death — the log simply ' +
-          'stops. On relaunch the app notices and writes <em>session_abandoned</em>, turning an ' +
-          'ambiguous silence into a stated fact.',
-    steps: ['OPEN_SESSION','DECLARE_STATION',
-            'BEGIN_SET','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME',
+    name: 'Phone dies mid-station',
+    desc: 'Killed partway through station 2. Nothing was written for it, so nothing needs ' +
+          'interpreting. On relaunch its frames are deleted and the session closes — <em>station 1 ' +
+          'survives intact</em>. This is why the abort unit is the station and not the session.',
+    steps: ['OPEN_SESSION','DECLARE_STATION', ...SET1, ...SINGLE, ...SET1SWAP, ...SET1SWAP, ...SINGLE,
+            'CLOSE_STATION',
+            'DECLARE_STATION', ...SET1, 'BEGIN_SET','STILL_OK','SETTLE_DONE','CAPTURE_FRAME',
             'KILL_APP','RELAUNCH']
   },
   {
-    name: 'Out of space',
-    desc: 'Storage is filled before a bracket fires. Space is checked <em>before</em> the set starts, ' +
-          'so you get a refusal instead of a half-written bracket. A broken set is worse than one that ' +
-          'never began.',
-    steps: ['OPEN_SESSION','DECLARE_STATION','BURN_SPACE','BEGIN_SET']
+    name: 'Clipping is not a fault',
+    desc: 'Set A clips 3.41% of green pixels at white level. The old design warned, offered a ' +
+          're-shoot and recorded whether you accepted it. Now the number is <em>recorded and the ' +
+          'flow does not change</em> — that judgement belongs at the workstation, with the pixels.',
+    steps: ['OPEN_SESSION','DECLARE_STATION', ...SET1, ...SINGLE]
   },
   {
     name: 'Authored order costs swaps',
-    desc: 'The same five sets in the order they were written rather than grouped by sensor. ' +
-          'Run it and compare the final swap count against the happy path — <em>4 instead of 2</em>, ' +
-          'each one a pose risk.',
+    desc: 'The same five sets in the order they were written rather than grouped by sensor. Compare ' +
+          'the final swap count against the happy path — <em>4 instead of 2</em>, each one a pose ' +
+          'held through a session reconfiguration.',
     steps: ['TOGGLE_ORDER','OPEN_SESSION','DECLARE_STATION',
-            'BEGIN_SET','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','VERDICT_PASS',
-            'BEGIN_SET','SWAP_DONE','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','VERDICT_PASS',
-            'BEGIN_SET','SWAP_DONE','SETTLE_DONE','CAPTURE_FRAME','VERDICT_PASS',
-            'BEGIN_SET','SWAP_DONE','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','SETTLE_DONE','CAPTURE_FRAME','VERDICT_PASS',
-            'BEGIN_SET','SWAP_DONE','SETTLE_DONE','CAPTURE_FRAME','VERDICT_PASS']
+            ...SET1, ...SET1SWAP, ...SET1SWAP, ...SINGLESWAP, ...SINGLESWAP,
+            'CLOSE_STATION','CLOSE_SESSION']
   }
 ];
 
@@ -519,42 +512,34 @@ function selectScenario(i) {
   render();
 }
 
+function rowsFor(s) {
+  const set = currentSet(s);
+  return [
+    ['Session', s.sessionId || '—'],
+    ['Station', s.stationId || '—'],
+    ['Active sensor', s.activeSensor ? SENSORS[s.activeSensor] : '—'],
+    ['Current set', set ? set.id + ' · ' + set.name : '— all sets done —'],
+    ['Frames in set', set ? s.frameIndex + ' of ' + set.frames : '—'],
+    ['Sensor swaps at this station', s.swaps],
+    ['Frames at this station (deleted if it aborts)', s.stationFrames],
+    ['Frames on disk', s.framesOnDisk],
+    ['Stations recorded', s.written.filter(r => r.type === 'station_complete').length],
+    ['Stations aborted', s.aborts],
+    ['Shot-list order', s.ordering],
+    ['Free space', s.freeSpaceMB + ' MB']
+  ];
+}
+
 function render() {
   const s = state, p = prev;
   document.getElementById('phase').textContent = s.phase.replace(/_/g, ' ');
   document.getElementById('phaseNote').textContent = PHASE_NOTES[s.phase] || '';
 
-  const set = currentSet(s);
-  const rows = [
-    ['Session', s.sessionId || '—'],
-    ['Station', s.stationId ? s.stationId + (s.stationDisturbed ? '  ⚠ disturbed' : '') : '—'],
-    ['Active sensor', s.activeSensor ? SENSORS[s.activeSensor] : '—'],
-    ['Current set', set ? set.id + ' · ' + set.name + (set.isBracket ? '' : ' · not a bracket') : '— all sets done —'],
-    ['Frames in set', set ? s.frameIndex + ' of ' + set.frames : '—'],
-    ['Attempt', s.attempt],
-    ['Sensor swaps at this station', s.swaps],
-    ['Last verdict', s.lastVerdict || '—'],
-    ['Shot-list order', s.ordering],
-    ['Free space', s.freeSpaceMB + ' MB'],
-    ['Frames on disk', s.framesOnDisk],
-    ['Unclosed session on record', s.unclosedSession ? 'yes' : 'no']
-  ];
-  const prevRows = p ? {
-    'Session': p.sessionId || '—',
-    'Station': p.stationId ? p.stationId + (p.stationDisturbed ? '  ⚠ disturbed' : '') : '—',
-    'Active sensor': p.activeSensor ? SENSORS[p.activeSensor] : '—',
-    'Current set': (currentSet(p) ? currentSet(p).id + ' · ' + currentSet(p).name + (currentSet(p).isBracket ? '' : ' · not a bracket') : '— all sets done —'),
-    'Frames in set': currentSet(p) ? p.frameIndex + ' of ' + currentSet(p).frames : '—',
-    'Attempt': p.attempt,
-    'Sensor swaps at this station': p.swaps,
-    'Last verdict': p.lastVerdict || '—',
-    'Shot-list order': p.ordering,
-    'Free space': p.freeSpaceMB + ' MB',
-    'Frames on disk': p.framesOnDisk,
-    'Unclosed session on record': p.unclosedSession ? 'yes' : 'no'
-  } : {};
+  const rows = rowsFor(s);
+  const prevMap = {};
+  if (p) rowsFor(p).forEach(([k, v]) => { prevMap[k] = String(v); });
   document.getElementById('stateTable').innerHTML = rows.map(([k, v]) => {
-    const chg = p && String(prevRows[k]) !== String(v);
+    const chg = p && prevMap[k] !== String(v);
     return '<tr class="' + (chg ? 'changed' : '') + '"><td>' + k + '</td><td>' + v + '</td></tr>';
   }).join('');
 
@@ -562,12 +547,12 @@ function render() {
     ? s.shotList.map((x, i) =>
         '<li class="' + (i < s.cursor ? 'done' : i === s.cursor ? 'active' : '') + '">' +
         '<span class="tag">' + SENSORS[x.sensor] + '</span>' + x.id + ' · ' + x.name +
-        (x.isBracket ? '' : ' <span class="tag">single</span>') + '</li>').join('')
+        (x.frames === 1 ? ' <span class="tag">single</span>' : '') + '</li>').join('')
     : '<li style="color:#a8a49e">no station open</li>';
 
   document.getElementById('freeplay').innerHTML = ACTIONS.map(([a, l]) =>
     '<button ' + (legal(s, a) ? '' : 'disabled ') +
-    'class="' + (a === 'KILL_APP' || a === 'MARK_DISTURBED' || a === 'ABORT_SET' ? 'danger' : '') + '" ' +
+    'class="' + (FAULTS[a] || a === 'KILL_APP' ? 'danger' : '') + '" ' +
     'onclick="dispatch(\'' + a + '\')">' + l + '</button>').join('');
 
   document.getElementById('tabs').innerHTML = SCENARIOS.map((sc, i) =>
@@ -576,14 +561,18 @@ function render() {
   document.getElementById('scenarioDesc').innerHTML = SCENARIOS[scenarioIdx].desc;
   document.getElementById('steps').innerHTML = SCENARIOS[scenarioIdx].steps.map((a, i) =>
     '<li class="' + (i < stepIdx ? 'done' : i === stepIdx ? 'now' : '') + '">' +
-    '<button ' + (i === stepIdx ? 'class="primary"' : i < stepIdx ? 'disabled' : 'disabled') + ' ' +
+    '<button ' + (i === stepIdx ? 'class="primary"' : 'disabled') + ' ' +
     'onclick="runStep(' + i + ')">' + label(a) + '</button></li>').join('');
 
-  document.getElementById('log').innerHTML = s.events.length
-    ? s.events.slice().reverse().map(e =>
-        '<div><span class="t">' + e.type + '</span> <span class="m">mono+' + e.mono +
-        (e.detail ? ' · ' + e.detail : '') + '</span></div>').join('')
+  document.getElementById('written').innerHTML = s.written.length
+    ? s.written.slice().reverse().map(e =>
+        '<div><span class="' + (e.bad ? 'x' : 't') + '">' + e.type + '</span> ' +
+        '<span class="m">mono+' + e.mono + ' · ' + e.text + '</span></div>').join('')
     : '<div class="m">nothing written yet</div>';
+
+  document.getElementById('buffer').innerHTML = s.buffer.length
+    ? s.buffer.map(e => '<div>mono+' + e.mono + ' · ' + e.text + '</div>').join('')
+    : '<div>empty — no station in flight</div>';
 }
 
 selectScenario(0);
