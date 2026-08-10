@@ -36,9 +36,10 @@ capture path is closed to anything the app's author did not anticipate.
 
 Two things a third-party app cannot give:
 
-1. **Protocol as code.** A bracket ladder, a station count and a shot list executed the same way
-   every time, with the capture log written next to the frames rather than reconstructed later from
-   EXIF. Capture mistakes are expensive — they surface long after the shoot, when the scene is gone.
+1. **Protocol as code.** Capture sets — ordered lists of `(shutter, ISO)` specs — authored on the
+   device and executed the same way every time, with the capture log written into the same folder as
+   the frames rather than reconstructed later from EXIF. The pose is the expensive thing: a scene
+   cannot be re-walked, because the second traversal's stations will not match the first.
 2. **The motion axis.** Rolling shutter and motion blur need per-frame device motion, and RAW
    capture cannot coexist with ARKit on this platform. Recording the IMU stream alongside the frames
    is a capture-side problem, and no off-the-shelf app does it.
@@ -50,6 +51,20 @@ consumer is designed for. [`photonforge`](https://github.com/tangericm/photonfor
 scene reconstruction and sensor-model pipeline — is the intended eventual reader, and will be fitted
 to this format rather than the other way round. No decision here is settled by asking what something
 downstream expects.
+
+## How it behaves
+
+**One directory per session**, in the app's own storage, frames and capture log inside it together.
+Camera permission and nothing else — no photo library, no cloud. A session moves by dragging one
+folder out of Files or off a cable.
+
+**One failure rule.** A hard fault — motion over threshold, storage exhausted, thermal, capture
+error, battery death — flags, aborts the **station**, and deletes that station's frames. Stations
+already banked survive. A station either completed or never existed, so there is no partial state to
+interpret later and no decision to make in the field.
+
+Clipping is not a fault. Its statistics are recorded from the real Bayer payload and never judged on
+device: that is a question about a scene, and the workstation answers it better.
 
 ## What the sensors actually do
 
