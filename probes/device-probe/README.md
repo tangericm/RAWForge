@@ -31,25 +31,31 @@ refines rather than reshapes — not in this spike.
 
 ## Building it
 
-There is no `.xcodeproj` checked in on purpose — a hand-written project file is fragile across Xcode
-versions, and this is throwaway. Two minutes in Xcode:
+No `.xcodeproj` is checked in — a hand-written project file is fragile across Xcode versions, and this
+is throwaway. The project is generated from `project.yml` instead, so the spec is the source of truth
+and the `.xcodeproj` stays out of git.
 
-1. **File ▸ New ▸ Project ▸ iOS ▸ App.** Name `DeviceProbe`, interface **SwiftUI**, language **Swift**.
-2. Delete the generated `ContentView.swift` and `DeviceProbeApp.swift`.
-3. Drag every `.swift` file in this directory into the project (check *Copy items if needed*).
-4. In the target's **Info** tab add:
-   - `NSCameraUsageDescription` → `Device probe captures Bayer RAW.`
-   - `NSMotionUsageDescription` → `Device probe records motion for stillness measurement.`
-   - `UIFileSharingEnabled` → `YES`
-   - `LSSupportsOpeningDocumentsInPlace` → `YES`
-     (the last two surface the saved DNGs in Finder / Files, matching the app's sandbox storage decision.)
-5. Set the run destination to the **iPhone 15 Pro** (a physical device — the camera probes do nothing
-   in the simulator). Signing: the free personal team is enough; a 7-day profile is fine for a probe.
-6. Run.
+**Fast path (recommended) — one command:**
 
-If the target defaults to the **Swift 6 language mode**, set it back to **Swift 5** (Build Settings ▸
-*Swift Language Version*). The motion sampler in `MotionProbes.swift` captures across a background
-queue on purpose, which strict concurrency rejects — not worth restructuring for a throwaway.
+```
+brew install xcodegen          # once
+cd probes/device-probe
+xcodegen generate              # writes DeviceProbe.xcodeproj + Info.plist
+open DeviceProbe.xcodeproj
+```
+
+`project.yml` already sets the Info.plist keys (camera + motion usage, file sharing), the iOS 17
+deployment target, iPhone-only, and **Swift 5 language mode** — the last because the motion sampler
+captures across a queue on purpose, which Swift 6 strict concurrency would reject. Set your signing
+team in Xcode (free personal team is enough; a 7-day profile is fine for a probe). This path is also
+what lets **XcodeBuildMCP** build and test the probe headless on the Mac.
+
+**Manual fallback** if you'd rather not install xcodegen: File ▸ New ▸ Project ▸ iOS App (SwiftUI),
+delete the template `ContentView`/`App`, drag every `.swift` file in here, and add the four Info.plist
+keys listed in `project.yml` by hand.
+
+Either way: run destination is the **physical iPhone 15 Pro** — the camera probes do nothing in the
+simulator.
 
 ## Reading the output
 

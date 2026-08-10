@@ -43,6 +43,14 @@ checkpoints/
 *.mlpackage
 *.engine
 
+# Xcode / xcodegen — the project is generated from project.yml, never committed
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/
+.swiftpm/
+probes/device-probe/Info.plist
+
 # Editors / OS
 .vscode/
 .idea/
