@@ -15,6 +15,24 @@ struct SessionRecord: Codable, Equatable {
     let format: String
     let schemaVersion: Int
 
+    /// `scene` or `calibration`. A calibration is its own session type with its
+    /// own id (#15), not a prelude to a scene session — which is what makes a
+    /// stale calibration visible instead of assumed, and lets an archived scene
+    /// be re-processed against a better calibration measured later.
+    let sessionType: String
+
+    /// For a scene session: which calibration it was shot under, and how old
+    /// that calibration was at the time. Both recorded rather than one, because
+    /// the age is the thing a reader actually needs to judge.
+    let calibrationSessionId: String?
+    let calibrationAgeSeconds: Double?
+
+    /// `ProcessInfo.thermalState` at open. Four coarse buckets is all iOS
+    /// exposes — there is no public sensor-temperature API — so temperature is
+    /// **noted, never measured** (#15). Stating the limitation beats implying a
+    /// precision that does not exist.
+    let thermalStateAtOpen: String
+
     let sessionId: String
     let openedAt: Date
 
@@ -42,10 +60,26 @@ struct SessionRecord: Codable, Equatable {
     }
 
     static let currentFormat = "rawforge.session"
-    static let currentSchemaVersion = 2
+    static let currentSchemaVersion = 3
+
+    static func thermalLabel() -> String {
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal:  return "nominal"
+        case .fair:     return "fair"
+        case .serious:  return "serious"
+        case .critical: return "critical"
+        @unknown default: return "unknown"
+        }
+    }
 
     init(sessionId: String, openedAt: Date, openedAtUptime: TimeInterval,
-         capability: CapabilityReport, availableCapacityBytes: Int64?) {
+         capability: CapabilityReport, availableCapacityBytes: Int64?,
+         sessionType: String = "scene",
+         calibrationSessionId: String? = nil, calibrationAgeSeconds: Double? = nil) {
+        self.sessionType = sessionType
+        self.calibrationSessionId = calibrationSessionId
+        self.calibrationAgeSeconds = calibrationAgeSeconds
+        self.thermalStateAtOpen = SessionRecord.thermalLabel()
         self.availableCapacityBytesAtOpen = availableCapacityBytes
         self.capacityMeasuredWith = "URLResourceValues.volumeAvailableCapacity"
         self.format = Self.currentFormat

@@ -42,6 +42,12 @@ final class CaptureModel: ObservableObject {
     ]
     @Published private(set) var zoomProbe: ZoomProbeResult?
 
+    /// Averaging N frames cuts noise by root-N, and black-level estimation
+    /// typically wants 8-16 per setting (#15). Named explicitly rather than
+    /// implied.
+    @Published var darkRepeats: Int = 8
+    @Published private(set) var darkProgress: String = ""
+
     /// A station is a pose and may span sensors (#7). The shot list names which
     /// ones; pinning to a single sensor is just a list of length one, not a
     /// separate mode.
@@ -88,7 +94,10 @@ final class CaptureModel: ObservableObject {
     func openSession() {
         guard let report, report.canCapture else { return }
         do {
-            session = try SessionStore.open(capability: report)
+            // A scene session records which calibration it was shot under and
+            // how old it was, so a stale one is visible instead of assumed (#15).
+            session = try SessionStore.open(
+                capability: report, calibration: SessionStore.latestCalibration())
             stationIndex = 0
             status = "session \(session?.sessionId ?? "?") open"
         } catch {
@@ -314,6 +323,134 @@ final class CaptureModel: ObservableObject {
             shutterSeconds: exif[kCGImagePropertyExifExposureTime as String] as? Double ?? 0,
             iso: (exif[kCGImagePropertyExifISOSpeedRatings as String] as? [NSNumber])?.first?.floatValue ?? 0,
             whiteBalanceGains: wb)
+    }
+
+    /// A dark-frame calibration run (#15): the same capture set with the lens
+    /// capped, as its own session type, referenced by id from the scene
+    /// sessions that depend on it.
+    func runDarkCalibration() async {
+        guard let report, report.canCapture else { status = "no usable sensor"; return }
+        let sensors = orderedSensors.filter { capability($0)?.isUsable == true }
+        guard !sensors.isEmpty else { status = "no usable sensor selected"; return }
+
+        busy = true
+        defer { busy = false; progress = ""; darkProgress = "" }
+
+        let set = currentSet
+        let plannedFrames = sensors.count * set.specs.count * darkRepeats
+        guard SessionStore.hasRoom(forFrames: plannedFrames) else {
+            status = "storage exhausted — \(plannedFrames) dark frames will not fit"
+            return
+        }
+
+        let calib: SessionRecord
+        do {
+            calib = try SessionStore.open(capability: report, sessionType: "calibration")
+        } catch {
+            status = "could not open a calibration session — \(error)"; return
+        }
+        session = calib
+        let thermalAtOpen = SessionRecord.thermalLabel()
+
+        var settingIndex = 0
+        var totalKept = 0, totalRejected = 0
+
+        for sensor in sensors {
+            guard let cap = capability(sensor) else { continue }
+            do { try rig.configure(sensor); rig.startSession() }
+            catch { status = "could not open \(sensor.rawValue) — \(error)"; continue }
+
+            let checked = set.validated(against: cap)
+            for spec in checked.kept {
+                settingIndex += 1
+                let index = settingIndex
+                var frames: [FrameRecord] = []
+                var rejections: [DarkFrameRejection] = []
+                var aborted = false
+                var abortReason: String?
+
+                do {
+                    _ = try await rig.lockWhiteBalance()
+                    let achieved = try await rig.lockExposure(
+                        shutterSeconds: spec.shutterSeconds, iso: spec.iso)
+
+                    for r in 1...darkRepeats {
+                        darkProgress = "\(sensor.rawValue) setting \(index) "
+                            + "\(spec.shutterLabel) ISO \(Int(spec.iso)) — repeat \(r)/\(darkRepeats)"
+                        let photo = try await rig.captureSingle()
+                        guard let data = photo.fileDataRepresentation() else {
+                            throw CaptureRig.RigError.captureFailed("no DNG data")
+                        }
+                        let witness = DNGMetadata.read(data)
+                        let clip = ClippingStats.compute(
+                            from: photo, bayerFormat: rig.bayerFormat,
+                            activeArea: witness.activeArea,
+                            blackLevel: witness.blackLevel?.first,
+                            whiteLevel: witness.whiteLevel?.first)
+                        let verdict = DarkFrameValidation.check(clip)
+
+                        // Reject, do not warn (#15). A frame that is not dark is
+                        // not written as a dark frame — but the refusal is.
+                        guard verdict?.passed == true else {
+                            rejections.append(DarkFrameRejection(
+                                sensor: sensor.rawValue, shutterSeconds: spec.shutterSeconds,
+                                iso: spec.iso, repeatIndex: r, validation: verdict,
+                                note: verdict?.failureReason
+                                    ?? "could not validate — no clipping statistics available"))
+                            aborted = true
+                            abortReason = verdict?.failureReason ?? "validation unavailable"
+                            break
+                        }
+
+                        let name = SessionStore.darkFrameFilename(
+                            sessionId: calib.sessionId, setting: index,
+                            repeatIndex: r, sensor: sensor.rawValue)
+                        _ = try SessionStore.writeFrame(data, named: name, sessionId: calib.sessionId)
+                        frames.append(FrameRecord(
+                            frameIndex: r, filename: name, sensor: sensor.rawValue,
+                            requested: FrameRecord.Exposure(
+                                shutterSeconds: spec.shutterSeconds, iso: spec.iso, whiteBalanceGains: nil),
+                            deviceAchieved: achieved,
+                            photoAchieved: Self.exposure(from: photo, wb: []),
+                            dng: witness, zoomFactor: rig.currentZoomFactor,
+                            capturedAtUptime: ProcessInfo.processInfo.systemUptime,
+                            capturedAt: Date(), photoTimestampSeconds:
+                                photo.timestamp.isValid ? photo.timestamp.seconds : nil,
+                            gapFromPreviousSeconds: nil, clipping: clip, motion: nil,
+                            motionNeighbourhood: nil, uptimeAtDelivery: nil, latestMotionTimestamp: nil))
+                    }
+                } catch {
+                    aborted = true
+                    abortReason = "\(error)"
+                }
+
+                if aborted {
+                    // The abort unit is this setting, not the run (#15).
+                    SessionStore.deleteDarkSettingFrames(sessionId: calib.sessionId, setting: index)
+                    frames = []
+                }
+                totalKept += frames.count
+                totalRejected += rejections.count
+                try? SessionStore.writeDarkSetting(DarkSettingRecord(
+                    sensor: sensor.rawValue, shutterSeconds: spec.shutterSeconds, iso: spec.iso,
+                    requestedRepeats: darkRepeats, frames: frames, rejections: rejections,
+                    aborted: aborted, abortReason: abortReason),
+                    sessionId: calib.sessionId, index: index)
+
+                // The cap being off makes every remaining setting pointless, and
+                // a full mirror is minutes of wall clock. Stop on the first
+                // setting rather than grinding through 336 refusals.
+                if index == 1 && aborted && !rejections.isEmpty {
+                    rig.stopSession()
+                    status = "cap check failed — \(abortReason ?? "not dark"). Run stopped at setting 1."
+                    return
+                }
+            }
+            rig.stopSession()
+        }
+
+        status = "calibration \(calib.sessionId): \(totalKept) frames kept, "
+            + "\(totalRejected) rejected, thermal \(thermalAtOpen) → \(SessionRecord.thermalLabel())"
     }
 
     /// #14 item 3: does a locked white balance reach the Bayer *pixels*, or only

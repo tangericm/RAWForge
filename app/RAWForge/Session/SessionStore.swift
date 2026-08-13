@@ -69,13 +69,18 @@ enum SessionStore {
     /// captured — so a session interrupted before its first frame still leaves
     /// a record of what the device could do.
     @discardableResult
-    static func open(capability: CapabilityReport, now: Date = Date()) throws -> SessionRecord {
+    static func open(capability: CapabilityReport, now: Date = Date(),
+                     sessionType: String = "scene",
+                     calibration: (id: String, ageSeconds: Double)? = nil) throws -> SessionRecord {
         let record = SessionRecord(
             sessionId: makeSessionId(now),
             openedAt: now,
             openedAtUptime: ProcessInfo.processInfo.systemUptime,
             capability: capability,
-            availableCapacityBytes: availableCapacityBytes())
+            availableCapacityBytes: availableCapacityBytes(),
+            sessionType: sessionType,
+            calibrationSessionId: calibration?.id,
+            calibrationAgeSeconds: calibration?.ageSeconds)
 
         let dir = directory(for: record.sessionId)
         do {
@@ -230,6 +235,44 @@ enum SessionStore {
         ]
         guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, options as CFDictionary) else { return nil }
         return UIImage(cgImage: cg)
+    }
+
+    /// The most recent calibration session on disk, with its age, so a scene
+    /// session can reference it (#15).
+    static func latestCalibration(now: Date = Date()) -> (id: String, ageSeconds: Double)? {
+        for id in existingSessionIds().reversed() {
+            guard let r = loadSession(id), r.sessionType == "calibration" else { continue }
+            return (id, now.timeIntervalSince(r.openedAt))
+        }
+        return nil
+    }
+
+    /// A calibration run writes one file per `(shutter, ISO)` setting, because
+    /// that is its abort unit (#15) — a fault costs one chunk and the run
+    /// resumes, rather than discarding 336 frames.
+    static func writeDarkSetting(_ record: DarkSettingRecord, sessionId: String, index: Int) throws {
+        let name = String(format: "dark-%03d.json", index)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(record).write(to: directory(for: sessionId).appendingPathComponent(name))
+    }
+
+    /// Deletes the frames of one dark setting. Named by the same prefix the
+    /// filenames carry, so an abandoned setting leaves nothing behind.
+    static func deleteDarkSettingFrames(sessionId: String, setting: Int) {
+        let prefix = String(format: "%@_d%03d_", sessionId, setting)
+        let dir = directory(for: sessionId)
+        let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+        for f in files where f.lastPathComponent.hasPrefix(prefix) {
+            try? FileManager.default.removeItem(at: f)
+        }
+    }
+
+    /// `<session>_d004_r02_1x.dng` — setting, repeat, sensor. A dark frame has
+    /// no station and no bracket, so it does not borrow that naming.
+    static func darkFrameFilename(sessionId: String, setting: Int, repeatIndex: Int, sensor: String) -> String {
+        String(format: "%@_d%03d_r%02d_%@.dng", sessionId, setting, repeatIndex, sensor)
     }
 
     static func existingSessionIds() -> [String] {
