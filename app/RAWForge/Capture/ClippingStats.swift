@@ -92,6 +92,26 @@ struct ClippingStats: Codable, Equatable {
         let modeCount: Int
         var modeFraction: Double { count > 0 ? Double(modeCount) / Double(count) : 0 }
 
+        /// #12 specifies these exactly: the fraction of pixels at or above the
+        /// white level and at or below the black level, per CFA channel, over
+        /// the `ActiveArea` crop, black-subtracted and normalised to 0-1 so a
+        /// telephoto reading is comparable to a wide one.
+        ///
+        /// Two ceilings are reported rather than one, because they disagree.
+        /// `fractionAtOrAboveDeclaredWhite` uses `WhiteLevel` as the spec says —
+        /// and is **almost always zero**, because saturation sits well below the
+        /// declared ceiling. `fractionAtOrAboveObservedCeiling` uses this
+        /// channel's own maximum, which is where clipping actually happens.
+        /// Recording both keeps the discrepancy visible instead of choosing one
+        /// and being quietly wrong.
+        let fractionAtOrAboveDeclaredWhite: Double
+        let fractionAtOrAboveObservedCeiling: Double
+        let fractionAtOrBelowBlack: Double
+
+        /// Percentiles black-subtracted and normalised against the observed
+        /// ceiling, so sensors with different scales compare directly.
+        let p50Normalised: Double, p99Normalised: Double
+
         /// 256-bin histogram over the full 16-bit range, so a reader can apply
         /// any saturation threshold retrospectively. Exact percentiles above
         /// come from the full-resolution histogram, not from these bins.
@@ -201,11 +221,28 @@ struct ClippingStats: Codable, Equatable {
                 modeValue = value; modeCount = h[value]
             }
 
+            // Levels arrive in DNG units while the histogram is in buffer
+            // units, so scale before comparing — the two differ by 4x.
+            let scale = bufferScale(for: format, declaredWhite: whiteLevel) ?? 1
+            let blackB = (blackLevel ?? 0) * scale
+            let whiteB = (whiteLevel ?? 65535) * scale
+            var atOrAboveWhite = 0, atOrBelowBlack = 0
+            for value in lo...hi where h[value] > 0 {
+                if Double(value) >= whiteB { atOrAboveWhite += h[value] }
+                if Double(value) <= blackB { atOrBelowBlack += h[value] }
+            }
+            let span = Swift.max(Double(hi) - blackB, 1)
+
             channels.append(Channel(
                 cfaPosition: pos, colour: labels[pos], count: total,
                 min: lo, max: hi, mean: sum / Double(total),
                 p50: p50, p90: p90, p99: p99, p999: p999,
                 countAtMax: h[hi], modeValue: modeValue, modeCount: modeCount,
+                fractionAtOrAboveDeclaredWhite: Double(atOrAboveWhite) / Double(total),
+                fractionAtOrAboveObservedCeiling: Double(h[hi]) / Double(total),
+                fractionAtOrBelowBlack: Double(atOrBelowBlack) / Double(total),
+                p50Normalised: (Double(p50) - blackB) / span,
+                p99Normalised: (Double(p99) - blackB) / span,
                 histogram256: bins))
         }
 

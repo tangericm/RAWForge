@@ -25,6 +25,13 @@ struct SessionRecord: Codable, Equatable {
 
     let capability: CapabilityReport
 
+    /// Recorded at session open (#11), against the conservative capacity figure
+    /// rather than the one that counts purgeable space. A session that ran out
+    /// of room should be diagnosable from the log rather than from the absence
+    /// of frames.
+    let availableCapacityBytesAtOpen: Int64?
+    let capacityMeasuredWith: String
+
     /// Named at open so the reason a sensor is missing from the frames is in
     /// the file rather than inferred (#6).
     let excluded: [Exclusion]
@@ -35,9 +42,12 @@ struct SessionRecord: Codable, Equatable {
     }
 
     static let currentFormat = "rawforge.session"
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
 
-    init(sessionId: String, openedAt: Date, openedAtUptime: TimeInterval, capability: CapabilityReport) {
+    init(sessionId: String, openedAt: Date, openedAtUptime: TimeInterval,
+         capability: CapabilityReport, availableCapacityBytes: Int64?) {
+        self.availableCapacityBytesAtOpen = availableCapacityBytes
+        self.capacityMeasuredWith = "URLResourceValues.volumeAvailableCapacity"
         self.format = Self.currentFormat
         self.schemaVersion = Self.currentSchemaVersion
         self.sessionId = sessionId

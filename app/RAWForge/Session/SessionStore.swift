@@ -1,3 +1,5 @@
+import ImageIO
+import UIKit
 import Foundation
 
 /// One directory per session, frames flat inside it (#9).
@@ -25,6 +27,29 @@ enum SessionStore {
             .appendingPathComponent("sessions", isDirectory: true)
     }
 
+    /// Measured budget from #11: 1,675 real iPhone DNGs averaged 10.0 MB with a
+    /// maximum of 30.7 MB. The average sizes a pre-flight estimate; the maximum
+    /// is what a worst case should be checked against.
+    static let averageFrameBytes: Int64 = 10_000_000
+    static let worstCaseFrameBytes: Int64 = 30_700_000
+
+    /// The conservative figure, deliberately **not**
+    /// `volumeAvailableCapacityForImportantUsage` (#11) — that one counts
+    /// purgeable space the system may or may not actually release, which is the
+    /// wrong number to promise a field session against.
+    static func availableCapacityBytes() -> Int64? {
+        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        return (try? url.resourceValues(forKeys: [.volumeAvailableCapacityKey]))?
+            .volumeAvailableCapacity.map(Int64.init)
+    }
+
+    /// Storage exhausted is a hard fault (#10). Checked before a station fires
+    /// rather than discovered mid-write, so the station never half-exists.
+    static func hasRoom(forFrames n: Int) -> Bool {
+        guard let free = availableCapacityBytes() else { return true }
+        return free > Int64(n) * worstCaseFrameBytes
+    }
+
     static func directory(for sessionId: String) -> URL {
         sessionsRoot.appendingPathComponent(sessionId, isDirectory: true)
     }
@@ -49,7 +74,8 @@ enum SessionStore {
             sessionId: makeSessionId(now),
             openedAt: now,
             openedAtUptime: ProcessInfo.processInfo.systemUptime,
-            capability: capability)
+            capability: capability,
+            availableCapacityBytes: availableCapacityBytes())
 
         let dir = directory(for: record.sessionId)
         do {
@@ -57,6 +83,14 @@ enum SessionStore {
         } catch {
             throw StoreError.cannotCreateDirectory(error.localizedDescription)
         }
+
+        // #11: a ten-station scene runs to ~2 GB, and without this every one of
+        // those bytes goes into every iCloud backup. Set on the sessions root
+        // so it covers sessions not yet created.
+        var root = sessionsRoot
+        var flag = URLResourceValues()
+        flag.isExcludedFromBackup = true
+        try? root.setResourceValues(flag)
 
         do {
             let encoder = JSONEncoder()
@@ -146,6 +180,56 @@ enum SessionStore {
         // completed or never existed (#10), so nothing of it survives.
         let motion = dir.appendingPathComponent(String(format: "motion-%03d.jsonl", station))
         try? FileManager.default.removeItem(at: motion)
+    }
+
+    // MARK: - Reading back, for the log browser (#12)
+
+    private static var decoder: JSONDecoder {
+        let d = JSONDecoder(); d.dateDecodingStrategy = .iso8601; return d
+    }
+
+    static func loadSession(_ sessionId: String) -> SessionRecord? {
+        let url = directory(for: sessionId).appendingPathComponent("session.json")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? decoder.decode(SessionRecord.self, from: data)
+    }
+
+    static func loadStations(_ sessionId: String) -> [StationRecord] {
+        let dir = directory(for: sessionId)
+        let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+        return files
+            .filter { $0.lastPathComponent.hasPrefix("station-") && $0.pathExtension == "json" }
+            .compactMap { try? Data(contentsOf: $0) }
+            .compactMap { try? decoder.decode(StationRecord.self, from: $0) }
+            .sorted { $0.stationIndex < $1.stationIndex }
+    }
+
+    static func frameAndStationCount(sessionId: String) -> (stations: Int, frames: Int, megabytes: Int) {
+        let dir = directory(for: sessionId)
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: [.fileSizeKey])) ?? []
+        let frames = files.filter { $0.pathExtension == "dng" }
+        let bytes = frames.reduce(0) { $0 + (((try? $1.resourceValues(forKeys: [.fileSizeKey]))?.fileSize) ?? 0) }
+        let stations = files.filter { $0.lastPathComponent.hasPrefix("station-") && $0.pathExtension == "json" }
+        return (stations.count, frames.count, bytes / 1_000_000)
+    }
+
+    /// The DNG's **own** embedded preview. `CreateThumbnailFromImageIfAbsent` is
+    /// deliberately false: #12 allows reading a thumbnail that exists and
+    /// forbids generating one, because generating it would mean demosaicing the
+    /// Bayer payload and putting a tone-mapped picture on screen while
+    /// appearing to show the data being kept.
+    static func embeddedThumbnail(sessionId: String, filename: String, maxPixel: Int = 160) -> UIImage? {
+        let url = directory(for: sessionId).appendingPathComponent(filename)
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageIfAbsent: false,
+            kCGImageSourceCreateThumbnailFromImageAlways: false,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, options as CFDictionary) else { return nil }
+        return UIImage(cgImage: cg)
     }
 
     static func existingSessionIds() -> [String] {
