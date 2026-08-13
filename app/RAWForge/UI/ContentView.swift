@@ -121,6 +121,21 @@ struct ContentView: View {
 
     private func resultSection(_ station: StationRecord) -> some View {
         Section("Station \(station.stationIndex)") {
+            // Surfaced, never acted on. Motion is a recorded observable and the
+            // workstation decides what it means (#10, amended).
+            if let m = station.motion {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(m.advisory.operatorNote)
+                        .font(.caption).bold()
+                        .foregroundStyle(m.advisory == .tripodLike ? .green
+                                         : m.advisory == .elevated ? .orange : .red)
+                    Text(String(format: "gyro p50 %.5f · p99 %.5f · max %.5f rad/s",
+                                m.gyroP50, m.gyroP99, m.gyroMax))
+                        .font(.caption2).monospaced()
+                    Text("advisory only — no frames are discarded on motion")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
             ForEach(Array(station.sensorSwaps.enumerated()), id: \.offset) { _, s in
                 Text("\(s.fromSensor ?? "open") → \(s.toSensor): "
                      + String(format: "%.0f ms", s.durationSeconds * 1000))
