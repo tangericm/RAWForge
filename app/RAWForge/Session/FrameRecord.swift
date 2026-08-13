@@ -45,6 +45,12 @@ struct FrameRecord: Codable, Equatable {
     /// `photoTimestampSeconds` where available. Nil for the first frame.
     let gapFromPreviousSeconds: TimeInterval?
 
+    /// Per-CFA-channel distribution of the real Bayer payload over the
+    /// `ActiveArea` crop (#8). A recorded number, never a verdict — the
+    /// workstation decides what counts as clipped, and can revise that decision
+    /// against frames already shot because the histogram is kept.
+    let clipping: ClippingStats?
+
     /// How still the device was held across this frame's exposure. Recorded,
     /// never judged — motion is an observable and never a pose (#10), and the
     /// threshold that will eventually gate a station abort comes from these

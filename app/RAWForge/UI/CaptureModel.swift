@@ -211,6 +211,13 @@ final class CaptureModel: ObservableObject {
                 bracket: bracketIndex, frame: index, sensor: sensor.rawValue)
             _ = try SessionStore.writeFrame(data, named: filename, sessionId: session.sessionId)
 
+            let witness = DNGMetadata.read(data)
+            let clip = ClippingStats.compute(
+                from: photo, bayerFormat: rig.bayerFormat,
+                activeArea: witness.activeArea,
+                blackLevel: witness.blackLevel?.first,
+                whiteLevel: witness.whiteLevel?.first)
+
             let stamp = photo.timestamp.isValid ? photo.timestamp.seconds : nil
             let uptimeNow = ProcessInfo.processInfo.systemUptime
             // The exposure window has already elapsed by the time the photo is
@@ -226,12 +233,13 @@ final class CaptureModel: ObservableObject {
                     shutterSeconds: spec.shutterSeconds, iso: spec.iso, whiteBalanceGains: wb.set),
                 deviceAchieved: device,
                 photoAchieved: Self.exposure(from: photo, wb: wb.readBack),
-                dng: DNGMetadata.read(data),
+                dng: witness,
                 zoomFactor: rig.currentZoomFactor,
                 capturedAtUptime: ProcessInfo.processInfo.systemUptime,
                 capturedAt: Date(),
                 photoTimestampSeconds: stamp,
                 gapFromPreviousSeconds: zip(stamp, previousTimestamp).map { $0 - $1 },
+                clipping: clip,
                 motion: exposureWindow.flatMap { motionRecorder.summary(from: $0.0, to: $0.1) },
                 motionNeighbourhood: neighbourhood.flatMap { motionRecorder.summary(from: $0.0, to: $0.1) },
                 uptimeAtDelivery: uptimeNow,
