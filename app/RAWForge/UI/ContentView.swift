@@ -24,6 +24,9 @@ struct ContentView: View {
                 }
             }
             .navigationTitle("RAWForge")
+            .toolbar {
+                NavigationLink(destination: SessionBrowser()) { Text("Sessions") }
+            }
             .task { await model.probe() }
         }
     }
@@ -79,8 +82,26 @@ struct ContentView: View {
                 LabeledContent("Min inter-frame gap",
                                value: model.minimumGap == 0 ? "none" : String(format: "%.2fs", model.minimumGap))
             }
-            TextField("Pose intent (e.g. tripod-rigid, handheld)", text: $model.poseIntent)
+            // Presets plus free text. Two stations have already been mislabelled
+            // — one typo that would split a condition under exact-string
+            // grouping, one left blank entirely — and the label is the only
+            // thing distinguishing conditions that differ solely in how the
+            // phone was held.
+            Picker("Pose", selection: $model.poseIntent) {
+                Text("— unset —").tag("")
+                ForEach(CaptureModel.poseIntentPresets, id: \.self) { Text($0).tag($0) }
+                if !model.poseIntent.isEmpty
+                    && !CaptureModel.poseIntentPresets.contains(model.poseIntent) {
+                    Text(model.poseIntent).tag(model.poseIntent)
+                }
+            }
+            TextField("or type one", text: $model.poseIntent)
                 .font(.callout)
+            if model.poseIntent.isEmpty {
+                Text("unlabelled — a station with no pose intent cannot be told "
+                     + "apart later from one held differently")
+                    .font(.caption2).foregroundStyle(.orange)
+            }
             Button("Run station") { Task { await model.runStation() } }
                 .disabled(model.session == nil || model.busy)
             Button("White-balance pixel probe (item 3)") { Task { await model.runWhiteBalanceProbe() } }

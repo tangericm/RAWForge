@@ -32,6 +32,14 @@ final class CaptureModel: ObservableObject {
     /// Pose intent — the mounting condition or scene note (#9). Item 21 needs
     /// three conditions distinguishable in the log, not just in memory.
     @Published var poseIntent: String = ""
+
+    /// Offered as presets so the common conditions are spelled consistently.
+    /// Free text stays available — the point is to make the ordinary case
+    /// one tap, not to constrain what a station can be.
+    static let poseIntentPresets = [
+        "tripod-rigid", "tripod-soft", "handheld",
+        "dark-frame", "calibration",
+    ]
     @Published private(set) var zoomProbe: ZoomProbeResult?
 
     /// A station is a pose and may span sensors (#7). The shot list names which
@@ -97,6 +105,18 @@ final class CaptureModel: ObservableObject {
 
         busy = true
         defer { busy = false; progress = "" }
+
+        // Storage exhausted is a hard fault (#10), checked before anything
+        // fires so the station never half-exists. Worst-case frame size, not
+        // average — a station that runs out mid-write is the failure this
+        // avoids.
+        let plannedFrames = sensors.count * currentSet.specs.count
+        guard SessionStore.hasRoom(forFrames: plannedFrames) else {
+            let free = SessionStore.availableCapacityBytes() ?? 0
+            status = "storage exhausted — \(plannedFrames) frames need up to "
+                + "\(plannedFrames * 30) MB, \(free / 1_000_000) MB free. Station not started."
+            return
+        }
 
         stationIndex += 1
         let station = stationIndex
