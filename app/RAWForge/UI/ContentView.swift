@@ -1,0 +1,229 @@
+import SwiftUI
+
+struct ContentView: View {
+    @StateObject private var model = CaptureModel()
+
+    /// Standard stops. Rails are validated against the sensor before anything
+    /// fires, and a rung outside them is dropped and recorded, never clamped.
+    private let shutters: [(String, Double)] = [
+        ("1/2000", 1.0/2000), ("1/1000", 1.0/1000), ("1/500", 1.0/500),
+        ("1/250", 1.0/250), ("1/125", 1.0/125), ("1/60", 1.0/60),
+        ("1/30", 1.0/30), ("1/15", 1.0/15), ("1/8", 1.0/8),
+        ("1/4", 1.0/4), ("1/2", 1.0/2), ("1s", 1.0),
+    ]
+
+    var body: some View {
+        NavigationStack {
+            List {
+                statusSection
+                if let report = model.report {
+                    if report.canCapture { captureSection(report); setSection } else { refusalSection }
+                    if let station = model.lastStation { resultSection(station) }
+                    ForEach(report.sensors) { SensorRow(sensor: $0) }
+                    deviceSection(report.device)
+                }
+            }
+            .navigationTitle("RAWForge")
+            .task { await model.probe() }
+        }
+    }
+
+    private var statusSection: some View {
+        Section {
+            Text(model.status).font(.callout)
+            if !model.progress.isEmpty {
+                Text(model.progress).font(.caption).foregroundStyle(.secondary)
+            }
+            if let session = model.session {
+                LabeledContent("Session", value: session.sessionId)
+            } else if model.report?.canCapture == true {
+                Button("Open session") { model.openSession() }
+            }
+            if model.busy { ProgressView() }
+        }
+    }
+
+    private func captureSection(_ report: CapabilityReport) -> some View {
+        Section("Capture set") {
+            // A station is a pose and may span sensors (#7); pinning to one
+            // is a shot list of length one, not a separate mode.
+            ForEach(report.usableSensors) { cap in
+                Toggle(cap.sensor.rawValue, isOn: Binding(
+                    get: { model.selectedSensors.contains(cap.sensor) },
+                    set: { on in
+                        if on { model.selectedSensors.insert(cap.sensor) }
+                        else { model.selectedSensors.remove(cap.sensor) }
+                    }))
+            }
+            Picker("Execution", selection: $model.mode) {
+                ForEach(ExecutionMode.allCases) { Text($0.label).tag($0) }
+            }
+            Toggle("Sweep exposure", isOn: $model.isSweep)
+            Stepper(value: $model.frameCount, in: 1...512) {
+                LabeledContent("Frames", value: "\(model.frameCount)")
+            }
+            if model.isSweep {
+                Stepper(value: $model.stopsPerRung, in: 0.25...3, step: 0.25) {
+                    LabeledContent("Stops per rung", value: String(format: "%.2f", model.stopsPerRung))
+                }
+            }
+            Picker(model.isSweep ? "Centre shutter" : "Shutter", selection: $model.requestedShutter) {
+                ForEach(shutters, id: \.1) { Text($0.0).tag($0.1) }
+            }
+            if let cap = model.orderedSensors.compactMap(model.capability).first, let lo = cap.minISO, let hi = cap.maxISO {
+                Stepper(value: $model.requestedISO, in: lo...hi, step: max(1, lo)) {
+                    LabeledContent("ISO", value: String(format: "%.0f", model.requestedISO))
+                }
+            }
+            Stepper(value: $model.minimumGap, in: 0...5, step: 0.25) {
+                LabeledContent("Min inter-frame gap",
+                               value: model.minimumGap == 0 ? "none" : String(format: "%.2fs", model.minimumGap))
+            }
+            TextField("Pose intent (e.g. tripod-rigid, handheld)", text: $model.poseIntent)
+                .font(.callout)
+            Button("Run station") { Task { await model.runStation() } }
+                .disabled(model.session == nil || model.busy)
+            Button("White-balance pixel probe (item 3)") { Task { await model.runWhiteBalanceProbe() } }
+                .disabled(model.session == nil || model.busy)
+            Button("Zoom enforcement probe (item 10)") { Task { await model.runZoomProbe() } }
+                .disabled(model.session == nil || model.busy)
+            if let z = model.zoomProbe {
+                Text(z.verdict).font(.caption).foregroundStyle(.orange)
+            }
+        }
+    }
+
+    /// The rendered set, shown before it runs — a sweep is a generator, and
+    /// these are the rungs it actually produced.
+    private var setSection: some View {
+        Section("Rungs (\(model.currentSet.specs.count))") {
+            Text(model.currentSet.generator.describe).font(.caption).foregroundStyle(.secondary)
+            if let cap = model.orderedSensors.compactMap(model.capability).first {
+                let checked = model.currentSet.validated(against: cap)
+                ForEach(Array(checked.kept.prefix(12).enumerated()), id: \.offset) { i, s in
+                    Text("\(i + 1). \(s.shutterLabel) · ISO \(Int(s.iso))").font(.caption).monospaced()
+                }
+                if checked.kept.count > 12 {
+                    Text("… \(checked.kept.count - 12) more").font(.caption).foregroundStyle(.secondary)
+                }
+                ForEach(Array(checked.dropped.enumerated()), id: \.offset) { _, d in
+                    Text("dropped: \(d.spec.shutterLabel) ISO \(Int(d.spec.iso)) — \(d.reason)")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+                if model.mode == .hardwareBracket, checked.kept.count > cap.maxBracketedCapturePhotoCount {
+                    Text("\(checked.kept.count) exceeds this sensor's bracket max of "
+                         + "\(cap.maxBracketedCapturePhotoCount) — use sequential")
+                        .font(.caption).foregroundStyle(.red)
+                }
+            }
+        }
+    }
+
+    private func resultSection(_ station: StationRecord) -> some View {
+        Section("Station \(station.stationIndex)") {
+            ForEach(Array(station.sensorSwaps.enumerated()), id: \.offset) { _, s in
+                Text("\(s.fromSensor ?? "open") → \(s.toSensor): "
+                     + String(format: "%.0f ms", s.durationSeconds * 1000))
+                    .font(.caption).monospaced().foregroundStyle(.purple)
+            }
+            ForEach(Array(station.brackets.enumerated()), id: \.offset) { _, b in
+                Text("\(b.sensor) · \(b.frames.count) frames · \(b.executionMode ?? "?")")
+                    .font(.caption).bold()
+                ForEach(Array(b.frames.enumerated()), id: \.offset) { _, f in
+                    FrameRow(frame: f)
+                }
+            }
+        }
+    }
+
+    private var refusalSection: some View {
+        Section("Capture refused") {
+            Text("Undemosaiced Bayer RAW is the only thing this app exists to produce. "
+                 + "No sensor on this device offers it, so there is no instrument here.")
+                .font(.footnote)
+        }
+    }
+
+    private func deviceSection(_ device: DeviceIdentity) -> some View {
+        Section("Device") {
+            LabeledContent("Model", value: device.modelIdentifier)
+            LabeledContent("OS", value: "\(device.systemName) \(device.systemVersion)")
+            LabeledContent("App", value: "\(device.appVersion) (\(device.appBuild))")
+            if device.isSimulator {
+                Text("Simulator — no sensor exists here, and no session recorded "
+                     + "on it is a calibration source.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
+/// Capabilities are reflected, never judged (#6): every sensor is listed, and
+/// the unusable ones name their specific shortfall rather than vanishing.
+private struct SensorRow: View {
+    let sensor: SensorCapability
+
+    var body: some View {
+        Section(header: header) {
+            if let reason = sensor.exclusionReason {
+                Text(reason).font(.footnote).foregroundStyle(.secondary)
+            }
+            if sensor.localizedName != nil {
+                row("Bayer format", sensor.bayerFormatFourCC ?? "none")
+                row("Max bracket count", "\(sensor.maxBracketedCapturePhotoCount)")
+                row("Custom exposure", sensor.supportsCustomExposure ? "yes" : "no")
+                row("WB gain lock", sensor.supportsWhiteBalanceCustomGainLock ? "yes" : "no")
+                row("Max WB gain", String(format: "%.2f", sensor.maxWhiteBalanceGain))
+                if let lo = sensor.minISO, let hi = sensor.maxISO {
+                    row("ISO", String(format: "%.0f–%.0f", lo, hi))
+                }
+                if let lo = sensor.minExposureSeconds, let hi = sensor.maxExposureSeconds {
+                    row("Exposure", String(format: "%.6fs–%.3fs", lo, hi))
+                }
+                if !sensor.zoomAssertionHeld {
+                    row("⚠︎ minZoomFactor", String(format: "%.3f — documented as 1.0", sensor.minAvailableVideoZoomFactor))
+                }
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack {
+            Text(sensor.sensor.rawValue)
+            Spacer()
+            Text(sensor.isUsable ? "Bayer" : "unavailable")
+                .foregroundStyle(sensor.isUsable ? .green : .secondary)
+        }
+    }
+
+    private func row(_ label: String, _ value: String) -> some View {
+        LabeledContent(label) { Text(value).monospaced().font(.caption) }
+    }
+}
+
+/// The four witnesses, side by side. Requested, the device's read-back, the
+/// photo's own EXIF and the written DNG are four distinct claims, and the
+/// disagreement between them is the finding (#9).
+private struct FrameRow: View {
+    let frame: FrameRecord
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            line("req", frame.requested.shutterSeconds)
+            if let d = frame.deviceAchieved { line("dev", d.shutterSeconds) }
+            if let p = frame.photoAchieved { line("exif", p.shutterSeconds) }
+            if let v = frame.dng.exposureTimeSeconds { line("dng", v) }
+            Text(frame.dng.uniqueCameraModel ?? "-")
+                .font(.caption2).foregroundStyle(.secondary)
+            if let g = frame.gapFromPreviousSeconds {
+                Text(String(format: "gap %.1f ms", g * 1000))
+                    .font(.caption2).monospaced().foregroundStyle(.blue)
+            }
+        }
+    }
+
+    private func line(_ label: String, _ seconds: Double) -> some View {
+        Text(String(format: "%-4@ %.6fs", label as NSString, seconds))
+            .font(.caption2).monospaced()
+    }
+}

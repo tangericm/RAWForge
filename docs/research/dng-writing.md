@@ -40,6 +40,13 @@ Three qualifications, and one of them is serious:
 
 **The caveat that matters.** These files were shot with **Halide Process Zero**, not by a harness calling `fileDataRepresentation()` directly. That is stated in the photonforge issue-22 capture record (`C:\data\photonforge\reports\issue22\issue22-resolution.md`, line 5), not inferred.
 
+> **Closed 2026-08-13.** RAWForge now captures and writes its own frames through
+> `fileDataRepresentation()`, and the measured values match: `PhotometricInterpretation = Color Filter
+> Array`, BGGR on 1x, `BlackLevel` 528 scalar, `WhiteLevel` 4095, `ImageWidth` 4224 against
+> `ActiveArea` 4032, `NoiseReductionApplied = 0/0`. The container is Apple's, confirmed rather than
+> inferred, and every `[MEAS]` row below can be read as unqualified. See
+> [#14](https://github.com/tangericm/RAWForge/issues/14).
+
 So strictly, **I measured what Halide's output looks like, not what a direct AVFoundation call emits.** Two observations bear on whether that distinction bites, and both are inference, not proof:
 
 - The `Software` tag reads `26.5.2` — the bare iOS version, with no application name. A hand-rolled writer would have little reason to stamp the OS version and omit itself. **[INF]**

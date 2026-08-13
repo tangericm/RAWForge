@@ -48,8 +48,10 @@ checkpoints/
 *.xcworkspace/
 xcuserdata/
 DerivedData/
+.build/
 .swiftpm/
 probes/device-probe/Info.plist
+app/Info.plist
 
 # Editors / OS
 .vscode/

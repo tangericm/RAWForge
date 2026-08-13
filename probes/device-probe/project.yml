@@ -24,6 +24,10 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.tangericm.rawforge.deviceprobe
+        # Xcode 26 no longer supplies a default, so without this the product
+        # builds as bare ".app" and two tasks race to produce it.
+        PRODUCT_NAME: "$(TARGET_NAME)"
+        ALWAYS_SEARCH_USER_PATHS: "NO"
         TARGETED_DEVICE_FAMILY: "1"      # iPhone only
         SWIFT_VERSION: "5.0"             # the motion sampler captures across a
                                          # queue on purpose; Swift 6 strict

@@ -33,6 +33,10 @@ final class CaptureRig {
     private(set) var device: AVCaptureDevice?
     private(set) var bayerFormat: OSType = 0
 
+    /// True when the RAW format list stayed empty until the session was running.
+    /// A finding in its own right, not just an implementation detail.
+    private(set) var formatNeededRunningSession = false
+
     /// Held strongly for the lifetime of a capture — the delegate is otherwise
     /// deallocated the moment the call returns and the callbacks never fire.
     private var activeCollector: PhotoCaptureCollector?
@@ -73,11 +77,24 @@ final class CaptureRig {
         session.commitConfiguration()
 
         // Pick a genuine Bayer format from what the device actually offers.
-        // availableRawPhotoPixelFormatTypes is [NSNumber]; unwrap to OSType.
-        bayerFormat = output.availableRawPhotoPixelFormatTypes
-            .map { $0.uint32Value }
-            .first { AVCapturePhotoOutput.isBayerRAWPixelFormat($0) } ?? 0
+        // Apple documents this list as populated once the output is connected to
+        // a session, but never says whether that session must be *running*. Try
+        // before starting; if the list is empty, start and try again. Which of
+        // the two worked is recorded rather than papered over — it is a fact
+        // about the API that the real app's session-open path has to honour.
+        bayerFormat = firstBayerFormat()
+        if bayerFormat == 0 {
+            session.startRunning()
+            bayerFormat = firstBayerFormat()
+            formatNeededRunningSession = bayerFormat != 0
+        }
         guard bayerFormat != 0 else { throw RigError.noBayerFormat }
+    }
+
+    /// availableRawPhotoPixelFormatTypes imports as [OSType] — no NSNumber unwrap.
+    private func firstBayerFormat() -> OSType {
+        output.availableRawPhotoPixelFormatTypes
+            .first { AVCapturePhotoOutput.isBayerRAWPixelFormat($0) } ?? 0
     }
 
     func startSession() {
@@ -94,7 +111,6 @@ final class CaptureRig {
         guard let d = device else { return "device: <none>" }
         let f = d.activeFormat
         let raws = output.availableRawPhotoPixelFormatTypes
-            .map { $0.uint32Value }
             .map { fourCC($0) + (AVCapturePhotoOutput.isBayerRAWPixelFormat($0) ? "(bayer)" : "(other)") }
             .joined(separator: " ")
         return """
@@ -105,6 +121,7 @@ final class CaptureRig {
         maxBracketedCapturePhotoCount: \(output.maxBracketedCapturePhotoCount)
         raw formats: \(raws)
         chosen Bayer format: \(fourCC(bayerFormat))
+        RAW format list required a running session: \(formatNeededRunningSession)
         maxPhotoQualityPrioritization: \(output.maxPhotoQualityPrioritization.rawValue)
         """
     }
@@ -137,7 +154,7 @@ final class CaptureRig {
             blueGain: min(max(b, 1.0), hi))
         try d.lockForConfiguration()
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            d.setWhiteBalanceModeLockedWithDeviceGains(gains) { _ in cont.resume() }
+            d.setWhiteBalanceModeLocked(with: gains) { _ in cont.resume() }
         }
         d.unlockForConfiguration()
         return gains
@@ -190,6 +207,11 @@ final class CaptureRig {
 /// bracketed frames have been delivered.
 private final class PhotoCaptureCollector: NSObject, AVCapturePhotoCaptureDelegate {
     private var photos: [AVCapturePhoto] = []
+    private var firstError: Error?
+    /// Both callbacks can fire for one request, and a bracket calls the
+    /// per-photo one repeatedly. Resuming a continuation twice is a hard crash,
+    /// so the result is delivered exactly once, from `didFinishCaptureFor`.
+    private var finished = false
     private let done: (Result<[AVCapturePhoto], Error>) -> Void
 
     init(done: @escaping (Result<[AVCapturePhoto], Error>) -> Void) {
@@ -199,15 +221,25 @@ private final class PhotoCaptureCollector: NSObject, AVCapturePhotoCaptureDelega
     func photoOutput(_ output: AVCapturePhotoOutput,
                      didFinishProcessingPhoto photo: AVCapturePhoto,
                      error: Error?) {
-        if let error { done(.failure(error)); return }
+        // A per-frame error is recorded, not thrown: the remaining frames of a
+        // bracket still arrive, and how many landed is itself the item-1 result.
+        if let error {
+            if firstError == nil { firstError = error }
+            return
+        }
         photos.append(photo)
     }
 
     func photoOutput(_ output: AVCapturePhotoOutput,
                      didFinishCaptureFor resolvedSettings: AVCaptureResolvedPhotoSettings,
                      error: Error?) {
-        if let error { done(.failure(error)); return }
-        done(.success(photos))
+        guard !finished else { return }
+        finished = true
+        if let error = error ?? firstError {
+            done(.failure(error))
+        } else {
+            done(.success(photos))
+        }
     }
 }
 
