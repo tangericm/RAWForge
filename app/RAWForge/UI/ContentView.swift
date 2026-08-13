@@ -104,6 +104,16 @@ struct ContentView: View {
             }
             Button("Run station") { Task { await model.runStation() } }
                 .disabled(model.session == nil || model.busy)
+            Stepper(value: $model.darkRepeats, in: 1...32) {
+                LabeledContent("Dark repeats", value: "\(model.darkRepeats)")
+            }
+            Button("Dark-frame calibration (#15) — cap the lens") {
+                Task { await model.runDarkCalibration() }
+            }
+            .disabled(model.busy)
+            if !model.darkProgress.isEmpty {
+                Text(model.darkProgress).font(.caption2).foregroundStyle(.secondary)
+            }
             Button("White-balance pixel probe (item 3)") { Task { await model.runWhiteBalanceProbe() } }
                 .disabled(model.session == nil || model.busy)
             Button("Zoom enforcement probe (item 10)") { Task { await model.runZoomProbe() } }
