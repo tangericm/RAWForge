@@ -1,0 +1,47 @@
+# xcodegen spec for the RAWForge capture app.
+#
+#   brew install xcodegen        # once
+#   cd app
+#   xcodegen generate            # writes RAWForge.xcodeproj (git-ignored)
+#   open RAWForge.xcodeproj
+#
+# The .xcodeproj is generated, never committed — the spec is the source of
+# truth. Set your team in Signing & Capabilities.
+name: RAWForge
+options:
+  deploymentTarget:
+    iOS: "17.0"          # the platform floor settled in #6
+  createIntermediateGroups: true
+targets:
+  RAWForge:
+    type: application
+    platform: iOS
+    sources:
+      - path: RAWForge
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tangericm.rawforge
+        # Xcode 26 supplies no default; without this the product builds as a
+        # bare ".app" and two tasks race to produce it.
+        PRODUCT_NAME: "$(TARGET_NAME)"
+        ALWAYS_SEARCH_USER_PATHS: "NO"
+        TARGETED_DEVICE_FAMILY: "1"      # iPhone only
+        SWIFT_VERSION: "5.0"             # AVFoundation delegate callbacks land
+                                         # off the main actor; Swift 6 strict
+                                         # concurrency would reject the rig
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: "NO"
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: RAWForge
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        # Camera and nothing else (#11 — no photo library, no cloud). The
+        # file-sharing pair is what lets a session directory be dragged out
+        # of Files or off a cable.
+        NSCameraUsageDescription: "RAWForge captures Bayer RAW frames to a protocol."
+        NSMotionUsageDescription: "RAWForge records device motion alongside each frame."
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true

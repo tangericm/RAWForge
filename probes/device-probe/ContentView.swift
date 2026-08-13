@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import UIKit   // UIPasteboard
 
 /// Owns the rig and the probe suites, and drives them from the buttons. One
@@ -12,8 +13,18 @@ final class ProbeController: ObservableObject {
     private let rig = CaptureRig(deviceType: .builtInWideAngleCamera)
     private lazy var bayer = BayerProbes(rig: rig, log: log)
     private lazy var motion = MotionProbes(rig: rig, log: log)
+    private var logChanges: AnyCancellable?
 
-    init(log: ProbeLog) { self.log = log }
+    init(log: ProbeLog) {
+        self.log = log
+        // A nested ObservableObject does not republish through its parent, so
+        // without this the transcript only redraws when `busy` flips — i.e. the
+        // whole run appears at once, after it has finished. The point of the
+        // log is watching a probe as it goes, so forward the child's changes.
+        logChanges = log.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+    }
 
     func prepare() async {
         guard !prepared else { return }

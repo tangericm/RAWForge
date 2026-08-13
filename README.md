@@ -3,8 +3,12 @@
 **An iPhone capture app for photometrically deterministic RAW — bracketed, undemosaiced Bayer
 frames with metadata you can calibrate against, shot to a protocol instead of by hand.**
 
-> **Status: charting.** Nothing is built. The design spec is being worked out one decision at a
-> time on the project map: [`wayfinder:map`](https://github.com/tangericm/RAWForge/issues?q=label%3Awayfinder%3Amap).
+> **Status: building.** The design spec is settled — thirteen decisions closed on the project map
+> ([`wayfinder:map`](https://github.com/tangericm/RAWForge/issues?q=label%3Awayfinder%3Amap)) — and
+> the app now captures multi-sensor Bayer stations to disk with a capture log, an IMU stream and a
+> four-witness exposure record. The numbers in the table below are measured **by this app, on frames
+> it wrote**, not inherited from a third-party capture. What remains open is tracked on
+> [#14](https://github.com/tangericm/RAWForge/issues/14).
 
 ---
 
@@ -21,6 +25,9 @@ Consumer camera apps do not state, and cannot be assumed to hold, the properties
 
 - **True Bayer RAW, undemosaiced.** ProRAW is disqualified — it ships `NoiseReductionApplied = 0.95`,
   so the "clean" frame is already denoised and calibrating a noise model against it is circular.
+  The Bayer path is *not* the mirror image of that claim: it ships `NoiseReductionApplied = 0/0`,
+  which the DNG spec defines as **unknown, not zero**. Bayer being noise-reduction-free is
+  uncontradicted by the file, never asserted by it.
 - **Deterministic capture parameters.** Fixed white balance, known ISO and shutter, no per-frame
   adaptation, no zoom-dependent sensor switching.
 - **Brackets that share a pose.** Exposure stacks from a fixed station, grouped explicitly rather
@@ -73,14 +80,21 @@ Measured on an iPhone 15 Pro, not assumed — the numbers that constrain the des
 | Property | Finding |
 |---|---|
 | Format | True Bayer RAW on all three rear sensors; 12 MP only, 48 MP structurally unavailable |
-| Zoom | 2x is the main sensor cropped, not a fourth camera — it cannot be captured in RAW at all |
-| Useful ISO ceiling | ~8-9x each sensor's base ISO (1x: 400-450 · 0.5x: 250-267 · 3x: 144-156) |
+| Zoom | 2x is the main sensor cropped, not a fourth camera — it cannot be captured in RAW at all. Setting `videoZoomFactor != 1.0` **succeeds silently and then kills the process at capture**, with no catchable error, so the app enforces the invariant itself |
+| Useful ISO ceiling | ~8-9x each sensor's base ISO. Base ISO measured on device: **1x 55 · 0.5x 32 · tele 18** (hardware ceilings 12320 / 3072 / 2304) |
 | Consequence | Above that ceiling Apple applies pure digital gain — **bracket with shutter, not ISO** |
-| Exposure range | 1 s ceiling, 1/2000 s floor |
-| CFA pattern | Not uniform across the phone — 1x measures BGGR while 0.5x and 3x are RGGB |
-| Active area | `ImageWidth` 4224 against an `ActiveArea` of 4032 — 192 padding columns to crop |
+| Exposure range | 1 s ceiling. Floor **advertised** as ~1/66,000 s by `minExposureDuration` on all three sensors — the earlier 1/2000 s figure did not come from the device. Whether a capture honours the advertised floor is unmeasured ([#14](https://github.com/tangericm/RAWForge/issues/14) item 4) |
+| CFA pattern | Not uniform across the phone — 1x is BGGR while 0.5x and tele are RGGB, confirmed in-file on frames RAWForge wrote |
+| Active area | `ImageWidth` 4224 against an `ActiveArea` of 4032 — 192 padding columns to crop. `DefaultCropSize` agrees independently. Note ImageIO reports the *cropped* 4032 and hides the padding |
+| Opcodes | `OpcodeList1` and `2` are **absent** — nothing is owed before demosaic and nothing has been applied to the payload. `FixVignetteRadial` sits in list 3 (post-demosaic), plus `WarpRectilinear2` on the ultra-wide only |
+| Black level | Scalar 528 (`BlackLevelRepeatDim 1 1`), identical on all three sensors. `WhiteLevel` 4095 — 12-bit linear in a 16-bit container, no linearization table |
+| White balance | A locked WB reaches `AsShotNeutral` and **not the Bayer pixels** — measured at 1.00 where a pixel-level effect would have shown 9x. WB on this path is an annotation, not a transformation |
+| Bracket depth | `maxBracketedCapturePhotoCount` is **8** on all three sensors, and an 8-frame Bayer bracket succeeds. Beyond 8, capture is sequential |
+| Inter-frame gap | Hardware bracket: `max(33.4 ms, exposure)`. Sequential: 233-500 ms per frame, paid even when nothing changes between rungs |
+| Sensor swap | ~370-400 ms to reconfigure between sensors — longer than an entire 8-frame bracket |
 | `NoiseProfile` | A factor-of-2 sanity band, never a substitute for measured calibration |
 | Pose | Must come from SfM downstream — ARKit and RAW capture are mutually exclusive |
+| Motion | `CMDeviceMotion` is hard-capped at **100 Hz**, unaffected by capture in flight, and shares a timebase with `AVCapturePhoto.timestamp`. Handheld and tripod separate in the tail, not the median |
 
 ## What the API allows
 
@@ -96,9 +110,15 @@ Established from Apple's documentation, [issue #2](https://github.com/tangericm/
 - Manual-exposure brackets have a documented RAW initializer — no sequential-capture workaround needed.
 - Geometric distortion correction is never applied to RAW.
 
-What Apple does **not** document — most importantly whether a locked white balance reaches the Bayer
-pixels or is silently re-metered — is being measured on-device in
-[issue #14](https://github.com/tangericm/RAWForge/issues/14).
+What Apple does **not** document has now largely been measured on-device in
+[issue #14](https://github.com/tangericm/RAWForge/issues/14). The headline: a locked white balance
+reaches `AsShotNeutral` and **not** the Bayer pixels, and is not re-metered at capture — so the
+payload is the same data whatever the lock says.
+
+Two of Apple's documented claims turned out to need qualification. `videoZoomFactor == 1.0` is not
+*enforced* for Bayer: setting it away from 1.0 succeeds, and the violation terminates the process at
+capture rather than returning an error. And `photoQualityPrioritization` does not in practice block a
+manual-exposure Bayer bracket — an 8-frame bracket succeeds, which was the feared conflict.
 
 ## Non-goals
 
