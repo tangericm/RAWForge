@@ -36,6 +36,40 @@ struct MotionSummary: Codable, Equatable {
     let gyroP50: Double, gyroP90: Double, gyroP99: Double, gyroMax: Double
     let accelP50: Double, accelP90: Double, accelP99: Double, accelMax: Double
 
+    /// An advisory band for the operator, never a gate.
+    ///
+    /// #10 originally made motion over threshold a hard fault that aborts the
+    /// station and deletes its frames. Measured, that is not safely settable:
+    /// the maximum **grows with observation time** — 2.4x going from a 1 s
+    /// window to a 1.7 s station on a soft tripod — so a threshold calibrated
+    /// on short stations fires on long ones from the same mount and deletes
+    /// good frames. The handheld and tripod populations also overlap at the
+    /// median.
+    ///
+    /// So this classifies for display only. Nothing reads it to decide
+    /// anything, and the numbers beside it are what actually gets recorded.
+    enum Advisory: String, Codable {
+        case tripodLike       // at or below the measured soft-tripod band
+        case elevated         // between the tripod band and handheld
+        case handheldLike     // at or above the quietest measured handheld hold
+
+        var operatorNote: String {
+            switch self {
+            case .tripodLike:   return "motion in the tripod band"
+            case .elevated:     return "motion above tripod, below handheld — worth a look"
+            case .handheldLike: return "motion at handheld levels — the pose may not be shared"
+            }
+        }
+    }
+
+    /// Keyed on p99 rather than the maximum, because a percentile is far more
+    /// stable against station length than an extreme is.
+    var advisory: Advisory {
+        if gyroP99 <= 0.025 { return .tripodLike }
+        if gyroP99 < 0.085 { return .elevated }
+        return .handheldLike
+    }
+
     static func over(_ samples: [MotionSample], from start: TimeInterval, to end: TimeInterval) -> MotionSummary? {
         let inWindow = samples.filter { $0.t >= start && $0.t <= end }
         guard !inWindow.isEmpty else { return nil }
