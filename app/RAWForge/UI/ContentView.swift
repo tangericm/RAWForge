@@ -221,6 +221,16 @@ struct BenchView: View {
             LabeledContent("Model", value: device.modelIdentifier)
             LabeledContent("OS", value: "\(device.systemName) \(device.systemVersion)")
             LabeledContent("App", value: "\(device.appVersion) (\(device.appBuild))")
+            if let commit = device.appCommit, commit != "unknown" {
+                LabeledContent("Commit") {
+                    Text(commit).monospaced().font(.caption)
+                        .foregroundStyle(device.isDirtyBuild ? .orange : .secondary)
+                }
+                if device.isDirtyBuild {
+                    Text("Uncommitted changes — this build matches no commit.")
+                        .font(.caption2).foregroundStyle(.orange)
+                }
+            }
             LabeledContent("Health", value: model.health.summary)
             if let free = SessionStore.availableCapacityBytes() {
                 LabeledContent("Free space", value: SessionEstimate.formatBytes(free))
