@@ -12,6 +12,13 @@ SIMCTL_CHILD_RAWFORGE_MOCKUP=1 xcrun simctl launch <sim> com.tangericm.rawforge
 Source: [`app/RAWForge/UI/Mockups.swift`](../../app/RAWForge/UI/Mockups.swift).
 Reasoning and phasing: [`docs/roadmap.md`](../roadmap.md).
 
+## All four at once
+
+![All four mockups](all-four.png)
+
+Built by [`app/tools/contact-sheet.py`](../../app/tools/contact-sheet.py). Each
+panel is discussed below.
+
 ---
 
 ## 1 · The station as a schedule
