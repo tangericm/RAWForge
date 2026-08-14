@@ -29,6 +29,16 @@ final class CaptureModel: ObservableObject {
     @Published var stopsPerRung: Double = 1
     @Published var isSweep: Bool = true
     @Published var minimumGap: Double = 0
+
+    /// The protocol in force. Nil means the set is being authored from the
+    /// pickers below and has not been named — #8's "no silent default" says a
+    /// session is never shot under a protocol nobody chose, and an unnamed set
+    /// is a choice too, just an unsaved one.
+    @Published var selectedProtocol: CaptureSet?
+    @Published var protocolName: String = ""
+    @Published var savedProtocols: [CaptureSet] = []
+    /// Per-sensor EV offset in stops (#8). The sensors are not interchangeable.
+    @Published var evOffsets: [String: Double] = [:]
     /// Pose intent — the mounting condition or scene note (#9). Item 21 needs
     /// three conditions distinguishable in the log, not just in memory.
     @Published var poseIntent: String = ""
@@ -68,10 +78,45 @@ final class CaptureModel: ObservableObject {
     }
 
     var currentSet: CaptureSet {
+        if let p = selectedProtocol {
+            return CaptureSet(name: p.name, version: p.version, specs: p.specs,
+                              generator: p.generator, perSensorEVOffsetStops: evOffsets)
+        }
         let base = CaptureSpec(shutterSeconds: requestedShutter, iso: requestedISO)
-        return isSweep
+        let authored: CaptureSet = isSweep
             ? .shutterSweep(base: base, stopsPerRung: stopsPerRung, rungs: frameCount)
             : .repeated(base, count: frameCount)
+        return CaptureSet(name: authored.name, version: authored.version, specs: authored.specs,
+                          generator: authored.generator, perSensorEVOffsetStops: evOffsets)
+    }
+
+    /// #8 keeps ISO a legitimate axis but wants it **warned, not forbidden**:
+    /// above roughly 8-9x a sensor's base ISO, Apple applies pure digital gain,
+    /// so a ladder climbing in ISO past that point is buying nothing real.
+    func isoWarning(for sensor: SensorCapability.Sensor) -> String? {
+        guard let cap = capability(sensor), let base = cap.minISO else { return nil }
+        let ceiling = base * 8.5
+        guard requestedISO > ceiling else { return nil }
+        return String(format: "ISO %.0f is past ~8.5x %@'s base of %.0f — beyond that "
+                      + "the gain is digital, not analogue. Bracket with shutter.",
+                      requestedISO, sensor.rawValue, base)
+    }
+
+    func refreshProtocols() { savedProtocols = ProtocolLibrary.all() }
+
+    /// Saving bumps the version (#8's auto-bump), so a set edited mid-shoot is
+    /// distinguishable from the one shot ten minutes earlier.
+    func saveProtocol() {
+        let name = protocolName.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { status = "name the protocol before saving"; return }
+        do {
+            let stored = try ProtocolLibrary.save(currentSet, as: name)
+            selectedProtocol = stored
+            refreshProtocols()
+            status = "saved \(stored.name) v\(stored.version)"
+        } catch {
+            status = "could not save the protocol — \(error)"
+        }
     }
 
     // MARK: - Probe
@@ -163,11 +208,17 @@ final class CaptureModel: ObservableObject {
                 // Rails are per sensor: the same authored set validates
                 // differently against 1x and tele, and dropped rungs are
                 // recorded per bracket rather than for the station.
-                let checked = set.validated(against: cap)
+                // One definition, rendered per sensor by its EV offset (#8).
+                let offset = set.perSensorEVOffsetStops[sensor.rawValue] ?? 0
+                let renderedSet = CaptureSet(
+                    name: set.name, version: set.version, specs: set.rendered(for: sensor),
+                    generator: set.generator, perSensorEVOffsetStops: set.perSensorEVOffsetStops)
+                let checked = renderedSet.validated(against: cap)
                 guard !checked.kept.isEmpty else {
                     brackets.append(BracketRecord(
                         bracketIndex: bracketIndex + 1, sensor: sensor.rawValue,
                         sensorUniqueID: cap.uniqueID, captureSet: set,
+                        renderedSpecs: checked.kept, evOffsetStops: offset,
                         executionMode: mode.rawValue, droppedRungs: checked.dropped,
                         minimumInterFrameGapSeconds: nil, note: nil, frames: []))
                     continue
@@ -180,6 +231,7 @@ final class CaptureModel: ObservableObject {
                 brackets.append(BracketRecord(
                     bracketIndex: bracketIndex + 1, sensor: sensor.rawValue,
                     sensorUniqueID: cap.uniqueID, captureSet: set,
+                    renderedSpecs: checked.kept, evOffsetStops: offset,
                     executionMode: mode.rawValue, droppedRungs: checked.dropped,
                     minimumInterFrameGapSeconds: minimumGap > 0 ? minimumGap : nil,
                     note: nil, frames: frames))
@@ -494,7 +546,8 @@ final class CaptureModel: ObservableObject {
                                              session: session, station: station, bracketIndex: i + 1)
                 brackets.append(BracketRecord(
                     bracketIndex: i + 1, sensor: sensor.rawValue, sensorUniqueID: cap.uniqueID,
-                    captureSet: set, executionMode: mode.rawValue, droppedRungs: checked.dropped,
+                    captureSet: set, renderedSpecs: checked.kept, evOffsetStops: 0,
+                    executionMode: mode.rawValue, droppedRungs: checked.dropped,
                     minimumInterFrameGapSeconds: nil, note: "item3 " + arm.0, frames: frames))
             }
             rig.stopSession()

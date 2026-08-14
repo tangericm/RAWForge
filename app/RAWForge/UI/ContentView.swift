@@ -17,7 +17,8 @@ struct ContentView: View {
             List {
                 statusSection
                 if let report = model.report {
-                    if report.canCapture { captureSection(report); setSection } else { refusalSection }
+                    if report.canCapture { protocolSection(report); captureSection(report); setSection }
+                    else { refusalSection }
                     if let station = model.lastStation { resultSection(station) }
                     ForEach(report.sensors) { SensorRow(sensor: $0) }
                     deviceSection(report.device)
@@ -27,7 +28,7 @@ struct ContentView: View {
             .toolbar {
                 NavigationLink(destination: SessionBrowser()) { Text("Sessions") }
             }
-            .task { await model.probe() }
+            .task { await model.probe(); model.refreshProtocols() }
         }
     }
 
@@ -43,6 +44,50 @@ struct ContentView: View {
                 Button("Open session") { model.openSession() }
             }
             if model.busy { ProgressView() }
+        }
+    }
+
+    /// Named, versioned protocols (#8). Authoring on device is a deliberate
+    /// act, just a faster one than a desk trip — so the set can be built from
+    /// the pickers below and then named, and the version bumps on every save.
+    private func protocolSection(_ report: CapabilityReport) -> some View {
+        Section("Protocol") {
+            Picker("In force", selection: Binding(
+                get: { model.selectedProtocol?.name ?? "" },
+                set: { name in
+                    model.selectedProtocol = name.isEmpty ? nil : ProtocolLibrary.load(named: name)
+                    if !name.isEmpty { model.protocolName = name }
+                })) {
+                Text("authored here, unsaved").tag("")
+                ForEach(model.savedProtocols, id: \.name) { p in
+                    Text("\(p.name) v\(p.version)").tag(p.name)
+                }
+            }
+            if let p = model.selectedProtocol {
+                Text("\(p.name) v\(p.version) · \(p.specs.count) rungs · \(p.generator.describe)")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("unsaved — the session will record the full definition either way, "
+                     + "but an unnamed set cannot be re-run identically later")
+                    .font(.caption2).foregroundStyle(.orange)
+            }
+            HStack {
+                TextField("name", text: $model.protocolName).font(.callout)
+                Button("Save") { model.saveProtocol() }
+                    .disabled(model.protocolName.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            // One definition across sensors, shifted per sensor (#8). Useful ISO
+            // ceilings differ enough that the same ladder may not suit all three.
+            ForEach(report.usableSensors) { cap in
+                let key = cap.sensor.rawValue
+                Stepper(value: Binding(
+                    get: { model.evOffsets[key] ?? 0 },
+                    set: { model.evOffsets[key] = $0 == 0 ? nil : $0 }
+                ), in: -3...3, step: 0.5) {
+                    LabeledContent("\(key) EV offset",
+                                   value: String(format: "%+.1f stop", model.evOffsets[key] ?? 0))
+                }
+            }
         }
     }
 
@@ -76,6 +121,11 @@ struct ContentView: View {
             if let cap = model.orderedSensors.compactMap(model.capability).first, let lo = cap.minISO, let hi = cap.maxISO {
                 Stepper(value: $model.requestedISO, in: lo...hi, step: max(1, lo)) {
                     LabeledContent("ISO", value: String(format: "%.0f", model.requestedISO))
+                }
+            }
+            ForEach(model.orderedSensors, id: \.self) { sensor in
+                if let w = model.isoWarning(for: sensor) {
+                    Text(w).font(.caption2).foregroundStyle(.orange)
                 }
             }
             Stepper(value: $model.minimumGap, in: 0...5, step: 0.25) {
