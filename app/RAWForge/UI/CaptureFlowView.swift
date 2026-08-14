@@ -1,146 +1,227 @@
 import SwiftUI
 
-/// The capture screen: a session, a station, a shot list, and one action
-/// available at a time.
+/// The capture screen: a viewfinder, what the flow is doing, and one button.
 ///
-/// The phase banner is the whole interface in one line. Every wait it shows is
-/// a wait the operator cannot skip — stillness has no override, and nothing
-/// fires before the exposure has settled — so telling them *why* they are
-/// waiting is the difference between an instrument and a frozen app.
+/// It is laid out as an instrument rather than a form because that is what it
+/// is used as — held at arm's length, at a pose, often in the dark. The
+/// viewfinder is the largest thing on screen, the phase is legible without
+/// reading, and the single action is under the thumb. Everything that is
+/// *planning* rather than *shooting* — the shot list, the estimates, the
+/// protocol picker — lives in a sheet, because it is done before the walk and
+/// not at the pose.
+///
+/// The phase line is the whole design in one sentence. Every wait it names is a
+/// wait the operator cannot skip — stillness has no override, nothing fires
+/// before the exposure has settled — so saying *why* the app is busy is the
+/// difference between an instrument and a frozen screen.
 struct CaptureFlowView: View {
     @ObservedObject var model: CaptureModel
+    @State private var showingPlan = false
+    @State private var showingFault = true
 
     var body: some View {
-        List {
-            phaseBanner
-            if model.phase == .noSession { sessionSection }
-            else {
-                Section { ViewfinderPanel(model: model) }
-                stationSection
-                StationPlanView(model: model)
-                if model.phase == .sessionOpen { editableShotList }
-                buildSection
+        ZStack {
+            Color.black.ignoresSafeArea()
+            VStack(spacing: 0) {
+                header
+                viewfinder
+                Spacer(minLength: 0)
+                deck
             }
-            if let f = model.lastFault { faultSection(f) }
         }
         .navigationTitle("Capture")
-        .toolbar { if model.phase == .sessionOpen { EditButton() } }
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(.hidden, for: .navigationBar)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { showingPlan = true } label: {
+                    Label("Plan", systemImage: "list.bullet.rectangle")
+                }
+                .disabled(model.report?.canCapture != true)
+            }
+        }
+        .sheet(isPresented: $showingPlan) { PlanSheet(model: model) }
         .onAppear { model.startFlow() }
+        .onChange(of: model.lastFault) { showingFault = model.lastFault != nil }
     }
 
-    private var phaseBanner: some View {
-        Section {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text(model.phase.title).font(.headline)
-                    Spacer()
-                    if model.busy { ProgressView() }
-                }
-                Text(model.phase.note).font(.caption).foregroundStyle(.secondary)
-                if !model.status.isEmpty {
-                    Text(model.status).font(.caption2).foregroundStyle(.secondary)
-                }
-            }
-        }
-    }
+    // MARK: - Header
 
-    private var sessionSection: some View {
-        Section("Session") {
-            if model.report?.canCapture == true {
-                Button("Open session") { model.openSession(); model.startFlow() }
-            } else {
-                Text("No sensor on this device delivers Bayer RAW — capture refused.")
-                    .font(.footnote)
-            }
-        }
-    }
-
-    private var stationSection: some View {
-        Section("Station") {
-            if let s = model.session {
-                LabeledContent("Session", value: s.sessionId)
-                if let cal = s.calibrationSessionId {
-                    Text("calibration \(cal), \(Int((s.calibrationAgeSeconds ?? 0) / 60)) min old")
-                        .font(.caption2).foregroundStyle(.secondary)
+    /// Session, station and health, in the order they are asked about.
+    private var header: some View {
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                if let s = model.session {
+                    Text(s.sessionId).font(.caption2).monospaced().foregroundStyle(.secondary)
+                    if model.phase.isInStation {
+                        Text("Station \(model.stationIndex)"
+                             + (model.poseIntent.isEmpty ? "" : " · \(model.poseIntent)"))
+                            .font(.caption).bold()
+                    }
                 } else {
-                    Text("no calibration referenced — black level is the file's assertion, unmeasured")
-                        .font(.caption2).foregroundStyle(.orange)
+                    Text("No session").font(.caption).foregroundStyle(.secondary)
                 }
             }
-            if model.phase == .sessionOpen {
-                TextField("Pose intent", text: $model.poseIntent).font(.callout)
-                Button("Declare station") { model.declareStation() }
-                    .disabled(model.shotList.entries.isEmpty)
-                if model.shotList.entries.isEmpty {
-                    Text("build a shot list first — a station with nothing to shoot is not a station")
-                        .font(.caption2).foregroundStyle(.orange)
+            Spacer()
+            healthPill
+        }
+        .padding(.horizontal, 16).padding(.bottom, 8)
+    }
+
+    private var healthPill: some View {
+        let warn = model.health.thermalWarning || model.health.batteryWarning
+        return Label(model.health.summary,
+                     systemImage: warn ? "thermometer.high" : "bolt.fill")
+            .font(.caption2)
+            .foregroundStyle(warn ? .orange : .secondary)
+            .labelStyle(.titleAndIcon)
+    }
+
+    // MARK: - Viewfinder
+
+    /// Shown at the sensor's own aspect rather than cropped to fill. A framing
+    /// aid that hides part of the frame is worse than none — the operator would
+    /// compose to edges that are not the edges being captured.
+    private var viewfinder: some View {
+        ViewfinderPanel(model: model)
+            .padding(.horizontal, 12)
+            .overlay(alignment: .bottom) { setProgress }
+    }
+
+    /// One pip per set, so how far through the station it is can be read
+    /// without counting.
+    @ViewBuilder private var setProgress: some View {
+        if model.phase.isInStation && model.shotList.entries.count > 1 {
+            HStack(spacing: 5) {
+                ForEach(Array(model.shotList.entries.enumerated()), id: \.element.id) { i, _ in
+                    Capsule()
+                        .fill(i < model.shotList.cursor ? Color.accentColor
+                              : i == model.shotList.cursor ? Color.accentColor.opacity(0.5)
+                              : Color.white.opacity(0.25))
+                        .frame(width: i == model.shotList.cursor ? 18 : 8, height: 4)
                 }
-                Button("Close session") { model.closeSession() }
-            } else {
-                Button("Begin next capture set") { Task { await model.beginNextSet() } }
-                    .disabled(!model.canBeginSet || model.busy)
-                Button("Close station") { model.closeStation() }
-                    .disabled(!model.canCloseStation || model.busy)
-                if !model.shotList.canClose && model.phase == .stationOpen {
-                    Text("\(model.shotList.remaining) set(s) left — a station completes or never existed")
+            }
+            .padding(.vertical, 6).padding(.horizontal, 10)
+            .background(.ultraThinMaterial, in: Capsule())
+            .padding(.bottom, 10)
+        }
+    }
+
+    // MARK: - Control deck
+
+    private var deck: some View {
+        VStack(spacing: 12) {
+            if let f = model.lastFault, showingFault { faultBanner(f) }
+            phaseLine
+            primaryButton
+            secondaryRow
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 14)
+        .padding(.bottom, 8)
+        .background(.regularMaterial)
+        .clipShape(UnevenRoundedRectangle(topLeadingRadius: 20, topTrailingRadius: 20))
+    }
+
+    private var phaseLine: some View {
+        VStack(spacing: 3) {
+            HStack(spacing: 6) {
+                if model.busy {
+                    ProgressView().controlSize(.small)
+                }
+                Text(model.phase.title)
+                    .font(.subheadline).bold()
+                Spacer()
+                if model.phase.isInStation, let e = model.stationEstimateSeconds {
+                    Text("~\(SessionEstimate.formatDuration(e)) planned")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
             }
-        }
-    }
-
-    /// Editable only before a station is declared. Swipe deletes, drag
-    /// reorders — and reordering is authoring an order, so it turns grouping
-    /// off rather than silently undoing the move on the next regroup.
-    private var editableShotList: some View {
-        Section("Shot list · \(model.shotList.entries.count) set(s)") {
-            if model.shotList.entries.isEmpty {
-                Text("empty — add a protocol below").foregroundStyle(.secondary).font(.caption)
-            }
-            ForEach(model.shotList.entries) { e in
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(e.label).font(.callout)
-                    Text("\(e.frameCount) frames").font(.caption2).foregroundStyle(.secondary)
-                }
-            }
-            .onDelete { model.removeFromShotList(at: $0) }
-            .onMove { model.moveInShotList(from: $0, to: $1) }
-        }
-    }
-
-    private var buildSection: some View {
-        Section("Add to shot list") {
-            if model.phase != .sessionOpen {
-                Text("the shot list is fixed once a station is declared")
-                    .font(.caption2).foregroundStyle(.secondary)
-            } else if let report = model.report {
-                Picker("Sensor", selection: $model.builderSensor) {
-                    ForEach(report.usableSensors) { Text($0.sensor.rawValue).tag($0.sensor) }
-                }
-                Picker("Protocol", selection: $model.builderProtocolName) {
-                    Text("— none saved —").tag("")
-                    ForEach(model.savedProtocols, id: \.name) { Text("\($0.name) v\($0.version)").tag($0.name) }
-                }
-                Button("Add") { model.addToShotList() }
-                    .disabled(model.builderProtocolName.isEmpty)
-                Toggle("Group by sensor", isOn: $model.groupShotListBySensor)
-                if !model.shotList.entries.isEmpty {
-                    Button("Clear shot list", role: .destructive) { model.clearShotList() }
-                }
-                if model.savedProtocols.isEmpty {
-                    Text("no protocols saved — author one in Diagnostics first")
-                        .font(.caption2).foregroundStyle(.orange)
-                }
-            }
-        }
-    }
-
-    private func faultSection(_ f: StationFault) -> some View {
-        Section("Last fault") {
-            Text(f.operatorNote).font(.callout).foregroundStyle(.red)
-            Text("The station's frames were deleted. Stations already banked survive, "
-                 + "so there is no partial state to interpret later.")
+            // The most specific thing known, in priority order: what the capture
+            // is doing right now, then what the wait is, then why the phase
+            // exists at all.
+            Text(detail)
                 .font(.caption2).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .lineLimit(2)
+                .animation(.none, value: detail)
         }
+    }
+
+    private var detail: String {
+        if !model.progress.isEmpty { return model.progress }
+        if !model.stillnessLive.isEmpty { return model.stillnessLive }
+        return model.phase.note
+    }
+
+    private var primaryButton: some View {
+        let action = model.primaryAction
+        return Button {
+            model.performPrimaryAction()
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: action.systemImage)
+                Text(action.title).bold()
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(action.isTerminal ? .green : .accentColor)
+        .disabled(!action.isEnabled || model.busy)
+        .animation(.easeInOut(duration: 0.15), value: action)
+    }
+
+    private var secondaryRow: some View {
+        HStack(spacing: 10) {
+            Button { showingPlan = true } label: {
+                Label(planLabel, systemImage: "list.bullet.rectangle")
+                    .font(.caption)
+            }
+            .buttonStyle(.bordered)
+            .disabled(model.report?.canCapture != true)
+
+            Spacer()
+
+            if model.phase == .sessionOpen {
+                Button("Close session") { model.closeSession() }
+                    .font(.caption).buttonStyle(.bordered)
+            }
+            if model.phase.isInStation && !model.shotList.canClose {
+                // Present at every point a station is in flight, because the
+                // reason to stop is usually that the pose is already lost.
+                Button(role: .destructive) {
+                    model.abortStation(.captureError, detail: "abandoned by the operator")
+                } label: {
+                    Label("Abandon", systemImage: "xmark").font(.caption)
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+    }
+
+    private var planLabel: String {
+        let n = model.shotList.entries.count
+        if n == 0 { return "Build shot list" }
+        return "\(n) set\(n == 1 ? "" : "s") · \(model.shotList.totalFrames) frames"
+    }
+
+    private func faultBanner(_ f: StationFault) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.octagon.fill").foregroundStyle(.red)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Station aborted — \(f.operatorNote)").font(.caption).bold()
+                Text("Its frames were deleted. Stations already banked survive, so there "
+                     + "is no partial state to interpret later.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+            Button { showingFault = false } label: {
+                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(10)
+        .background(Color.red.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
     }
 }

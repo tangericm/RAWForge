@@ -20,32 +20,11 @@ struct SessionBrowser: View {
     @State private var deleteError: String?
 
     var body: some View {
-        List {
-            if sessions.isEmpty {
-                Text("No sessions yet.").foregroundStyle(.secondary)
-            }
-            if let e = deleteError {
-                Text(e).font(.caption).foregroundStyle(.red)
-            }
-            if !sessions.isEmpty {
-                Section {
-                    LabeledContent("On disk", value: SessionExport.formatTotal(sessions))
-                    if let free = SessionStore.availableCapacityBytes() {
-                        LabeledContent("Free", value: SessionEstimate.formatBytes(free))
-                    }
-                }
-            }
-            ForEach(sessions, id: \.self) { id in
-                NavigationLink(destination: SessionDetail(sessionId: id)) {
-                    SessionRow(sessionId: id)
-                }
-            }
-            .onDelete { offsets in
-                pendingDelete = offsets.first.map { sessions[$0] }
-            }
+        Group {
+            if sessions.isEmpty { empty } else { list }
         }
         .navigationTitle("Sessions")
-        .toolbar { EditButton() }
+        .toolbar { if !sessions.isEmpty { EditButton() } }
         .onAppear { reload() }
         .confirmationDialog(
             "Delete this session permanently?",
@@ -61,6 +40,37 @@ struct SessionBrowser: View {
         } message: {
             Text("The frames and the log go together. There is no undo, and the app "
                  + "does not track whether this session was transferred.")
+        }
+    }
+
+    private var empty: some View {
+        ContentUnavailableView {
+            Label("No sessions yet", systemImage: "folder")
+        } description: {
+            Text("A session is opened from the Capture screen, and everything shot into it "
+                 + "lands in one directory — the frames and the log together.")
+        }
+    }
+
+    private var list: some View {
+        List {
+            if let e = deleteError {
+                Text(e).font(.caption).foregroundStyle(.red)
+            }
+            Section {
+                LabeledContent("On disk", value: SessionExport.formatTotal(sessions))
+                if let free = SessionStore.availableCapacityBytes() {
+                    LabeledContent("Free", value: SessionEstimate.formatBytes(free))
+                }
+            }
+            ForEach(sessions, id: \.self) { id in
+                NavigationLink(destination: SessionDetail(sessionId: id)) {
+                    SessionRow(sessionId: id)
+                }
+            }
+            .onDelete { offsets in
+                pendingDelete = offsets.first.map { sessions[$0] }
+            }
         }
     }
 
