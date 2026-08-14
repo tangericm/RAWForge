@@ -228,17 +228,13 @@ private struct BrowsedFrame: View {
                     Text(String(format: "dng %.5fs ISO %d", d, frame.dng.iso ?? 0))
                         .font(.caption2).monospaced()
                 }
-                if let c = frame.clipping, c.unavailableReason == nil {
-                    ForEach(c.channels, id: \.cfaPosition) { ch in
-                        Text(String(format: "%@ p50 %.3f p99 %.3f · ceil %.3f%% · black %.3f%%",
-                                    ch.colour, ch.p50Normalised, ch.p99Normalised,
-                                    100 * ch.fractionAtOrAboveObservedCeiling,
-                                    100 * ch.fractionAtOrBelowBlack))
-                            .font(.system(size: 9)).monospaced()
+                if let c = frame.clipping {
+                    ClippingBars(stats: c)
+                    if c.isSaturated {
+                        Text("saturated: "
+                             + c.saturatedChannels.map(\.colour).joined(separator: ", "))
+                            .font(.system(size: 9)).foregroundStyle(.orange)
                     }
-                } else if let why = frame.clipping?.unavailableReason {
-                    Text("clipping stats absent — \(why)")
-                        .font(.system(size: 9)).foregroundStyle(.orange)
                 }
             }
         }
