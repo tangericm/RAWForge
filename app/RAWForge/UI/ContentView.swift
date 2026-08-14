@@ -11,6 +11,20 @@ struct ContentView: View {
 
     var body: some View {
         Group {
+            #if DEBUG
+            if let mockup = Mockup.requested {
+                mockup.view
+            } else {
+                appBody
+            }
+            #else
+            appBody
+            #endif
+        }
+    }
+
+    @ViewBuilder private var appBody: some View {
+        Group {
             if model.cameraDenied {
                 CameraDeniedView()
             } else if !booted {
