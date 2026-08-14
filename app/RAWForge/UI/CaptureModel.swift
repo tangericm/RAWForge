@@ -260,6 +260,11 @@ final class CaptureModel: ObservableObject {
                 throw error
             }
 
+            // Frame size is scene-dependent, so the worst case cannot be settled
+            // by a characterisation run pointed at whatever was in front of it.
+            // It is learned from real work instead, and only ever rises.
+            DeviceProfile.noteObservedFrame(bytes: data.count)
+
             let witness = DNGMetadata.read(data)
             let clip = ClippingStats.compute(
                 from: photo, bayerFormat: rig.bayerFormat,

@@ -158,6 +158,16 @@ struct BenchView: View {
     private var runsSection: some View {
         Section {
             NavigationLink {
+                DeviceProfileView(model: model)
+            } label: {
+                runRow(icon: "ruler", tint: .orange,
+                       title: "Measure this device",
+                       question: "How long does this phone actually take?",
+                       state: DeviceProfile.active.isCharacterised
+                           ? "measured · \(DeviceProfile.active.borrowedCount) reading(s) still borrowed"
+                           : "never measured — estimates borrowed from \(DeviceProfile.referenceDevice)")
+            }
+            NavigationLink {
                 CalibrationView(model: model)
             } label: {
                 runRow(icon: "moon.stars", tint: .indigo,
