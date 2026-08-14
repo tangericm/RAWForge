@@ -27,11 +27,12 @@ private struct RunSubject: View {
                       + "re-run identically later.", systemImage: "exclamationmark.triangle.fill")
                     .font(.caption2).foregroundStyle(.orange)
             }
-            Button { showingEditor = true } label: {
-                Label("Author a protocol…", systemImage: "square.and.pencil")
+            NavigationLink {
+                ProtocolLibraryView(model: model)
+            } label: {
+                Label("Manage protocols", systemImage: "square.and.pencil")
             }
         }
-        .sheet(isPresented: $showingEditor) { ProtocolEditorView(model: model) }
 
         if let report = model.report, report.canCapture {
             Section("Sensors") {

@@ -98,55 +98,22 @@ private struct CameraDeniedView: View {
     }
 }
 
-/// The bench: what this device is, and the runs that check the instrument
-/// rather than use it.
+/// The bench: what this phone can be asked to do, and the two runs that measure
+/// the instrument rather than use it.
+///
+/// It opens with capabilities rather than with buttons, because the question at
+/// this screen is "what can I do with this device" — and the probe already
+/// knows. The raw per-sensor numbers are still here, one level down, for when
+/// the answer needs checking.
 struct BenchView: View {
     @ObservedObject var model: CaptureModel
 
     var body: some View {
         List {
-            // Suppressed when there is no instrument: the refusal section below
-            // says the same thing at length, and a screen that opens by stating
-            // its one fact twice reads as unfinished.
-            if model.report?.canCapture == true && !model.status.isEmpty {
-                Section {
-                    Text(model.status).font(.callout)
-                    if !model.progress.isEmpty {
-                        Text(model.progress).font(.caption).foregroundStyle(.secondary)
-                    }
-                    if model.busy { ProgressView() }
-                }
-            }
-
             if let report = model.report {
-                Section {
-                    NavigationLink {
-                        CalibrationView(model: model)
-                    } label: {
-                        Label("Dark-frame calibration", systemImage: "moon.stars")
-                    }
-                    NavigationLink {
-                        InstrumentChecksView(model: model)
-                    } label: {
-                        Label("Instrument checks", systemImage: "checklist")
-                    }
-                    if let station = model.lastStation {
-                        NavigationLink {
-                            LastStationView(station: station)
-                        } label: {
-                            Label("Last station · \(station.stationIndex)",
-                                  systemImage: "doc.text.magnifyingglass")
-                        }
-                    }
-                } header: {
-                    Text("Runs")
-                } footer: {
-                    Text("These check the instrument. They are not how it is used — "
-                         + "a scene is shot from the Capture screen.")
-                }
-
-                if !report.canCapture { refusalSection }
-                Section("Sensors") {
+                capabilitySection(report)
+                runsSection
+                Section("Per sensor") {
                     ForEach(report.sensors) { SensorSummaryRow(sensor: $0) }
                 }
                 deviceSection(report.device)
@@ -155,18 +122,98 @@ struct BenchView: View {
         .navigationTitle("Bench")
     }
 
-    private var refusalSection: some View {
+    // MARK: - What this device can do
+
+    private func capabilitySection(_ report: CapabilityReport) -> some View {
         Section {
-            Label {
-                Text("Undemosaiced Bayer RAW is the only thing this app exists to produce. "
-                     + "No sensor on this device offers it, so there is no instrument here.")
-                    .font(.footnote)
-            } icon: {
-                Image(systemName: "xmark.octagon.fill").foregroundStyle(.red)
+            ForEach(report.capabilities) { c in
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: c.isConstraint
+                          ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                        .font(.callout)
+                        .foregroundStyle(c.isConstraint ? Color.orange : Color.green)
+                        .frame(width: 20)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(c.headline).font(.callout)
+                        Text(c.detail).font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.vertical, 2)
             }
         } header: {
-            Text("Capture refused")
+            Text("What this device can do")
+        } footer: {
+            Text("Measured by opening each rear sensor at launch, not assumed from the model. "
+                 + "The same values are recorded into every session header, so a file can be "
+                 + "read later against the controls it was actually shot with.")
         }
+    }
+
+    // MARK: - Runs
+
+    /// Both runs produce a *finding about the instrument*, which is why they are
+    /// not on the capture screen. Each says what question it answers, because
+    /// "white-balance pixel path" means nothing to someone who has not read the
+    /// ticket it came from.
+    private var runsSection: some View {
+        Section {
+            NavigationLink {
+                CalibrationView(model: model)
+            } label: {
+                runRow(icon: "moon.stars", tint: .indigo,
+                       title: "Dark-frame calibration",
+                       question: "What does this sensor read with no light at all?",
+                       state: calibrationState)
+            }
+            NavigationLink {
+                InstrumentChecksView(model: model)
+            } label: {
+                runRow(icon: "checklist", tint: .teal,
+                       title: "Instrument checks",
+                       question: "Do the locks this app relies on reach the pixels?",
+                       state: model.zoomProbe == nil ? "not run this launch" : "run this launch")
+            }
+            if let station = model.lastStation {
+                NavigationLink {
+                    LastStationView(station: station)
+                } label: {
+                    runRow(icon: "doc.text.magnifyingglass", tint: .gray,
+                           title: "Last station · \(station.stationIndex)",
+                           question: "What the four witnesses said about each frame.",
+                           state: "\(station.brackets.reduce(0) { $0 + $1.frames.count }) frames")
+                }
+            }
+        } header: {
+            Text("Measuring the instrument")
+        } footer: {
+            Text("These are not how the app is used — a scene is shot from Capture. "
+                 + "They exist so a claim made about the data has something behind it.")
+        }
+    }
+
+    /// Whether there *is* a dark reference matters more than the button: a
+    /// session shot without one records black level as the file's unverified
+    /// assertion.
+    private var calibrationState: String {
+        guard let calib = SessionStore.latestCalibration() else {
+            return "none on this device — black level is unmeasured"
+        }
+        let hours = Int(calib.ageSeconds / 3600)
+        return hours < 1 ? "measured under an hour ago · \(calib.id)"
+                         : "measured \(hours) h ago · \(calib.id)"
+    }
+
+    private func runRow(icon: String, tint: Color, title: String,
+                        question: String, state: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: icon).font(.title3).foregroundStyle(tint).frame(width: 26)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.callout)
+                Text(question).font(.caption2).foregroundStyle(.secondary)
+                Text(state).font(.caption2).monospaced().foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.vertical, 2)
     }
 
     private func deviceSection(_ device: DeviceIdentity) -> some View {

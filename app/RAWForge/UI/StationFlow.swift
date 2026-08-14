@@ -102,8 +102,11 @@ extension CaptureModel {
     /// the capture path owns the session once a set begins.
     func startFraming() {
         guard !busy, phase == .sessionOpen || phase == .stationOpen else { return }
-        let sensor = shotList.current?.sensor ?? builderSensor
-        guard capability(sensor)?.isUsable == true else { return }
+        // The sensor about to be shot, or — with nothing planned yet — whichever
+        // one this device offers first, so the viewfinder is live while the shot
+        // list is still being built.
+        guard let sensor = shotList.current?.sensor ?? report?.usableSensors.first?.sensor,
+              capability(sensor)?.isUsable == true else { return }
         rig.prepareForFraming(sensor)
     }
 
