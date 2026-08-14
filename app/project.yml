@@ -72,10 +72,23 @@ targets:
         # written under it would have silently never run.
         Debug:
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+    preBuildScripts: []
+    postCompileScripts:
+      - script: "\"$SRCROOT/tools/stamp-build.sh\""
+        name: Stamp build number and commit
+        basedOnDependencyAnalysis: false
     info:
       path: Info.plist
       properties:
         CFBundleDisplayName: RAWForge
+        # Placeholder: the build phase stamps the real value into the built
+        # product. Committing a number here would mean every build dirtied the
+        # working tree.
+        CFBundleVersion: "1"
+        RAWForgeCommit: unknown
+        # No encryption beyond what the OS provides. Without this, every single
+        # submission stops to ask the same question.
+        ITSAppUsesNonExemptEncryption: false
         # Launch on the same near-black the app runs on. The default follows the
         # system appearance, so a phone in light mode flashed white before the
         # viewfinder appeared.
