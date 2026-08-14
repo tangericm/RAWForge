@@ -23,7 +23,8 @@ struct PlanSheet: View {
 
     private var estimate: SessionEstimate {
         SessionEstimate.forShotList(model.shotList.entries, mode: model.mode,
-                                    minimumGap: model.minimumGap)
+                                    minimumGap: model.minimumGap,
+                                    bracketCeiling: model.bracketCeiling)
     }
 
     var body: some View {

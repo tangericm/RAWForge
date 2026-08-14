@@ -178,30 +178,37 @@ final class DeviceCaptureTests: XCTestCase {
         let specs = [1.0 / 250, 1.0 / 125, 1.0 / 60].map {
             CaptureSpec(shutterSeconds: $0, iso: iso)
         }
-        let photos = try await rig.captureBracket(specs)
-        XCTAssertEqual(photos.count, specs.count, "the bracket did not deliver every rung")
-
-        // Each rung should carry its own exposure — a bracket that fires three
-        // identical frames is the failure worth catching here.
-        let written = photos.compactMap { $0.fileDataRepresentation() }
-            .compactMap { DNGMetadata.read($0).exposureTimeSeconds }
+        var written: [Double] = []
+        let sizes = try await rig.captureBracket(specs) { photo, _ in
+            // Each rung should carry its own exposure — a bracket that fires
+            // three identical frames is the failure worth catching here.
+            if let data = photo.fileDataRepresentation(),
+               let t = DNGMetadata.read(data).exposureTimeSeconds { written.append(t) }
+        }
+        XCTAssertEqual(sizes, [specs.count],
+                       "a set inside the ceiling should fire as one request")
         XCTAssertEqual(written.count, specs.count)
         XCTAssertEqual(Set(written.map { ($0 * 100_000).rounded() }).count, specs.count,
                        "the rungs all fired at the same exposure: \(written)")
     }
 
-    func testABracketBeyondTheHardwareMaximumIsRefused() async throws {
+    /// One frame past the ceiling used to abort the station and delete its
+    /// frames. The ceiling is knowable before anything fires, so nothing was
+    /// learned by discovering it mid-set — it now splits.
+    func testOneFramePastTheCeilingSplitsRatherThanAborting() async throws {
         try await rig.configure(firstSensor.sensor)
         await rig.startSessionAndWait()
-        let tooMany = (0...rig.maxBracketCount).map { _ in
-            CaptureSpec(shutterSeconds: 1.0 / 125, iso: max(firstSensor.minISO ?? 100, 100))
+        _ = try await rig.lockWhiteBalance()
+
+        let ceiling = rig.maxBracketCount
+        try XCTSkipUnless(ceiling > 0, "this sensor has no hardware bracket")
+        let specs = (0...ceiling).map { _ in
+            CaptureSpec(shutterSeconds: 1.0 / 250, iso: max(firstSensor.minISO ?? 100, 100))
         }
-        do {
-            _ = try await rig.captureBracket(tooMany)
-            XCTFail("a bracket past maxBracketedCapturePhotoCount should be refused")
-        } catch let error as CaptureRig.RigError {
-            XCTAssertTrue("\(error)".contains("maxBracketedCapturePhotoCount"))
-        }
+        var delivered = 0
+        let sizes = try await rig.captureBracket(specs) { _, _ in delivered += 1 }
+        XCTAssertEqual(delivered, ceiling + 1, "a frame was lost at the boundary")
+        XCTAssertEqual(sizes, [ceiling, 1])
     }
 
     // MARK: - Landing on disk
@@ -258,5 +265,80 @@ final class DeviceCapabilitySummaryTests: XCTestCase {
         print("BENCH · shutter \(shutter.min)–\(shutter.max)s, "
               + "bracket \(report.sharedBracketCeiling)–\(report.deepestBracketCeiling), "
               + "rails differ: \(report.sensorsDisagreeOnRails)")
+    }
+}
+
+/// A capture set longer than the sensor's hardware bracket ceiling.
+///
+/// This used to abort the station — the condition is knowable before anything
+/// fires, so discovering it at frame nine cost a pose for nothing. It now
+/// splits across requests, and the question this answers is what that costs:
+/// frames inside one request are pipeline-bound, and the seam between two
+/// requests is a second capture round trip.
+final class BracketSplittingTests: XCTestCase {
+
+    func testASetPastTheCeilingSplitsAndTheSeamsAreMeasured() async throws {
+        let report = CapabilityProbe.run()
+        try XCTSkipUnless(report.canCapture, "no Bayer sensor — device-only test")
+        let sensor = report.usableSensors[0]
+        let rig = CaptureRig()
+        defer { rig.stopSession() }
+
+        try await rig.configure(sensor.sensor)
+        await rig.startSessionAndWait()
+        _ = try await rig.lockWhiteBalance()
+
+        let ceiling = rig.maxBracketCount
+        let wanted = 16
+        try XCTSkipUnless(ceiling > 0 && ceiling < wanted,
+                          "this sensor's ceiling is not below \(wanted)")
+
+        let iso = max(sensor.minISO ?? 100, 100)
+        let specs = (0..<wanted).map { _ in CaptureSpec(shutterSeconds: 1.0 / 250, iso: iso) }
+
+        let began = ProcessInfo.processInfo.systemUptime
+        var stamps: [Double] = []
+        let requestSizes = try await rig.captureBracket(specs) { photo, _ in
+            stamps.append(photo.timestamp.seconds)
+        }
+        let wall = ProcessInfo.processInfo.systemUptime - began
+
+        XCTAssertEqual(stamps.count, wanted, "not every frame came back")
+        XCTAssertEqual(requestSizes.reduce(0, +), wanted)
+        XCTAssertEqual(requestSizes.count, Int(ceil(Double(wanted) / Double(ceiling))))
+        XCTAssertTrue(requestSizes.allSatisfy { $0 <= ceiling },
+                      "a request exceeded the ceiling: \(requestSizes)")
+
+        // Where the seams fall, by cumulative index.
+        var seams: Set<Int> = []
+        var running = 0
+        for size in requestSizes.dropLast() { running += size; seams.insert(running) }
+
+        var inside: [Double] = [], across: [Double] = []
+        for i in 1..<stamps.count {
+            let gap = stamps[i] - stamps[i - 1]
+            if seams.contains(i) { across.append(gap) } else { inside.append(gap) }
+        }
+
+        print("SPLIT · \(wanted) frames as \(requestSizes) in "
+              + String(format: "%.2f s wall clock", wall))
+        print(String(format: "SPLIT · gap inside a request: median %.1f ms over %d",
+                     1000 * median(inside), inside.count))
+        print(String(format: "SPLIT · gap across a seam:    median %.1f ms over %d",
+                     1000 * median(across), across.count))
+
+        XCTAssertFalse(inside.isEmpty)
+        XCTAssertFalse(across.isEmpty)
+        // The seam is a second round trip through the pipeline, so it must cost
+        // *something* — if it did not, the ceiling would not exist.
+        XCTAssertGreaterThan(median(across), median(inside),
+                             "the seam should cost more than an in-request gap")
+    }
+
+    private func median(_ xs: [Double]) -> Double {
+        guard !xs.isEmpty else { return 0 }
+        let s = xs.sorted()
+        return s.count % 2 == 1 ? s[s.count / 2]
+                                : (s[s.count / 2 - 1] + s[s.count / 2]) / 2
     }
 }

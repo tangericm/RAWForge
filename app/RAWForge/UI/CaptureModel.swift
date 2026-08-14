@@ -147,6 +147,14 @@ final class CaptureModel: ObservableObject {
         report?.sensors.first { $0.sensor == s }
     }
 
+    /// Frames per hardware request, taken as the smallest ceiling across the
+    /// usable sensors — the conservative number, since a shot list may span
+    /// them and a plan should not promise the best case.
+    var bracketCeiling: Int? {
+        guard let c = report?.sharedBracketCeiling, c > 0 else { return nil }
+        return c
+    }
+
     /// The bench runs sweep sensors in the canonical order.
     var orderedSensors: [SensorCapability.Sensor] {
         SensorCapability.Sensor.allCases.filter { selectedSensors.contains($0) }
@@ -216,12 +224,22 @@ final class CaptureModel: ObservableObject {
 
     // MARK: - Firing a set
 
+    /// What one capture set produced: its frames, and — when it ran as
+    /// brackets — how it was split across hardware requests. The split is not a
+    /// detail: the seam between two requests is a longer gap than the ones
+    /// inside them, and a reader comparing frame timings needs to know where it
+    /// falls rather than inferring it.
+    struct Shot {
+        let frames: [FrameRecord]
+        let bracketRequestSizes: [Int]?
+    }
 
     func shoot(_ specs: [CaptureSpec], sensor: SensorCapability.Sensor,
                        wb: (set: [Float], readBack: [Float]),
-                       session: SessionRecord, station: Int, bracketIndex: Int) async throws -> [FrameRecord] {
+                       session: SessionRecord, station: Int, bracketIndex: Int) async throws -> Shot {
         var frames: [FrameRecord] = []
         var previousTimestamp: Double?
+        var requestSizes: [Int]?
 
         /// Written the moment it arrives, then the photo is released. A
         /// 336-frame dark mirror (#15) could never hold its photos in memory.
@@ -312,19 +330,19 @@ final class CaptureModel: ObservableObject {
         case .hardwareBracket:
             progress = "\(sensor.rawValue) bracket of \(specs.count)"
             do {
-                let photos = try await rig.captureBracket(specs)
-                for (i, photo) in photos.enumerated() {
-                    // No device read-back here: the device is never
-                    // reconfigured mid-bracket, so it would report the last
-                    // rung for every frame.
-                    try bank(photo, i < specs.count ? specs[i] : specs[specs.count - 1], device: nil)
+                // Banked as each request lands, so two requests' worth of Bayer
+                // buffers are never alive at once. No device read-back here:
+                // the device is never reconfigured mid-bracket, so it would
+                // report the last rung for every frame.
+                requestSizes = try await rig.captureBracket(specs) { photo, spec in
+                    try bank(photo, spec, device: nil)
                 }
             } catch {
                 throw SequenceFault(sensor: sensor.rawValue, frameIndex: frames.count + 1,
                                     completed: frames.count, underlying: error)
             }
         }
-        return frames
+        return Shot(frames: frames, bracketRequestSizes: requestSizes)
     }
 
     private static func exposure(from photo: AVCapturePhoto, wb: [Float]) -> FrameRecord.Exposure? {
@@ -508,15 +526,17 @@ final class CaptureModel: ObservableObject {
             for (i, arm) in arms.enumerated() {
                 progress = "WB probe — \(arm.0)"
                 let wb = try await rig.lockWhiteBalanceGains(r: arm.1, g: arm.2, b: arm.3)
-                let frames = try await shoot(checked.kept, sensor: sensor, wb: wb,
-                                             session: session, station: station, bracketIndex: i + 1)
+                let shot = try await shoot(checked.kept, sensor: sensor, wb: wb,
+                                           session: session, station: station, bracketIndex: i + 1)
                 brackets.append(BracketRecord(
                     bracketIndex: i + 1, sensor: sensor.rawValue, sensorUniqueID: cap.uniqueID,
                     captureSet: set, renderedSpecs: checked.kept, evOffsetStops: 0,
-                    executionMode: mode.rawValue, droppedRungs: checked.dropped,
+                    executionMode: mode.rawValue,
+                    bracketRequestSizes: shot.bracketRequestSizes,
+                    droppedRungs: checked.dropped,
                     minimumInterFrameGapSeconds: nil,
                     stillnessSettled: nil, stillnessWaitSeconds: nil, motionAtFire: nil,
-                    dwellSeconds: nil, note: "item3 " + arm.0, frames: frames))
+                    dwellSeconds: nil, note: "item3 " + arm.0, frames: shot.frames))
             }
             rig.stopSession()
             motionRecorder.stop()

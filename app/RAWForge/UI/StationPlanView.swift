@@ -13,7 +13,8 @@ struct StationPlanView: View {
 
     private var estimate: SessionEstimate {
         SessionEstimate.forShotList(model.shotList.entries, mode: model.mode,
-                                    minimumGap: model.minimumGap)
+                                    minimumGap: model.minimumGap,
+                                    bracketCeiling: model.bracketCeiling)
     }
 
     var body: some View {
@@ -67,7 +68,8 @@ struct StationPlanView: View {
     private func setDuration(_ entry: ShotListEntry) -> TimeInterval {
         SessionEstimate.forShotList([entry], mode: model.mode,
                                     minimumGap: model.minimumGap,
-                                    includeStillness: false).typicalSeconds
+                                    includeStillness: false,
+                                    bracketCeiling: model.bracketCeiling).typicalSeconds
     }
 
     private func budget(_ e: SessionEstimate) -> some View {
@@ -76,6 +78,14 @@ struct StationPlanView: View {
             line("Exposure", SessionEstimate.formatDuration(e.exposureSeconds))
             line("Overhead", SessionEstimate.formatDuration(e.overheadSeconds)
                  + " (swaps, per-frame, gaps)")
+            if e.bracketSeams > 0 {
+                // Named separately because it is the one cost that is not
+                // obvious from the frame count: it appears only when a set is
+                // longer than the sensor can fire in one request.
+                line("Seams", "\(e.bracketSeams) × "
+                     + SessionEstimate.formatDuration(SessionEstimate.bracketSeam)
+                     + " — sets longer than the bracket ceiling")
+            }
             line("Time", SessionEstimate.formatDuration(calibration.apply(e.typicalSeconds))
                  + " · up to " + SessionEstimate.formatDuration(calibration.apply(e.worstCaseSeconds)))
             if let note = calibration.summary {

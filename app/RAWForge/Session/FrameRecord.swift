@@ -138,6 +138,16 @@ struct BracketRecord: Codable, Equatable {
     /// expressed, so it is recorded alongside the timings it explains.
     let executionMode: String?
 
+    /// How a bracketed set was split across hardware requests — `[8, 8]` for
+    /// sixteen frames on a sensor with a ceiling of eight.
+    ///
+    /// Recorded because the seams are real: frames inside one request are
+    /// pipeline-bound and evenly spaced, and the gap across a seam is longer.
+    /// A reader comparing inter-frame timings would otherwise see an
+    /// unexplained outlier every eighth frame and have to guess at it. Nil for
+    /// sequential runs, and for sessions written before splitting existed.
+    let bracketRequestSizes: [Int]?
+
     /// Rungs the sensor's rails refused. Recorded, never clamped (#8): a log
     /// that shows only what was shot cannot distinguish "not asked for" from
     /// "asked for and impossible".
