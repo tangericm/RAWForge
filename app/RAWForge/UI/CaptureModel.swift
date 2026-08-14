@@ -98,6 +98,7 @@ final class CaptureModel: ObservableObject {
 
     let rig = CaptureRig()
     let motionRecorder = MotionRecorder()
+    let health = DeviceHealth()
     var stationIndex = 0
 
     func capability(_ s: SensorCapability.Sensor) -> SensorCapability? {
