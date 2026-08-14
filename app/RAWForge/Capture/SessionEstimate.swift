@@ -37,6 +37,40 @@ struct SessionEstimate {
     let overheadSeconds: TimeInterval
     let stillnessWorstCaseSeconds: TimeInterval
 
+    /// Where the time actually goes, kept separately rather than reverse-derived.
+    ///
+    /// The single most useful thing a plan can say is that most of a
+    /// three-sensor station is *not* shooting — and that only lands if the
+    /// parts are drawn against each other. Reconstructing them from
+    /// `overheadSeconds` afterwards would mean the display and the arithmetic
+    /// could drift.
+    struct Breakdown: Equatable {
+        var exposure: TimeInterval = 0
+        /// Reconfiguring for a different sensor.
+        var swaps: TimeInterval = 0
+        /// The stillness wait after each swap.
+        var settles: TimeInterval = 0
+        /// Boundaries between hardware requests, on sets past the ceiling.
+        var seams: TimeInterval = 0
+        /// The pipeline's own cost per frame — frame period, or the sequential
+        /// round trip.
+        var perFrame: TimeInterval = 0
+        /// An operator-chosen floor on frame spacing, sequential only.
+        var gaps: TimeInterval = 0
+
+        var total: TimeInterval { exposure + swaps + settles + seams + perFrame + gaps }
+        /// The fraction of a station spent doing anything other than exposing.
+        var notShooting: Double { total > 0 ? 1 - exposure / total : 0 }
+
+        var parts: [(name: String, seconds: TimeInterval)] {
+            [("Exposure", exposure), ("Sensor swaps", swaps), ("Settling", settles),
+             ("Bracket seams", seams), ("Pipeline", perFrame), ("Gaps", gaps)]
+                .filter { $0.1 > 0 }
+        }
+    }
+
+    let breakdown: Breakdown
+
     var typicalSeconds: TimeInterval { exposureSeconds + overheadSeconds }
     var worstCaseSeconds: TimeInterval { typicalSeconds + stillnessWorstCaseSeconds }
 
@@ -65,10 +99,15 @@ struct SessionEstimate {
         var overhead: TimeInterval = 0
         var swaps = 0
         var seams = 0
+        var parts = Breakdown()
         var previousSensor: SensorCapability.Sensor?
 
         for entry in entries {
-            if entry.sensor != previousSensor { swaps += 1; overhead += profile.sensorSwap.value }
+            if entry.sensor != previousSensor {
+                swaps += 1
+                overhead += profile.sensorSwap.value
+                parts.swaps += profile.sensorSwap.value
+            }
             previousSensor = entry.sensor
 
             let specs = entry.captureSet.rendered(for: entry.sensor)
@@ -83,29 +122,36 @@ struct SessionEstimate {
                 let extra = Swift.max(0, requestCount(frames: specs.count, ceiling: ceiling) - 1)
                 seams += extra
                 overhead += Double(extra) * profile.bracketSeam.value
+                parts.seams += Double(extra) * profile.bracketSeam.value
             }
 
             for spec in specs {
                 exposure += spec.shutterSeconds
+                parts.exposure += spec.shutterSeconds
                 switch firing {
                 case .hardwareBracket:
                     // The pipeline holds a frame period per frame unless the
                     // exposure itself is longer, in which case exposure covers it.
-                    overhead += Swift.max(0, profile.sensorFramePeriod.value - spec.shutterSeconds)
+                    let held = Swift.max(0, profile.sensorFramePeriod.value - spec.shutterSeconds)
+                    overhead += held
+                    parts.perFrame += held
                 case .sequential:
                     overhead += profile.sequentialOverheadPerFrame.value
+                    parts.perFrame += profile.sequentialOverheadPerFrame.value
                 }
                 // Only sequential can honour a gap — a burst is one request
                 // with nowhere to insert a wait — so charging for it in a burst
                 // predicted time the app was never going to spend.
-                if firing == .sequential { overhead += minimumGap }
+                if firing == .sequential { overhead += minimumGap; parts.gaps += minimumGap }
             }
         }
+        if includeStillness { parts.settles = Double(swaps) * profile.stillnessTimeout.value }
         return SessionEstimate(
             profile: profile,
             frameCount: frames, sensorSwaps: swaps, bracketSeams: seams,
             exposureSeconds: exposure, overheadSeconds: overhead,
-            stillnessWorstCaseSeconds: includeStillness ? Double(swaps) * profile.stillnessTimeout.value : 0)
+            stillnessWorstCaseSeconds: includeStillness ? Double(swaps) * profile.stillnessTimeout.value : 0,
+            breakdown: parts)
     }
 
     static func formatDuration(_ t: TimeInterval) -> String {
