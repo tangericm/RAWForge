@@ -44,6 +44,8 @@ extension CaptureModel {
         pendingSwaps = []
         lastFault = nil
         shotList.cursor = 0
+        stationEstimateSeconds = SessionEstimate.forShotList(
+            shotList.entries, mode: mode, minimumGap: minimumGap).typicalSeconds
         motionRecorder.start()
         set(.stationOpen)
     }
@@ -66,8 +68,8 @@ extension CaptureModel {
         do {
             set(.swapping)
             let swapStart = ProcessInfo.processInfo.systemUptime
-            try rig.configure(entry.sensor)
-            rig.startSession()
+            try await rig.configure(entry.sensor)
+            await rig.startSessionAndWait()
             let swapEnd = ProcessInfo.processInfo.systemUptime
             pendingSwaps.append(StationRecord.SwapRecord(
                 fromSensor: pendingSwaps.last?.toSensor, toSensor: entry.sensor.rawValue,
@@ -79,7 +81,13 @@ extension CaptureModel {
             // resolves either when the device is still or when waiting longer
             // has stopped being informative.
             set(.stilling)
-            await waitForStillness()
+            let stillStart = ProcessInfo.processInfo.systemUptime
+            let settled = await waitForStillness()
+            let stillWait = ProcessInfo.processInfo.systemUptime - stillStart
+            let motionAtFire = motionRecorder.summary(
+                from: ProcessInfo.processInfo.systemUptime - 0.4,
+                to: ProcessInfo.processInfo.systemUptime)
+            stillnessLive = ""
 
             set(.settling)
             let offset = entry.captureSet.perSensorEVOffsetStops[entry.sensor.rawValue] ?? 0
@@ -105,6 +113,8 @@ extension CaptureModel {
                 renderedSpecs: checked.kept, evOffsetStops: offset,
                 executionMode: mode.rawValue, droppedRungs: checked.dropped,
                 minimumInterFrameGapSeconds: minimumGap > 0 ? minimumGap : nil,
+                stillnessSettled: settled, stillnessWaitSeconds: stillWait,
+                motionAtFire: motionAtFire,
                 dwellSeconds: dwell > 0 ? dwell : nil, note: nil, frames: frames))
 
             rig.stopSession()
@@ -132,7 +142,8 @@ extension CaptureModel {
                 samples, from: samples.first!.t, to: samples.last!.t),
             motionStreamFile: streamFile,
             motionRequestedHz: motionRecorder.requestedHz,
-            poseIntent: poseIntent)
+            poseIntent: poseIntent,
+            estimatedSeconds: stationEstimateSeconds)
         do {
             try SessionStore.writeStation(record)
             lastStation = record
@@ -173,16 +184,49 @@ extension CaptureModel {
     /// Polls the live motion stream until the device settles into the tripod
     /// band, or until waiting longer stops being informative. There is no
     /// override, and there is no deletion either — this is a wait.
-    private func waitForStillness(timeout: TimeInterval = 4.0) async {
+    /// Lets the tap transient decay, then fires. Returns whether the device was
+    /// in the tripod band at the moment it fired.
+    ///
+    /// The duration is measured, not chosen. Replaying six real motion streams
+    /// through successive 0.2 s windows from station open: the first window
+    /// runs 1.5-4.3x the steady state on every mount, and by 0.2-0.4 s each has
+    /// reached its own baseline. **0.4 s is how long a finger-lift takes to
+    /// decay.**
+    ///
+    /// It deliberately does **not** wait for an absolute stillness band. That
+    /// was the original design and replaying the same streams showed it never
+    /// resolves by hand — 0.0% of handheld windows fall in the tripod band, on
+    /// all three handheld runs — so it would have burned a four-second timeout
+    /// on every set, every time, for nothing.
+    ///
+    /// Nor does it try to detect an ongoing disturbance and wait it out. A
+    /// sustained bump is indistinguishable from handheld steady state in a
+    /// short window, because the disturbance defines the baseline any test
+    /// would compare against; a simulated continuous shake passes every
+    /// plateau rule tried. That is the same wall #10's amendment hit, and the
+    /// same conclusion applies: motion is recorded and the workstation judges
+    /// it, because here the app genuinely cannot.
+    private func waitForStillness() async -> Bool {
+        let settleWindow: TimeInterval = 0.4
         let start = ProcessInfo.processInfo.systemUptime
-        while ProcessInfo.processInfo.systemUptime - start < timeout {
+        var inBand = false
+        while ProcessInfo.processInfo.systemUptime - start < settleWindow {
             let now = ProcessInfo.processInfo.systemUptime
-            if let m = motionRecorder.summary(from: now - 0.4, to: now),
-               m.sampleCount > 8, m.advisory == .tripodLike {
-                return
+            if let m = motionRecorder.summary(from: now - 0.3, to: now), m.sampleCount > 4 {
+                inBand = m.advisory == .tripodLike
+                stillnessLive = String(format: "gyro p99 %.4f — %@", m.gyroP99,
+                                       inBand ? "in the tripod band" : "elevated, recorded not gated")
+                // Already still: the transient is over and nothing is gained by
+                // holding the operator longer.
+                if inBand { return true }
             }
-            try? await Task.sleep(nanoseconds: 100_000_000)
+            try? await Task.sleep(nanoseconds: 50_000_000)
         }
+        let now = ProcessInfo.processInfo.systemUptime
+        if let m = motionRecorder.summary(from: now - 0.3, to: now) {
+            inBand = m.advisory == .tripodLike
+        }
+        return inBand
     }
 
     private func set(_ p: StationPhase) {

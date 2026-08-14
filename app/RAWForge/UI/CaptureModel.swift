@@ -32,6 +32,10 @@ final class CaptureModel: ObservableObject {
     @Published var pendingBrackets: [BracketRecord] = []
     @Published var pendingSwaps: [StationRecord.SwapRecord] = []
     @Published var lastFault: StationFault?
+    /// Live during a stillness wait, so the operator can see whether steadying
+    /// will help or the clock is simply running.
+    @Published var stillnessLive: String = ""
+    @Published var stationEstimateSeconds: Double?
 
     // Shot-list builder
     @Published var builderSensor: SensorCapability.Sensor = .wide
@@ -275,7 +279,7 @@ final class CaptureModel: ObservableObject {
                 // is the window in which the pose is held but nothing is shot.
                 let swapStart = ProcessInfo.processInfo.systemUptime
                 progress = "configuring \(sensor.rawValue)…"
-                try rig.configure(sensor)
+                try await rig.configure(sensor)
                 rig.startSession()
                 let swapEnd = ProcessInfo.processInfo.systemUptime
                 swaps.append(StationRecord.SwapRecord(
@@ -308,8 +312,9 @@ final class CaptureModel: ObservableObject {
                         sensorUniqueID: cap.uniqueID, captureSet: set,
                         renderedSpecs: checked.kept, evOffsetStops: offset,
                         executionMode: mode.rawValue, droppedRungs: checked.dropped,
-                        minimumInterFrameGapSeconds: nil, dwellSeconds: dwell > 0 ? dwell : nil,
-                        note: nil, frames: []))
+                        minimumInterFrameGapSeconds: nil,
+                        stillnessSettled: nil, stillnessWaitSeconds: nil, motionAtFire: nil,
+                        dwellSeconds: dwell > 0 ? dwell : nil, note: nil, frames: []))
                     continue
                 }
 
@@ -323,6 +328,7 @@ final class CaptureModel: ObservableObject {
                     renderedSpecs: checked.kept, evOffsetStops: offset,
                     executionMode: mode.rawValue, droppedRungs: checked.dropped,
                     minimumInterFrameGapSeconds: minimumGap > 0 ? minimumGap : nil,
+                    stillnessSettled: nil, stillnessWaitSeconds: nil, motionAtFire: nil,
                     dwellSeconds: dwell > 0 ? dwell : nil, note: nil, frames: frames))
             }
             rig.stopSession()
@@ -498,7 +504,7 @@ final class CaptureModel: ObservableObject {
 
         for sensor in sensors {
             guard let cap = capability(sensor) else { continue }
-            do { try rig.configure(sensor); rig.startSession() }
+            do { try await rig.configure(sensor); await rig.startSessionAndWait() }
             catch { status = "could not open \(sensor.rawValue) — \(error)"; continue }
 
             let checked = set.validated(against: cap)
@@ -626,8 +632,8 @@ final class CaptureModel: ObservableObject {
         var brackets: [BracketRecord] = []
         motionRecorder.start()
         do {
-            try rig.configure(sensor)
-            rig.startSession()
+            try await rig.configure(sensor)
+            await rig.startSessionAndWait()
             for (i, arm) in arms.enumerated() {
                 progress = "WB probe — \(arm.0)"
                 let wb = try await rig.lockWhiteBalanceGains(r: arm.1, g: arm.2, b: arm.3)
@@ -637,8 +643,9 @@ final class CaptureModel: ObservableObject {
                     bracketIndex: i + 1, sensor: sensor.rawValue, sensorUniqueID: cap.uniqueID,
                     captureSet: set, renderedSpecs: checked.kept, evOffsetStops: 0,
                     executionMode: mode.rawValue, droppedRungs: checked.dropped,
-                    minimumInterFrameGapSeconds: nil, dwellSeconds: nil,
-                    note: "item3 " + arm.0, frames: frames))
+                    minimumInterFrameGapSeconds: nil,
+                    stillnessSettled: nil, stillnessWaitSeconds: nil, motionAtFire: nil,
+                    dwellSeconds: nil, note: "item3 " + arm.0, frames: frames))
             }
             rig.stopSession()
             motionRecorder.stop()
@@ -665,8 +672,8 @@ final class CaptureModel: ObservableObject {
         busy = true
         defer { busy = false }
         do {
-            try rig.configure(sensor)
-            rig.startSession()
+            try await rig.configure(sensor)
+            await rig.startSessionAndWait()
             defer { rig.stopSession() }
             // Each stage is flushed to disk as it happens, so a crash inside
             // AVFoundation still leaves a record of how far the probe got.

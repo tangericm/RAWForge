@@ -146,6 +146,19 @@ struct BracketRecord: Codable, Equatable {
     /// The floor on frame spacing this run was executed under, if any.
     let minimumInterFrameGapSeconds: Double?
 
+    /// Whether the stillness wait reached the tripod band before firing, and
+    /// how long it took.
+    ///
+    /// Recorded because the wait has no override: if it routinely times out,
+    /// every set in that session carries up to four seconds of dead time and
+    /// the frames were shot at whatever motion the device happened to be at.
+    /// A reader should be able to tell a set that fired still from one that
+    /// fired because the clock ran out.
+    let stillnessSettled: Bool?
+    let stillnessWaitSeconds: Double?
+    /// Motion over the last moment before the first frame fired.
+    let motionAtFire: MotionSummary?
+
     /// A wait after the sensor is configured and before the first frame fires
     /// (#8's optional dwell, distinct from the inter-frame gap).
     ///
@@ -185,6 +198,12 @@ struct StationRecord: Codable, Equatable {
     /// was held are indistinguishable in the log without it.
     let poseIntent: String?
 
+    /// What the pre-flight estimate predicted, against `openedAt`/`closedAt`.
+    /// Kept so the estimate is checkable rather than merely reassuring — its
+    /// constants were measured on a cool device, and thermal throttling moves
+    /// them without announcing itself.
+    let estimatedSeconds: Double?
+
     /// Every sensor change made within this station, and what it cost.
     ///
     /// #7 left the reconfiguration cost unmeasured and named it the one
@@ -223,7 +242,9 @@ struct StationRecord: Codable, Equatable {
     init(stationIndex: Int, sessionId: String, openedAt: Date, closedAt: Date,
          brackets: [BracketRecord], sensorSwaps: [SwapRecord] = [],
          motion: MotionSummary? = nil, motionStreamFile: String? = nil,
-         motionRequestedHz: Double? = nil, poseIntent: String? = nil) {
+         motionRequestedHz: Double? = nil, poseIntent: String? = nil,
+         estimatedSeconds: Double? = nil) {
+        self.estimatedSeconds = estimatedSeconds
         self.poseIntent = poseIntent?.isEmpty == true ? nil : poseIntent
         self.sensorSwaps = sensorSwaps
         self.motion = motion

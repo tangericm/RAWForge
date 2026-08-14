@@ -33,6 +33,19 @@ final class CaptureRig {
     let session = AVCaptureSession()
     let output = AVCapturePhotoOutput()
 
+    /// Every mutation of the session happens here, serially.
+    ///
+    /// `AVCaptureSession` is not safe to configure from arbitrary threads, and
+    /// the previous code reconfigured it on the main actor while starting it on
+    /// a global queue — two threads touching one session, which is the classic
+    /// source of a black preview, a stalled `startRunning`, or a capture that
+    /// never fires. A dedicated serial queue is Apple's own pattern for this
+    /// and makes the ordering explicit rather than incidental.
+    ///
+    /// The preview layer is the exception: attaching it is documented as
+    /// main-thread work, and it only observes.
+    private let sessionQueue = DispatchQueue(label: "com.tangericm.rawforge.session")
+
     private(set) var sensor: SensorCapability.Sensor?
     private(set) var device: AVCaptureDevice?
     private(set) var bayerFormat: OSType = 0
@@ -41,7 +54,16 @@ final class CaptureRig {
     /// Brings up the given sensor. Reconfiguring for a different sensor means a
     /// new session input, not a property flip — Bayer requires a single-camera
     /// device, so the sensors are sequential or nothing (#7).
-    func configure(_ sensor: SensorCapability.Sensor) throws {
+    func configure(_ sensor: SensorCapability.Sensor) async throws {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            sessionQueue.async {
+                do { try self.configureOnQueue(sensor); cont.resume() }
+                catch { cont.resume(throwing: error) }
+            }
+        }
+    }
+
+    private func configureOnQueue(_ sensor: SensorCapability.Sensor) throws {
         let discovery = AVCaptureDevice.DiscoverySession(
             deviceTypes: [sensor.deviceType], mediaType: .video, position: .back)
         guard let dev = discovery.devices.first else {
@@ -74,26 +96,36 @@ final class CaptureRig {
         self.bayerFormat = bayer
     }
 
+    /// Fire-and-forget: `startRunning` blocks, so it never runs on the caller's
+    /// thread. Ordering against configuration is guaranteed by the queue.
     func startSession() {
-        guard !session.isRunning else { return }
-        // The session runs on a background queue: startRunning blocks, and on
-        // the main actor that is a visible hitch at the top of every set.
-        let s = session
-        DispatchQueue.global(qos: .userInitiated).async { s.startRunning() }
+        sessionQueue.async { if !self.session.isRunning { self.session.startRunning() } }
     }
 
     func stopSession() {
-        guard session.isRunning else { return }
-        let s = session
-        DispatchQueue.global(qos: .userInitiated).async { s.stopRunning() }
+        sessionQueue.async { if self.session.isRunning { self.session.stopRunning() } }
+    }
+
+    /// Awaits the session actually running, for callers that must not fire into
+    /// a session still coming up.
+    func startSessionAndWait() async {
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            sessionQueue.async {
+                if !self.session.isRunning { self.session.startRunning() }
+                cont.resume()
+            }
+        }
     }
 
     /// Brings a sensor up purely so the viewfinder has something to show.
     /// Never called mid-station — framing is for between stations, when the
     /// operator is walking to the next pose.
     func prepareForFraming(_ sensor: SensorCapability.Sensor) {
-        guard (try? configure(sensor)) != nil else { return }
-        startSession()
+        Task { [weak self] in
+            guard let self else { return }
+            guard (try? await self.configure(sensor)) != nil else { return }
+            self.startSession()
+        }
     }
 
     // MARK: - Deterministic parameters
