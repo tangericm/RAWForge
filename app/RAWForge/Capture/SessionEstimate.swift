@@ -46,8 +46,13 @@ struct SessionEstimate {
     /// could drift.
     struct Breakdown: Equatable {
         var exposure: TimeInterval = 0
-        /// Reconfiguring for a different sensor.
-        var swaps: TimeInterval = 0
+        /// Bringing the sensor up before a set. Charged for **every** set, not
+        /// only where the sensor changes: `beginNextSet` calls `configure` and
+        /// waits for the session unconditionally, so a three-set station on one
+        /// sensor pays it three times. Charging it per sensor change
+        /// under-estimated every such station — maximally on a phone with one
+        /// rear camera, where no set ever changes sensor.
+        var setup: TimeInterval = 0
         /// The stillness wait after each swap.
         var settles: TimeInterval = 0
         /// Boundaries between hardware requests, on sets past the ceiling.
@@ -58,12 +63,19 @@ struct SessionEstimate {
         /// An operator-chosen floor on frame spacing, sequential only.
         var gaps: TimeInterval = 0
 
-        var total: TimeInterval { exposure + swaps + settles + seams + perFrame + gaps }
+        var total: TimeInterval { exposure + setup + settles + seams + perFrame + gaps }
         /// The fraction of a station spent doing anything other than exposing.
         var notShooting: Double { total > 0 ? 1 - exposure / total : 0 }
 
+        /// Everything except exposure, named. A phone with one rear camera
+        /// never swaps, and prose that says it does would be the sort of small
+        /// lie this app spends its effort avoiding.
+        var overheadNames: String {
+            parts.dropFirst().map { $0.name.lowercased() }.joined(separator: ", ")
+        }
+
         var parts: [(name: String, seconds: TimeInterval)] {
-            [("Exposure", exposure), ("Sensor swaps", swaps), ("Settling", settles),
+            [("Exposure", exposure), ("Sensor setup", setup), ("Settling", settles),
              ("Bracket seams", seams), ("Pipeline", perFrame), ("Gaps", gaps)]
                 .filter { $0.1 > 0 }
         }
@@ -103,12 +115,17 @@ struct SessionEstimate {
         var previousSensor: SensorCapability.Sensor?
 
         for entry in entries {
-            if entry.sensor != previousSensor {
-                swaps += 1
-                overhead += profile.sensorSwap.value
-                parts.swaps += profile.sensorSwap.value
-            }
+            // Counted for the "across N sensor(s)" figure and for nothing else:
+            // the *cost* below is paid per set regardless.
+            if entry.sensor != previousSensor { swaps += 1 }
             previousSensor = entry.sensor
+
+            // Every set brings the sensor up and waits for stillness, whether
+            // or not the sensor changed. Measured on a sensor *change*, so for
+            // an unchanged sensor this is an upper bound — reconfiguring the
+            // device already open has never been timed separately.
+            overhead += profile.sensorSwap.value
+            parts.setup += profile.sensorSwap.value
 
             let specs = entry.captureSet.rendered(for: entry.sensor)
             frames += specs.count
@@ -145,12 +162,16 @@ struct SessionEstimate {
                 if firing == .sequential { overhead += minimumGap; parts.gaps += minimumGap }
             }
         }
-        if includeStillness { parts.settles = Double(swaps) * profile.stillnessTimeout.value }
+        // Per set, for the same reason: the stillness wait runs on every set.
+        if includeStillness {
+            parts.settles = Double(entries.count) * profile.stillnessTimeout.value
+        }
         return SessionEstimate(
             profile: profile,
             frameCount: frames, sensorSwaps: swaps, bracketSeams: seams,
             exposureSeconds: exposure, overheadSeconds: overhead,
-            stillnessWorstCaseSeconds: includeStillness ? Double(swaps) * profile.stillnessTimeout.value : 0,
+            stillnessWorstCaseSeconds: includeStillness
+                ? Double(entries.count) * profile.stillnessTimeout.value : 0,
             breakdown: parts)
     }
 
