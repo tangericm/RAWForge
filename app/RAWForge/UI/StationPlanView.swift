@@ -19,57 +19,32 @@ struct StationPlanView: View {
 
     var body: some View {
         let e = estimate
-        return Section("Plan") {
+        return Group {
             if model.shotList.entries.isEmpty {
-                Text("Nothing planned yet.").font(.caption).foregroundStyle(.secondary)
+                Section { Text("Nothing planned yet.").font(.caption).foregroundStyle(.secondary) }
             } else {
-                timeline
-                Divider()
-                budget(e)
+                Section("Where the time goes") {
+                    TimeBudgetBar(breakdown: e.breakdown)
+                        .padding(.vertical, 4)
+                    Text(String(format: "%.0f%% of this station is not shooting — swaps, "
+                                + "settling and seams. The pose is held for all of it.",
+                                100 * e.breakdown.notShooting))
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                Section("Timeline") {
+                    StationTimeline(entries: model.shotList.entries,
+                                    cursor: model.shotList.cursor,
+                                    estimate: e,
+                                    minimumGap: model.minimumGap,
+                                    bracketCeiling: model.bracketCeiling)
+                        .padding(.vertical, 4)
+                }
+                Section("Totals") { budget(e) }
             }
         }
         // Reading every recent station's log to derive the correction ratio is
-        // file work, so it happens once off the render path rather than inside
-        // a hidden zero-height row.
+        // file work, so it happens once off the render path.
         .task { calibration = EstimateCalibration.fromRecentStations() }
-    }
-
-    /// One row per set, dimmed once the cursor has passed it. The swap rows
-    /// exist because a swap costs longer than an entire 8-frame bracket, and a
-    /// plan that hides its most expensive step is misleading.
-    private var timeline: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(model.shotList.entries.enumerated()), id: \.element.id) { i, entry in
-                let isPast = i < model.shotList.cursor
-                let isNow = i == model.shotList.cursor
-                let newSensor = i == 0 || model.shotList.entries[i - 1].sensor != entry.sensor
-
-                if newSensor {
-                    row(icon: "arrow.triangle.swap", tint: .purple,
-                        title: "swap to \(entry.sensor.rawValue)",
-                        detail: SessionEstimate.formatDuration(DeviceProfile.active.sensorSwap.value)
-                            + " · pose held, nothing shot",
-                        dim: isPast)
-                    row(icon: "hand.raised", tint: .blue, title: "settle",
-                        detail: SessionEstimate.formatDuration(DeviceProfile.active.stillnessTimeout.value)
-                            + " · measured tap-transient decay", dim: isPast)
-                }
-                row(icon: isPast ? "checkmark.circle.fill"
-                        : isNow ? "arrowtriangle.right.fill" : "circle",
-                    tint: isPast ? .green : isNow ? .accentColor : .secondary,
-                    title: entry.captureSet.name + " v\(entry.captureSet.version)",
-                    detail: "\(entry.frameCount) frames · "
-                        + SessionEstimate.formatDuration(setDuration(entry)),
-                    dim: isPast, bold: isNow)
-            }
-        }
-    }
-
-    private func setDuration(_ entry: ShotListEntry) -> TimeInterval {
-        SessionEstimate.forShotList([entry],
-                                    minimumGap: model.minimumGap,
-                                    includeStillness: false,
-                                    bracketCeiling: model.bracketCeiling).typicalSeconds
     }
 
     private func budget(_ e: SessionEstimate) -> some View {

@@ -175,6 +175,10 @@ struct PlanSheet: View {
                         figure(SessionEstimate.formatDuration(e.typicalSeconds), "typical")
                         figure(SessionEstimate.formatBytes(e.typicalBytes), "on disk")
                     }
+                    TimeBudgetBar(breakdown: e.breakdown)
+                    Text(String(format: "%.0f%% of it is not shooting",
+                                100 * e.breakdown.notShooting))
+                        .font(.caption2).foregroundStyle(.secondary)
                     if let fits = e.fitsAvailableStorage, !fits {
                         Label("Will not fit at worst case — the station would abort mid-shoot.",
                               systemImage: "exclamationmark.octagon.fill")
