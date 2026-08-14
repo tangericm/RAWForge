@@ -15,6 +15,10 @@ struct LogConsoleView: View {
     @State private var shared: ExportedArchive?
     @State private var tally = (warnings: 0, errors: 0, total: 0)
     @State private var lastGeneration: UInt64 = .max
+    /// How many matching lines have arrived since following was turned off.
+    @State private var pendingBelow = 0
+    /// The newest entry the operator has actually seen.
+    @State private var seenThrough: UInt64 = 0
 
     private var categories: Set<DebugLog.Category> {
         Set(DebugLog.Category.allCases).subtracting(mutedCategories)
@@ -66,12 +70,21 @@ struct LogConsoleView: View {
                 .pickerStyle(.segmented)
                 .onChange(of: minimum) { refresh(force: true) }
 
-                // Following is what you want while something is going wrong, and
-                // exactly what you don't want while reading back what did.
-                Toggle(isOn: $follow) {
-                    Image(systemName: follow ? "arrow.down.to.line" : "hand.raised")
+                // Following is what you want while something is going wrong and
+                // exactly what you don't want while reading back what did. It
+                // used to be an unlabelled arrow, which looked like it did
+                // nothing — with a screenful of lines there is no scrolling to
+                // see either way, so the only feedback was the icon changing.
+                Button {
+                    follow.toggle()
+                    if follow { pendingBelow = 0 }
+                } label: {
+                    Label(follow ? "Live" : "Paused",
+                          systemImage: follow ? "arrow.down.to.line" : "pause.fill")
+                        .font(.caption2)
                 }
-                .toggleStyle(.button)
+                .buttonStyle(.bordered)
+                .tint(follow ? .accentColor : .secondary)
             }
 
             ScrollView(.horizontal, showsIndicators: false) {
@@ -128,6 +141,31 @@ struct LogConsoleView: View {
 
     private var stream: some View {
         ScrollViewReader { proxy in
+            scrollBody(proxy)
+                // Paused with new lines arriving is the one state where the
+                // screen is silently out of date, so it says so and offers the
+                // way back rather than leaving it to be noticed.
+                .overlay(alignment: .bottom) {
+                    if !follow && pendingBelow > 0 {
+                        Button {
+                            follow = true
+                            pendingBelow = 0
+                            withAnimation { proxy.scrollTo(bottomAnchor, anchor: .bottom) }
+                        } label: {
+                            Label("\(pendingBelow) new", systemImage: "arrow.down")
+                                .font(.caption2).padding(.horizontal, 10).padding(.vertical, 6)
+                                .background(.thinMaterial, in: Capsule())
+                                .overlay(Capsule().stroke(.quaternary))
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.bottom, 10)
+                    }
+                }
+        }
+    }
+
+    private func scrollBody(_ proxy: ScrollViewProxy) -> some View {
+        Group {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     if entries.isEmpty {
@@ -205,6 +243,15 @@ struct LogConsoleView: View {
         lastGeneration = g
         entries = DebugLog.shared.snapshot(minimum: minimum, categories: categories, search: search)
         tally = DebugLog.shared.tally()
+
+        // Counted against what matches the current filters, not against the raw
+        // log — "12 new" that turn out to be filtered out would be a lie.
+        if follow {
+            seenThrough = entries.last?.id ?? seenThrough
+            pendingBelow = 0
+        } else {
+            pendingBelow = entries.filter { $0.id > seenThrough }.count
+        }
     }
 
     private func visibleText() -> String {

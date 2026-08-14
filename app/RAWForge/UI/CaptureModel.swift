@@ -40,16 +40,18 @@ final class CaptureModel: ObservableObject {
     @Published var stillnessLive: String = ""
     @Published var stationEstimateSeconds: Double?
 
-    // Shot-list builder
-    @Published var builderSensor: SensorCapability.Sensor = .wide
-    @Published var builderProtocolName: String = ""
     @Published var groupShotListBySensor = true
 
-    func addToShotList() {
-        guard let p = ProtocolLibrary.load(named: builderProtocolName) else { return }
+    /// Adds one protocol on one sensor. Named directly rather than assembled
+    /// from two pickers and a button: choosing what to shoot and where is a
+    /// single decision, and making it three interactions was the main thing
+    /// wrong with the plan screen.
+    func addToShotList(_ set: CaptureSet, sensor: SensorCapability.Sensor) {
         var entries = shotList.entries
-        entries.append(ShotListEntry(index: entries.count, sensor: builderSensor, captureSet: p))
+        entries.append(ShotListEntry(index: entries.count, sensor: sensor, captureSet: set))
         applyShotList(entries)
+        logInfo(.flow, "shot list: added \(set.name) v\(set.version) on \(sensor.rawValue) "
+                + "(\(set.specs.count) frames)")
     }
 
     func removeFromShotList(at offsets: IndexSet) {
