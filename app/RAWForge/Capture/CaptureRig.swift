@@ -320,22 +320,68 @@ final class CaptureRig {
 
     var maxBracketCount: Int { output.maxBracketedCapturePhotoCount }
 
-    /// One hardware request carrying per-frame exposure. The device is not
+    /// How a capture set was split across hardware requests. `[8, 8]` for a
+    /// 16-frame set on a sensor with a ceiling of 8; a single element means it
+    /// fitted in one request.
+    typealias BracketRun = [Int]
+
+    /// A pause between hardware requests — margin, not a measured threshold.
+    ///
+    /// The actual fix for back-to-back requests was releasing the previous
+    /// request's photos before issuing the next. Holding sixteen 48 MP Bayer
+    /// buffers while asking for eight more returns `-11800 / -12686` after
+    /// about 14 ms, every frame of it, immediately: the same exhaustion the
+    /// sequential path hit before it began streaming frames to disk instead of
+    /// holding them.
+    ///
+    /// Measured on an iPhone 15 Pro once the release was in place: 0.05, 0.10,
+    /// 0.15 and 0.25 s each delivered 16 of 16, and wall clock barely moved
+    /// between them — the seam is dominated by the pipeline's own recovery
+    /// (~0.5 s), not by this. So **0.25 s is a choice**: the failure it guards
+    /// against costs a whole station, and in a real run the caller is writing
+    /// 10 MB and computing a full-frame histogram per frame inside this window
+    /// anyway.
+    static let interRequestSettle: TimeInterval = 0.25
+
+    /// Fires a capture set as hardware brackets, splitting it across as many
+    /// requests as the sensor's ceiling demands.
+    ///
+    /// One request carries per-frame exposure and the device is not
     /// reconfigured between frames — the parameters ride with the request — so
     /// there is no convergence to wait for and the inter-frame gap is
-    /// pipeline-bound.
+    /// pipeline-bound. That is the whole reason to prefer a bracket, and it is
+    /// worth keeping for a set longer than the ceiling.
+    ///
+    /// **A set past the ceiling used to abort the station.** That was wrong
+    /// twice over: the ceiling is knowable before anything fires, so nothing
+    /// was learned by discovering it at frame nine; and falling back to
+    /// sequential would have changed the timing of *every* frame, not just the
+    /// ones past the boundary. Splitting keeps bracket timing within each chunk
+    /// and confines the cost to the seams — which are recorded, so a reader can
+    /// see exactly where they fall.
     ///
     /// `photoQualityPrioritization` is deliberately untouched: requesting Bayer
     /// already forces `.speed`, and setting it explicitly on a bracket is the
     /// documented conflict (#14 item 1). Leaving it alone is the honest test.
-    func captureBracket(_ specs: [CaptureSpec]) async throws -> [AVCapturePhoto] {
+    ///
+    /// Photos are handed to `bank` request by request and released before the
+    /// next request is issued. That is not tidiness: holding sixteen 48 MP
+    /// Bayer buffers while asking for more is what exhausts the pipeline, and
+    /// the caller writes each frame to disk as it arrives anyway.
+    func captureBracket(_ specs: [CaptureSpec],
+                        bank: (AVCapturePhoto, CaptureSpec) throws -> Void) async throws -> BracketRun {
         guard let d = device else { throw RigError.notConfigured }
         try assertZoomInvariant()
         guard !specs.isEmpty else { throw RigError.captureFailed("empty capture set") }
-        guard specs.count <= output.maxBracketedCapturePhotoCount else {
+
+        let ceiling = output.maxBracketedCapturePhotoCount
+        guard ceiling > 0 else {
             throw RigError.unsupported(
-                "\(specs.count) frames exceeds maxBracketedCapturePhotoCount of \(output.maxBracketedCapturePhotoCount) — use sequential")
+                "this sensor reports a hardware bracket ceiling of 0 — use sequential")
         }
+
+        // Rails are checked across the whole set before any of it fires, so a
+        // set that cannot run does not run half way.
         let f = d.activeFormat
         for s in specs {
             let t = CMTime(seconds: s.shutterSeconds, preferredTimescale: 1_000_000_000)
@@ -346,16 +392,38 @@ final class CaptureRig {
             }
         }
 
-        let bracket = specs.map { s in
-            AVCaptureManualExposureBracketedStillImageSettings.manualExposureSettings(
-                exposureDuration: CMTime(seconds: s.shutterSeconds, preferredTimescale: 1_000_000_000),
-                iso: s.iso)
+        let chunks = stride(from: 0, to: specs.count, by: ceiling).map {
+            Array(specs[$0 ..< Swift.min($0 + ceiling, specs.count)])
         }
-        let settings = AVCapturePhotoBracketSettings(
-            rawPixelFormatType: bayerFormat,
-            processedFormat: nil,
-            bracketedSettings: bracket)
-        return try await run(settings)
+        if chunks.count > 1 {
+            logInfo(.capture, "\(specs.count) frames exceeds this sensor's bracket ceiling of "
+                    + "\(ceiling) — firing as \(chunks.count) requests of "
+                    + chunks.map { "\($0.count)" }.joined(separator: "+"))
+        }
+
+        for (i, chunk) in chunks.enumerated() {
+            if i > 0 {
+                try await Task.sleep(nanoseconds: UInt64(Self.interRequestSettle * 1_000_000_000))
+            }
+            let bracket = chunk.map { s in
+                AVCaptureManualExposureBracketedStillImageSettings.manualExposureSettings(
+                    exposureDuration: CMTime(seconds: s.shutterSeconds, preferredTimescale: 1_000_000_000),
+                    iso: s.iso)
+            }
+            let settings = AVCapturePhotoBracketSettings(
+                rawPixelFormatType: bayerFormat,
+                processedFormat: nil,
+                bracketedSettings: bracket)
+            let delivered = try await run(settings)
+            guard delivered.count == chunk.count else {
+                throw RigError.captureFailed(
+                    "request \(i + 1) of \(chunks.count) returned \(delivered.count) "
+                    + "of \(chunk.count) frames")
+            }
+            // Written and released here, before the next request is issued.
+            for (photo, spec) in zip(delivered, chunk) { try bank(photo, spec) }
+        }
+        return chunks.map(\.count)
     }
 
     private func run(_ settings: AVCapturePhotoSettings) async throws -> [AVCapturePhoto] {

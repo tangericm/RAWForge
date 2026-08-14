@@ -21,6 +21,17 @@ enum ProtocolLibrary {
             .appendingPathComponent("protocols", isDirectory: true)
     }
 
+    /// Created at launch rather than on first save.
+    ///
+    /// The app works either way — `all()` simply returns nothing when the
+    /// directory is absent — but a folder that does not exist cannot be copied
+    /// into, and #11 makes Files and a cable the transfer route. A protocol set
+    /// authored on one device should be droppable onto another without having
+    /// to save something first to bring the folder into being.
+    static func ensureDirectory() {
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+
     private static var encoder: JSONEncoder {
         let e = JSONEncoder(); e.outputFormatting = [.prettyPrinted, .sortedKeys]; return e
     }

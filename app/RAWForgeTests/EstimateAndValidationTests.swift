@@ -147,3 +147,57 @@ final class EstimateCalibrationTests: XCTestCase {
             .summary?.contains("tracking") ?? false)
     }
 }
+
+/// A set longer than the sensor's hardware bracket ceiling is split across
+/// requests, and each seam costs seventeen times an in-request gap. A plan that
+/// ignored that would badly under-estimate any long set.
+final class BracketSeamEstimateTests: XCTestCase {
+
+    private func entry(frames: Int) -> ShotListEntry {
+        ShotListEntry(
+            index: 0, sensor: .wide,
+            captureSet: .repeated(CaptureSpec(shutterSeconds: 1.0 / 250, iso: 100),
+                                  count: frames, name: "repeat"))
+    }
+
+    func testASetInsideTheCeilingHasNoSeams() {
+        let e = SessionEstimate.forShotList([entry(frames: 8)], mode: .hardwareBracket,
+                                            minimumGap: 0, bracketCeiling: 8)
+        XCTAssertEqual(e.bracketSeams, 0)
+    }
+
+    func testSixteenFramesOnAnEightCeilingCostsOneSeam() {
+        let e = SessionEstimate.forShotList([entry(frames: 16)], mode: .hardwareBracket,
+                                            minimumGap: 0, bracketCeiling: 8)
+        XCTAssertEqual(e.bracketSeams, 1)
+        let without = SessionEstimate.forShotList([entry(frames: 16)], mode: .hardwareBracket,
+                                                  minimumGap: 0, bracketCeiling: nil)
+        XCTAssertEqual(e.typicalSeconds - without.typicalSeconds,
+                       SessionEstimate.bracketSeam, accuracy: 0.001)
+    }
+
+    func testSeamsScaleWithHowFarPastTheCeilingTheSetGoes() {
+        for (frames, seams) in [(9, 1), (16, 1), (17, 2), (24, 2), (64, 7)] {
+            let e = SessionEstimate.forShotList([entry(frames: frames)], mode: .hardwareBracket,
+                                                minimumGap: 0, bracketCeiling: 8)
+            XCTAssertEqual(e.bracketSeams, seams, "\(frames) frames on a ceiling of 8")
+        }
+    }
+
+    /// Sequential reconfigures per rung and issues one request per frame, so
+    /// there is no bracket boundary to pay for.
+    func testSequentialHasNoSeamsAtAll() {
+        let e = SessionEstimate.forShotList([entry(frames: 64)], mode: .sequential,
+                                            minimumGap: 0, bracketCeiling: 8)
+        XCTAssertEqual(e.bracketSeams, 0)
+    }
+
+    func testRequestCountRoundsUpAndSurvivesNonsense() {
+        XCTAssertEqual(SessionEstimate.requestCount(frames: 16, ceiling: 8), 2)
+        XCTAssertEqual(SessionEstimate.requestCount(frames: 17, ceiling: 8), 3)
+        XCTAssertEqual(SessionEstimate.requestCount(frames: 1, ceiling: 8), 1)
+        XCTAssertEqual(SessionEstimate.requestCount(frames: 8, ceiling: 0), 0,
+                       "a ceiling of zero must not divide by zero")
+        XCTAssertEqual(SessionEstimate.requestCount(frames: 0, ceiling: 8), 0)
+    }
+}

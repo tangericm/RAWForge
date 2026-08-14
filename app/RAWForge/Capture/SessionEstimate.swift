@@ -33,14 +33,33 @@ struct SessionEstimate {
     /// each reaches its baseline by 0.2-0.4 s.
     static let stillnessTimeout: TimeInterval = 0.4
 
+    /// The seam between two hardware bracket requests, when a set is longer
+    /// than the sensor's ceiling and has to be split.
+    ///
+    /// Measured on an iPhone 15 Pro: 16 frames as 8+8 put the gap inside a
+    /// request at 33.4 ms — the sensor's own cadence — and the gap across the
+    /// seam at **567 ms**. Seventeen times the in-request gap, so a plan that
+    /// ignored it would badly under-estimate any long set.
+    static let bracketSeam: TimeInterval = 0.567
+
     /// 1,675 real iPhone DNGs averaged 10.0 MB with a maximum of 30.7 MB (#11).
     static let averageFrameBytes: Int64 = 10_000_000
     static let worstCaseFrameBytes: Int64 = 30_700_000
+
+    /// How many hardware requests a set of `frames` takes on a sensor whose
+    /// bracket ceiling is `ceiling`.
+    static func requestCount(frames: Int, ceiling: Int) -> Int {
+        guard ceiling > 0, frames > 0 else { return 0 }
+        return Int((Double(frames) / Double(ceiling)).rounded(.up))
+    }
 
     // MARK: - Results
 
     let frameCount: Int
     let sensorSwaps: Int
+    /// Extra hardware requests beyond one per set, from sets longer than the
+    /// sensor's bracket ceiling. Zero for sequential runs and for sets that fit.
+    let bracketSeams: Int
     /// Exposure time alone — the irreducible part.
     let exposureSeconds: TimeInterval
     /// Everything that is not exposure: swaps, per-frame overhead, waits.
@@ -63,12 +82,17 @@ struct SessionEstimate {
 
     // MARK: - Building
 
+    /// `bracketCeiling` is how many frames fit in one hardware request on the
+    /// sensors in play. Passing nil skips seam accounting, which is right for a
+    /// sequential run and for a caller that does not yet know the ceiling.
     static func forShotList(_ entries: [ShotListEntry], mode: ExecutionMode,
-                            minimumGap: TimeInterval, includeStillness: Bool = true) -> SessionEstimate {
+                            minimumGap: TimeInterval, includeStillness: Bool = true,
+                            bracketCeiling: Int? = nil) -> SessionEstimate {
         var frames = 0
         var exposure: TimeInterval = 0
         var overhead: TimeInterval = 0
         var swaps = 0
+        var seams = 0
         var previousSensor: SensorCapability.Sensor?
 
         for entry in entries {
@@ -77,6 +101,15 @@ struct SessionEstimate {
 
             let specs = entry.captureSet.rendered(for: entry.sensor)
             frames += specs.count
+
+            // A set past the ceiling is split across requests, and each seam
+            // costs seventeen times an in-request gap.
+            if mode == .hardwareBracket, let ceiling = bracketCeiling {
+                let extra = Swift.max(0, requestCount(frames: specs.count, ceiling: ceiling) - 1)
+                seams += extra
+                overhead += Double(extra) * bracketSeam
+            }
+
             for spec in specs {
                 exposure += spec.shutterSeconds
                 switch mode {
@@ -91,7 +124,7 @@ struct SessionEstimate {
             }
         }
         return SessionEstimate(
-            frameCount: frames, sensorSwaps: swaps,
+            frameCount: frames, sensorSwaps: swaps, bracketSeams: seams,
             exposureSeconds: exposure, overheadSeconds: overhead,
             stillnessWorstCaseSeconds: includeStillness ? Double(swaps) * stillnessTimeout : 0)
     }

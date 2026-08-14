@@ -166,9 +166,15 @@ struct ProtocolEditorView: View {
                         .font(.caption2).foregroundStyle(.orange)
                 }
                 if checked.kept.count > cap.maxBracketedCapturePhotoCount {
-                    Label("\(checked.kept.count) frames is past \(cap.sensor.rawValue)'s hardware "
-                          + "bracket ceiling of \(cap.maxBracketedCapturePhotoCount), so this set "
-                          + "runs sequentially.", systemImage: "info.circle")
+                    let ceiling = cap.maxBracketedCapturePhotoCount
+                    let requests = SessionEstimate.requestCount(frames: checked.kept.count,
+                                                                ceiling: ceiling)
+                    Label("Past \(cap.sensor.rawValue)'s hardware bracket ceiling of \(ceiling), "
+                          + "so this fires as \(requests) requests. Frames within a request are "
+                          + "\(Int(SessionEstimate.sensorFramePeriod * 1000)) ms apart; each seam "
+                          + "between requests costs about "
+                          + "\(Int(SessionEstimate.bracketSeam * 1000)) ms.",
+                          systemImage: "rectangle.split.3x1")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
             }

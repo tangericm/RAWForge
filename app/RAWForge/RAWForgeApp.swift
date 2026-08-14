@@ -8,6 +8,7 @@ struct RAWForgeApp: App {
         // First thing, before any capture code can fail: the log has to be open
         // to record the failure that opens it.
         DebugLog.shared.start(device: DeviceIdentity.current())
+        ProtocolLibrary.ensureDirectory()
     }
 
     var body: some Scene {

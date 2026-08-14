@@ -129,7 +129,8 @@ extension CaptureModel {
         lastFault = nil
         shotList.cursor = 0
         stationEstimateSeconds = SessionEstimate.forShotList(
-            shotList.entries, mode: mode, minimumGap: minimumGap).typicalSeconds
+            shotList.entries, mode: mode, minimumGap: minimumGap,
+            bracketCeiling: bracketCeiling).typicalSeconds
         motionRecorder.start()
         set(.stationOpen)
     }
@@ -197,23 +198,25 @@ extension CaptureModel {
             let wb = try await rig.lockWhiteBalance()
 
             set(.capturing)
-            let frames = try await shoot(checked.kept, sensor: entry.sensor, wb: wb,
-                                         session: session, station: stationIndex,
-                                         bracketIndex: pendingBrackets.count + 1)
+            let shot = try await shoot(checked.kept, sensor: entry.sensor, wb: wb,
+                                       session: session, station: stationIndex,
+                                       bracketIndex: pendingBrackets.count + 1)
             pendingBrackets.append(BracketRecord(
                 bracketIndex: pendingBrackets.count + 1, sensor: entry.sensor.rawValue,
                 sensorUniqueID: cap.uniqueID, captureSet: entry.captureSet,
                 renderedSpecs: checked.kept, evOffsetStops: offset,
-                executionMode: mode.rawValue, droppedRungs: checked.dropped,
+                executionMode: mode.rawValue,
+                bracketRequestSizes: shot.bracketRequestSizes,
+                droppedRungs: checked.dropped,
                 minimumInterFrameGapSeconds: minimumGap > 0 ? minimumGap : nil,
                 stillnessSettled: settled, stillnessWaitSeconds: stillWait,
                 motionAtFire: motionAtFire,
-                dwellSeconds: dwell > 0 ? dwell : nil, note: nil, frames: frames))
+                dwellSeconds: dwell > 0 ? dwell : nil, note: nil, frames: shot.frames))
 
             rig.stopSession()
             shotList.cursor += 1
             logInfo(.flow, String(format: "set banked — %d frame(s), stillness %@ after %.2f s",
-                                  frames.count, settled ? "settled" : "elevated", stillWait))
+                                  shot.frames.count, settled ? "settled" : "elevated", stillWait))
             set(.stationOpen)
             startFraming()
         } catch {
