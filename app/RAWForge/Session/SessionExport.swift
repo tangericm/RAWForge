@@ -56,6 +56,10 @@ enum SessionExport {
         return destination
     }
 
+    static func formatTotal(_ sessionIds: [String]) -> String {
+        SessionEstimate.formatBytes(sessionIds.reduce(Int64(0)) { $0 + sizeOnDisk(sessionId: $1) })
+    }
+
     /// Bytes on disk, so the operator knows what they are about to send before
     /// they send it — a three-sensor scene runs to ~2 GB (#11).
     static func sizeOnDisk(sessionId: String) -> Int64 {

@@ -9,6 +9,7 @@ import SwiftUI
 /// worst case it is labelled as one.
 struct StationPlanView: View {
     @ObservedObject var model: CaptureModel
+    @State private var calibration: EstimateCalibration = .identity
 
     private var estimate: SessionEstimate {
         SessionEstimate.forShotList(model.shotList.entries, mode: model.mode,
@@ -18,6 +19,8 @@ struct StationPlanView: View {
     var body: some View {
         let e = estimate
         return Section("Plan") {
+            Color.clear.frame(height: 0)
+                .onAppear { calibration = EstimateCalibration.fromRecentStations() }
             if model.shotList.entries.isEmpty {
                 Text("nothing planned").font(.caption).foregroundStyle(.secondary)
             } else {
@@ -71,8 +74,11 @@ struct StationPlanView: View {
             line("Exposure", SessionEstimate.formatDuration(e.exposureSeconds))
             line("Overhead", SessionEstimate.formatDuration(e.overheadSeconds)
                  + " (swaps, per-frame, gaps)")
-            line("Time", SessionEstimate.formatDuration(e.typicalSeconds)
-                 + " · up to " + SessionEstimate.formatDuration(e.worstCaseSeconds) + " with waits")
+            line("Time", SessionEstimate.formatDuration(calibration.apply(e.typicalSeconds))
+                 + " · up to " + SessionEstimate.formatDuration(calibration.apply(e.worstCaseSeconds)))
+            if let note = calibration.summary {
+                Text(note).font(.caption2).foregroundStyle(.secondary)
+            }
             line("Storage", SessionEstimate.formatBytes(e.typicalBytes)
                  + " · worst case " + SessionEstimate.formatBytes(e.worstCaseBytes))
             if let fits = e.fitsAvailableStorage {

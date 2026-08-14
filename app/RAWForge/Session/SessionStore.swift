@@ -199,14 +199,42 @@ enum SessionStore {
         return try? decoder.decode(SessionRecord.self, from: data)
     }
 
-    static func loadStations(_ sessionId: String) -> [StationRecord] {
+    /// Stations that parsed, and the names of any that did not.
+    ///
+    /// A file that fails to decode used to vanish silently, which is the worst
+    /// possible handling: the browser would show four stations where five were
+    /// shot and nothing would say so. An unreadable record is a fact about the
+    /// session and belongs on screen.
+    static func loadStationsDetailed(_ sessionId: String) -> (stations: [StationRecord], unreadable: [String]) {
         let dir = directory(for: sessionId)
         let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
-        return files
-            .filter { $0.lastPathComponent.hasPrefix("station-") && $0.pathExtension == "json" }
-            .compactMap { try? Data(contentsOf: $0) }
-            .compactMap { try? decoder.decode(StationRecord.self, from: $0) }
-            .sorted { $0.stationIndex < $1.stationIndex }
+        var stations: [StationRecord] = []
+        var unreadable: [String] = []
+        for f in files where f.lastPathComponent.hasPrefix("station-") && f.pathExtension == "json" {
+            guard let data = try? Data(contentsOf: f),
+                  let record = try? decoder.decode(StationRecord.self, from: data) else {
+                unreadable.append(f.lastPathComponent); continue
+            }
+            stations.append(record)
+        }
+        return (stations.sorted { $0.stationIndex < $1.stationIndex }, unreadable.sorted())
+    }
+
+    static func loadStations(_ sessionId: String) -> [StationRecord] {
+        loadStationsDetailed(sessionId).stations
+    }
+
+    /// #11 makes the session directory the unit that is moved and the unit that
+    /// is deleted once transferred. Without this the only way to reclaim space
+    /// is to delete the whole app, which takes the protocols and every other
+    /// session with it.
+    ///
+    /// Deliberately unguarded by an "exported?" check: #11 removed
+    /// exported/unexported tracking, and a flag the app cannot keep honest is
+    /// worse than none. The confirmation lives in the UI, where the operator
+    /// can see what they are about to lose.
+    static func deleteSession(_ sessionId: String) throws {
+        try FileManager.default.removeItem(at: directory(for: sessionId))
     }
 
     static func frameAndStationCount(sessionId: String) -> (stations: Int, frames: Int, megabytes: Int) {
