@@ -47,11 +47,11 @@ struct StationPlanView: View {
                 if newSensor {
                     row(icon: "arrow.triangle.swap", tint: .purple,
                         title: "swap to \(entry.sensor.rawValue)",
-                        detail: SessionEstimate.formatDuration(SessionEstimate.sensorSwap)
+                        detail: SessionEstimate.formatDuration(DeviceProfile.active.sensorSwap.value)
                             + " · pose held, nothing shot",
                         dim: isPast)
                     row(icon: "hand.raised", tint: .blue, title: "settle",
-                        detail: SessionEstimate.formatDuration(SessionEstimate.stillnessTimeout)
+                        detail: SessionEstimate.formatDuration(DeviceProfile.active.stillnessTimeout.value)
                             + " · measured tap-transient decay", dim: isPast)
                 }
                 row(icon: isPast ? "checkmark.circle.fill"
@@ -83,13 +83,21 @@ struct StationPlanView: View {
                 // obvious from the frame count: it appears only when a set is
                 // longer than the sensor can fire in one request.
                 line("Seams", "\(e.bracketSeams) × "
-                     + SessionEstimate.formatDuration(SessionEstimate.bracketSeam)
+                     + SessionEstimate.formatDuration(DeviceProfile.active.bracketSeam.value)
                      + " — sets longer than the bracket ceiling")
             }
             line("Time", SessionEstimate.formatDuration(calibration.apply(e.typicalSeconds))
                  + " · up to " + SessionEstimate.formatDuration(calibration.apply(e.worstCaseSeconds)))
             if let note = calibration.summary {
                 Text(note).font(.caption2).foregroundStyle(.secondary)
+            }
+            // The plan must not read the same whether its timings were measured
+            // here or inherited from another phone.
+            if !e.profile.isCharacterised {
+                Label("Timings borrowed from a reference \(DeviceProfile.referenceDevice) — "
+                      + "measure this device on the Bench to make them yours.",
+                      systemImage: "questionmark.circle")
+                    .font(.caption2).foregroundStyle(.orange)
             }
             line("Storage", SessionEstimate.formatBytes(e.typicalBytes)
                  + " · worst case " + SessionEstimate.formatBytes(e.worstCaseBytes))

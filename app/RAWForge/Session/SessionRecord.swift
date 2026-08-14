@@ -50,6 +50,14 @@ struct SessionRecord: Codable, Equatable {
     let availableCapacityBytesAtOpen: Int64?
     let capacityMeasuredWith: String
 
+    /// What the app believed about this hardware's timings when it planned the
+    /// shoot, inlined rather than referenced — on the same rule as capture
+    /// protocols. A reader holding only this session can tell whether the plan
+    /// it was shot under rested on figures measured here or borrowed from the
+    /// reference phone, which is the difference between a timing anomaly worth
+    /// investigating and one that was predicted.
+    let deviceProfile: DeviceProfile?
+
     /// Named at open so the reason a sensor is missing from the frames is in
     /// the file rather than inferred (#6).
     let excluded: [Exclusion]
@@ -60,7 +68,7 @@ struct SessionRecord: Codable, Equatable {
     }
 
     static let currentFormat = "rawforge.session"
-    static let currentSchemaVersion = 3
+    static let currentSchemaVersion = 4
 
     static func thermalLabel() -> String {
         switch ProcessInfo.processInfo.thermalState {
@@ -75,7 +83,9 @@ struct SessionRecord: Codable, Equatable {
     init(sessionId: String, openedAt: Date, openedAtUptime: TimeInterval,
          capability: CapabilityReport, availableCapacityBytes: Int64?,
          sessionType: String = "scene",
-         calibrationSessionId: String? = nil, calibrationAgeSeconds: Double? = nil) {
+         calibrationSessionId: String? = nil, calibrationAgeSeconds: Double? = nil,
+         deviceProfile: DeviceProfile? = .active) {
+        self.deviceProfile = deviceProfile
         self.sessionType = sessionType
         self.calibrationSessionId = calibrationSessionId
         self.calibrationAgeSeconds = calibrationAgeSeconds

@@ -16,7 +16,7 @@ final class SessionEstimateTests: XCTestCase {
                                             includeStillness: false)
         XCTAssertEqual(e.frameCount, 8)
         // 8 frames x (33.4 ms - 1 ms) of overhead, plus one swap.
-        let expected = SessionEstimate.sensorSwap + 8 * (SessionEstimate.sensorFramePeriod - 0.001)
+        let expected = DeviceProfile.reference.sensorSwap.value + 8 * (DeviceProfile.reference.sensorFramePeriod.value - 0.001)
         XCTAssertEqual(e.overheadSeconds, expected, accuracy: 1e-9)
     }
 
@@ -25,7 +25,7 @@ final class SessionEstimateTests: XCTestCase {
                                             mode: .hardwareBracket, minimumGap: 0,
                                             includeStillness: false)
         // Exposure exceeds the frame period, so no per-frame overhead remains.
-        XCTAssertEqual(e.overheadSeconds, SessionEstimate.sensorSwap, accuracy: 1e-9)
+        XCTAssertEqual(e.overheadSeconds, DeviceProfile.reference.sensorSwap.value, accuracy: 1e-9)
         XCTAssertEqual(e.exposureSeconds, 2.0, accuracy: 1e-9)
     }
 
@@ -162,18 +162,21 @@ final class BracketSeamEstimateTests: XCTestCase {
 
     func testASetInsideTheCeilingHasNoSeams() {
         let e = SessionEstimate.forShotList([entry(frames: 8)], mode: .hardwareBracket,
-                                            minimumGap: 0, bracketCeiling: 8)
+                                            minimumGap: 0, bracketCeiling: 8,
+                                            profile: .reference)
         XCTAssertEqual(e.bracketSeams, 0)
     }
 
     func testSixteenFramesOnAnEightCeilingCostsOneSeam() {
         let e = SessionEstimate.forShotList([entry(frames: 16)], mode: .hardwareBracket,
-                                            minimumGap: 0, bracketCeiling: 8)
+                                            minimumGap: 0, bracketCeiling: 8,
+                                            profile: .reference)
         XCTAssertEqual(e.bracketSeams, 1)
         let without = SessionEstimate.forShotList([entry(frames: 16)], mode: .hardwareBracket,
-                                                  minimumGap: 0, bracketCeiling: nil)
+                                                  minimumGap: 0, bracketCeiling: nil,
+                                                  profile: .reference)
         XCTAssertEqual(e.typicalSeconds - without.typicalSeconds,
-                       SessionEstimate.bracketSeam, accuracy: 0.001)
+                       DeviceProfile.reference.bracketSeam.value, accuracy: 0.001)
     }
 
     func testSeamsScaleWithHowFarPastTheCeilingTheSetGoes() {
@@ -188,7 +191,8 @@ final class BracketSeamEstimateTests: XCTestCase {
     /// there is no bracket boundary to pay for.
     func testSequentialHasNoSeamsAtAll() {
         let e = SessionEstimate.forShotList([entry(frames: 64)], mode: .sequential,
-                                            minimumGap: 0, bracketCeiling: 8)
+                                            minimumGap: 0, bracketCeiling: 8,
+                                            profile: .reference)
         XCTAssertEqual(e.bracketSeams, 0)
     }
 
