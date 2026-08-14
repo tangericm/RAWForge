@@ -151,7 +151,11 @@ final class DebugLog: @unchecked Sendable {
         let unclean = FileManager.default.fileExists(atPath: marker.path)
         FileManager.default.createFile(atPath: marker.path, contents: Data())
 
-        write(.info, .app, "RAWForge \(device.appVersion) (\(device.appBuild)) launched")
+        write(.info, .app, "RAWForge \(device.buildDescription) launched")
+        if device.isDirtyBuild {
+            write(.warn, .app, "built from a working tree with uncommitted changes — this "
+                  + "binary matches no commit in the history")
+        }
         write(.info, .app, "\(device.modelIdentifier) · \(device.systemName) \(device.systemVersion)"
               + (device.isSimulator ? " · SIMULATOR" : ""))
         write(.info, .app, "log file \(url.lastPathComponent)")
