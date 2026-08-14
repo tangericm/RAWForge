@@ -1,0 +1,102 @@
+# What is checked automatically, and where it runs.
+#
+# This runs on a **self-hosted** runner, and that is a cost decision rather
+# than a preference. This repository is private, GitHub bills macOS runners at
+# 10× against the included minutes, and a realistic hosted run — checkout,
+# install xcodegen, boot a simulator, build, test, build Release — is four to
+# six minutes. That is forty to sixty billed minutes, so a Free account gets
+# three to five runs a month. Rationed CI is CI nobody trusts.
+#
+# The same work takes fourteen seconds on the Mac that wrote it.
+#
+# If this repository ever goes public, delete `runs-on: [self-hosted, macOS]`
+# in favour of `macos-15` and this file needs no other change: public
+# repositories get standard runners free. That is the only reason the steps
+# below avoid anything machine-specific.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# A second push makes the first run's answer irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: [self-hosted, macOS]
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The hardware gate compares HEAD against a recorded commit, which
+          # needs the history between them. A shallow clone cannot answer it.
+          fetch-depth: 0
+
+      # .xcodeproj is not committed — project.yml is the source of truth, and a
+      # generated project in git is a merge conflict waiting to happen.
+      - name: Generate the project
+        working-directory: app
+        run: xcodegen generate
+
+      # Debug, on a simulator. The 13 device-only tests skip here by design;
+      # the gate below is what stops a skip being mistaken for a pass.
+      - name: Simulator suite
+        working-directory: app
+        run: |
+          set -o pipefail
+          xcodebuild -project RAWForge.xcodeproj -scheme RAWForge \
+            -destination "platform=iOS Simulator,name=iPhone 17 Pro" \
+            -derivedDataPath /tmp/rawforge-ci \
+            test 2>&1 | tee /tmp/ci-test.log \
+            | grep -E "Executed [0-9]+ tests?, with|TEST SUCCEEDED|TEST FAILED|error:" || true
+          grep -q "TEST SUCCEEDED" /tmp/ci-test.log
+
+      # Release differs from Debug in whole-module optimisation, and had never
+      # been built at all until late in this project. It also proves the
+      # developer-only screens are absent — gating a NavigationLink is not the
+      # same as gating the view behind it, and that exact mistake shipped once.
+      - name: Release build and developer-code check
+        run: bash app/tools/release-check.sh
+
+      # Advisory, not blocking. main is legitimately unverified for most of a
+      # development cycle, and a check that is red by design gets ignored —
+      # which would cost the signal exactly when it starts mattering. The
+      # blocking form is app/tools/preflight-release.sh.
+      - name: Hardware verification status
+        run: bash app/tools/require-hardware-verification.sh --warn
+
+  # Only ever run deliberately: it needs a phone tethered to the runner, and a
+  # scheduled job that quietly fails because nothing was plugged in teaches
+  # people to ignore it.
+  hardware:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, macOS, device]
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Device suite
+        run: bash app/tools/run-hardware-suite.sh
+
+      # The claim is only worth anything if it is in the history. Committed
+      # rather than kept as an artefact: an artefact expires, and the question
+      # "was this commit ever run on a phone" is asked months later.
+      - name: Commit the verification
+        run: |
+          if [ -n "$(git status --porcelain docs/hardware-verification.json)" ]; then
+            git config user.name  "rawforge-ci"
+            git config user.email "ci@localhost"
+            git add docs/hardware-verification.json
+            git commit -m "Hardware verification: $(git rev-parse --short HEAD)"
+            git push
+          fi
