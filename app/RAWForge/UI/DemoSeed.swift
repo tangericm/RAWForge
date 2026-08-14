@@ -32,9 +32,33 @@ enum DemoSeed {
             modelID: "demo", bayerFormat: 0x62676734, allRawFormats: ["'bgg4'"],
             rawFormatsRequiredRunningSession: false, exclusionReason: nil,
             supportsCustomExposure: true, supportsWhiteBalanceCustomGainLock: true,
+            supportsLockedFocus: true, supportsCustomLensPosition: true,
+            supportsFocusPointOfInterest: true,
+            // Approximate, and only ever used to draw a demo. Real values come
+            // from the probe on real hardware; these exist so the focus screens
+            // have three genuinely different fields of view to move a point
+            // between rather than three copies of one number.
+            minimumFocusDistanceMillimetres: focusDistance(s),
+            horizontalFieldOfViewDegrees: fieldOfView(s),
             maxBracketedCapturePhotoCount: 8, maxWhiteBalanceGain: 4,
             minAvailableVideoZoomFactor: 1.0, minISO: 55, maxISO: 6400,
             minExposureSeconds: 1.0 / 71429, maxExposureSeconds: 1.0)
+    }
+
+    private static func fieldOfView(_ s: SensorCapability.Sensor) -> Double {
+        switch s {
+        case .ultraWide: return 106
+        case .wide:      return 69
+        case .telephoto: return 25
+        }
+    }
+
+    private static func focusDistance(_ s: SensorCapability.Sensor) -> Int {
+        switch s {
+        case .ultraWide: return 20
+        case .wide:      return 120
+        case .telephoto: return 400
+        }
     }
 
     /// A station worth drawing: a sweep and a long repeat, on two sensors, so
