@@ -126,6 +126,10 @@ struct CaptureFlowView: View {
     private var deck: some View {
         VStack(spacing: 12) {
             if let f = model.lastFault, showingFault { faultBanner(f) }
+            // The set just shot, while the light and the pose are still there.
+            if let last = model.pendingBrackets.last, !last.frames.isEmpty, !model.busy {
+                SetClippingSummary(frames: last.frames)
+            }
             phaseLine
             primaryButton
             secondaryRow
