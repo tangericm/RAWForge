@@ -14,12 +14,40 @@ struct SequenceFault: Error {
 @MainActor
 final class CaptureModel: ObservableObject {
     @Published private(set) var report: CapabilityReport?
-    @Published private(set) var session: SessionRecord?
-    @Published private(set) var status: String = "not probed"
+    @Published var session: SessionRecord?
+    @Published var status: String = "not probed"
     @Published private(set) var cameraDenied = false
-    @Published private(set) var busy = false
+    @Published var busy = false
     @Published private(set) var progress: String = ""
-    @Published private(set) var lastStation: StationRecord?
+    @Published var lastStation: StationRecord?
+
+    // MARK: - Station flow (#10, per the prototype)
+
+    @Published var phase: StationPhase = .noSession
+    @Published var shotList = ShotList()
+    @Published var stationOpenedAt: Date?
+    @Published var flowNote: String = ""
+    /// Buffered until the station closes: the write unit and the abort unit are
+    /// the same thing, so nothing lands until the whole shot list is done.
+    @Published var pendingBrackets: [BracketRecord] = []
+    @Published var pendingSwaps: [StationRecord.SwapRecord] = []
+    @Published var lastFault: StationFault?
+
+    // Shot-list builder
+    @Published var builderSensor: SensorCapability.Sensor = .wide
+    @Published var builderProtocolName: String = ""
+    @Published var groupShotListBySensor = true
+
+    func addToShotList() {
+        guard let p = ProtocolLibrary.load(named: builderProtocolName) else { return }
+        var entries = shotList.entries
+        entries.append(ShotListEntry(index: entries.count, sensor: builderSensor, captureSet: p))
+        shotList.entries = groupShotListBySensor ? ShotList.grouped(entries) : ShotList.authored(entries)
+    }
+
+    func clearShotList() {
+        shotList = ShotList()
+    }
 
     /// The protocol's demand, authored on device. Never derived from the scene (#8).
     @Published var requestedShutter: Double = 1.0 / 125
@@ -68,9 +96,9 @@ final class CaptureModel: ObservableObject {
     /// separate mode.
     @Published var selectedSensors: Set<SensorCapability.Sensor> = [.wide]
 
-    private let rig = CaptureRig()
-    private let motionRecorder = MotionRecorder()
-    private var stationIndex = 0
+    let rig = CaptureRig()
+    let motionRecorder = MotionRecorder()
+    var stationIndex = 0
 
     func capability(_ s: SensorCapability.Sensor) -> SensorCapability? {
         report?.sensors.first { $0.sensor == s }
@@ -302,7 +330,7 @@ final class CaptureModel: ObservableObject {
         }
     }
 
-    private func shoot(_ specs: [CaptureSpec], sensor: SensorCapability.Sensor,
+    func shoot(_ specs: [CaptureSpec], sensor: SensorCapability.Sensor,
                        wb: (set: [Float], readBack: [Float]),
                        session: SessionRecord, station: Int, bracketIndex: Int) async throws -> [FrameRecord] {
         var frames: [FrameRecord] = []
