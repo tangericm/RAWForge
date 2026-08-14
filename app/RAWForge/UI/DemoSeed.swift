@@ -23,6 +23,11 @@ enum DemoSeed {
     /// `RAWFORGE_DEMO=single` fakes a phone with one rear camera — an SE — so
     /// the parts of the interface that should collapse can be seen collapsing.
     static var wantsSingleSensor: Bool { value == "single" }
+    /// `RAWFORGE_DEMO=focus` opens the focus pre-flight, which is otherwise
+    /// three taps deep behind a shot list a simulator cannot build. The preview
+    /// is black without a camera, but the layout, the mode picker and the
+    /// cross-sensor mapping are all real.
+    static var wantsFocus: Bool { value == "focus" || value == "focus-point" }
 
     /// A sensor that reports what an iPhone 15 Pro's does, so the plan's
     /// arithmetic works on real numbers rather than invented ones.
@@ -61,6 +66,22 @@ enum DemoSeed {
         }
     }
 
+    /// A focus plan with something in it, so the pre-flight opens on a real
+    /// state rather than three defaults. `focus` shows a hand-set lens
+    /// position; `focus-point` shows a tapped point on the wide, which is what
+    /// makes the cross-sensor mapping offer appear on the other sensor.
+    @MainActor static func applyFocus(to model: CaptureModel) {
+        switch value {
+        case "focus":       model.focusPlan[.wide] = .manual(lensPosition: 0.42)
+        // Seeded on the *telephoto* so the screen opens on the wide with the
+        // mapping on offer — the offer only appears on a sensor still set to
+        // automatic, so seeding the wide would have hidden the thing this
+        // demo exists to show.
+        case "focus-point": model.focusPlan[.telephoto] = .point(x: 0.35, y: 0.42)
+        default:            break
+        }
+    }
+
     /// A station worth drawing: a sweep and a long repeat, on two sensors, so
     /// the swap, the settle and a seam all appear.
     @MainActor static func apply(to model: CaptureModel) {
@@ -87,6 +108,7 @@ enum DemoSeed {
             cursor: 0)
         model.poseIntent = "tripod-rigid"
         model.phase = .sessionOpen
+        applyFocus(to: model)
     }
 }
 #endif

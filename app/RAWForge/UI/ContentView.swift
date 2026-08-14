@@ -15,7 +15,9 @@ struct ContentView: View {
             // The timeline is two taps deep behind a shot list that a simulator
             // cannot build, so it would otherwise ship having only been
             // compiled and never seen.
-            if DemoSeed.wantsTimeline {
+            if DemoSeed.wantsFocus {
+                NavigationStack { FocusPreflightView(model: model) }
+            } else if DemoSeed.wantsTimeline {
                 NavigationStack {
                     List { StationPlanView(model: model) }
                         .navigationTitle("Timeline")

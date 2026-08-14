@@ -431,6 +431,20 @@ final class CaptureRig {
         return finish("autofocused", converged: converged)
     }
 
+    /// Drives the lens directly while the operator is dragging a slider.
+    ///
+    /// Deliberately not `applyFocus`: that awaits a completion handler and
+    /// builds a record, and neither is wanted sixty times a second. Nothing
+    /// here is recorded, because nothing here is a capture — this exists purely
+    /// so the number under the slider means something to the person setting it.
+    /// What ends up in the log is whatever `applyFocus` commands at the pose.
+    func previewLensPosition(_ p: Float) {
+        guard let d = device, d.isLockingFocusWithCustomLensPositionSupported,
+              (try? d.lockForConfiguration()) != nil else { return }
+        d.setFocusModeLocked(lensPosition: min(max(p, 0), 1), completionHandler: nil)
+        d.unlockForConfiguration()
+    }
+
     /// The active format's horizontal field of view, which is what makes a
     /// focus point transferable between sensors at all.
     var fieldOfViewDegrees: Double? {

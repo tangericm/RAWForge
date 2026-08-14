@@ -19,20 +19,88 @@ import UIKit
 struct CameraPreview: UIViewRepresentable {
     let session: AVCaptureSession
 
+    /// Reports a tap in **`AVCaptureDevice` coordinates**, not view coordinates.
+    ///
+    /// The conversion has to happen here because the preview layer is the only
+    /// thing that knows how the image is rotated and letterboxed inside the
+    /// view. Doing the arithmetic in SwiftUI against the view's frame would
+    /// work until the preview was drawn at a different aspect, and then aim
+    /// autofocus somewhere the operator did not tap (#18).
+    var onTapDevicePoint: ((CGPoint) -> Void)?
+
+    /// A point to mark, also in device coordinates — converted back through the
+    /// same layer so it lands under the finger that set it.
+    var indicatorDevicePoint: CGPoint?
+
     func makeUIView(context: Context) -> PreviewUIView {
         let v = PreviewUIView()
         v.previewLayer.session = session
         v.previewLayer.videoGravity = .resizeAspect
+        if onTapDevicePoint != nil {
+            let tap = UITapGestureRecognizer(target: v, action: #selector(PreviewUIView.handleTap))
+            v.addGestureRecognizer(tap)
+        }
+        v.onTapDevicePoint = onTapDevicePoint
+        v.indicatorDevicePoint = indicatorDevicePoint
         return v
     }
 
     func updateUIView(_ uiView: PreviewUIView, context: Context) {
         if uiView.previewLayer.session !== session { uiView.previewLayer.session = session }
+        uiView.onTapDevicePoint = onTapDevicePoint
+        uiView.indicatorDevicePoint = indicatorDevicePoint
     }
 
     final class PreviewUIView: UIView {
         override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
         var previewLayer: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
+
+        var onTapDevicePoint: ((CGPoint) -> Void)?
+        var indicatorDevicePoint: CGPoint? { didSet { positionIndicator() } }
+
+        /// Drawn in UIKit rather than as a SwiftUI overlay for the same reason
+        /// the conversion is here: only the layer can put it in the right place.
+        private lazy var reticle: UIView = {
+            let v = UIView(frame: CGRect(x: 0, y: 0, width: 68, height: 68))
+            v.layer.borderColor = UIColor.systemYellow.cgColor
+            v.layer.borderWidth = 1.5
+            v.layer.cornerRadius = 4
+            v.isUserInteractionEnabled = false
+            v.isHidden = true
+            addSubview(v)
+            return v
+        }()
+
+        @objc func handleTap(_ g: UITapGestureRecognizer) {
+            let devicePoint = previewLayer.captureDevicePointConverted(
+                fromLayerPoint: g.location(in: self))
+            onTapDevicePoint?(devicePoint)
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            positionIndicator()
+        }
+
+        /// Nothing is drawn unless the conversion can actually be trusted.
+        ///
+        /// `layerPointConverted(fromCaptureDevicePoint:)` needs a live
+        /// connection to know how the image sits inside the view; without one
+        /// it returns a point with no relationship to the scene, and the marker
+        /// lands in a corner looking authoritative. A marker in the wrong place
+        /// is worse than no marker — the operator would believe it.
+        private func positionIndicator() {
+            guard let p = indicatorDevicePoint,
+                  previewLayer.connection?.isEnabled == true,
+                  previewLayer.session?.isRunning == true else {
+                reticle.isHidden = true
+                return
+            }
+            let converted = previewLayer.layerPointConverted(fromCaptureDevicePoint: p)
+            guard bounds.contains(converted) else { reticle.isHidden = true; return }
+            reticle.isHidden = false
+            reticle.center = converted
+        }
     }
 }
 
