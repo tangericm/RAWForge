@@ -126,10 +126,9 @@ struct DeviceProfile: Codable, Equatable {
 
     // MARK: - Storage
 
-    static var fileURL: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("device-profile.json")
-    }
+    /// App state rather than the user's data: measurements the app keeps about
+    /// itself, which nobody browsing Files should be editing.
+    static var fileURL: URL { AppStorage.supportFile("device-profile.json") }
 
     /// The profile in force. Loaded once and cached, because it is read on
     /// every estimate and the plan re-renders as the shot list is edited.
