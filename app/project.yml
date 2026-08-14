@@ -74,7 +74,10 @@ targets:
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
     preBuildScripts: []
     postCompileScripts:
-      - script: "\"$SRCROOT/tools/stamp-build.sh\""
+        # Invoked through bash rather than executed directly: this repo has
+        # core.fileMode = false, so git never records the executable bit and a
+        # fresh clone — or a CI runner — would get "Permission denied".
+      - script: "bash \"$SRCROOT/tools/stamp-build.sh\""
         name: Stamp build number and commit
         basedOnDependencyAnalysis: false
     info:
