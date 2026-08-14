@@ -12,7 +12,11 @@ final class CaptureSetTests: XCTestCase {
             sensor: .wide, localizedName: "Back Camera", uniqueID: "u", modelID: "m",
             bayerFormat: 1650943796, allRawFormats: [], rawFormatsRequiredRunningSession: false,
             exclusionReason: nil, supportsCustomExposure: true,
-            supportsWhiteBalanceCustomGainLock: true, maxBracketedCapturePhotoCount: 8,
+            supportsWhiteBalanceCustomGainLock: true,
+            supportsLockedFocus: true, supportsCustomLensPosition: true,
+            supportsFocusPointOfInterest: true,
+            minimumFocusDistanceMillimetres: 120, horizontalFieldOfViewDegrees: 69,
+            maxBracketedCapturePhotoCount: 8,
             maxWhiteBalanceGain: 4, minAvailableVideoZoomFactor: 1,
             minISO: minISO, maxISO: maxISO,
             minExposureSeconds: minExp, maxExposureSeconds: maxExp)

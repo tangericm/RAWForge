@@ -68,6 +68,41 @@ struct SensorCapability: Codable, Identifiable, Equatable {
     let supportsCustomExposure: Bool
     let supportsWhiteBalanceCustomGainLock: Bool
 
+    // MARK: focus (#18)
+
+    /// Optional throughout, and deliberately so. `nil` means *this session was
+    /// written before the app probed focus at all*, which is a different claim
+    /// from *the sensor said no* — and sessions already on disk have to keep
+    /// decoding. Everywhere else in the app treats nil as "not known", never as
+    /// false.
+    let supportsLockedFocus: Bool?
+
+    /// Whether a lens position can be commanded directly, as opposed to merely
+    /// frozen wherever autofocus left it. Without this the app can still lock,
+    /// but it cannot *restore* a position it measured earlier.
+    let supportsCustomLensPosition: Bool?
+
+    /// Whether autofocus can be aimed at a point rather than the sensor's own
+    /// default weighting.
+    let supportsFocusPointOfInterest: Bool?
+
+    /// The closest the lens can focus, as the device reports it. Recorded
+    /// because it is the only *physical* focus quantity iOS exposes —
+    /// `lensPosition` is an actuator coordinate and says nothing about distance.
+    let minimumFocusDistanceMillimetres: Int?
+
+    /// Horizontal field of view of the active format, in degrees. Kept because
+    /// it is what makes a focus point transferable between sensors at all
+    /// (`FocusGeometry`), and because it is otherwise unrecoverable from the
+    /// files after the fact.
+    let horizontalFieldOfViewDegrees: Double?
+
+    /// The app can hold focus still on this sensor at all.
+    var canHoldFocus: Bool { supportsLockedFocus == true }
+
+    /// Focus was probed on this sensor. False only for sessions predating #18.
+    var focusWasProbed: Bool { supportsLockedFocus != nil }
+
     /// The hard ceiling on ladder depth (#8). Apple says it may be zero for
     /// some formats and publishes no values.
     let maxBracketedCapturePhotoCount: Int
@@ -98,6 +133,11 @@ struct SensorCapability: Codable, Identifiable, Equatable {
             exclusionReason: "no \(sensor.deviceType.rawValue) on this device",
             supportsCustomExposure: false,
             supportsWhiteBalanceCustomGainLock: false,
+            supportsLockedFocus: false,
+            supportsCustomLensPosition: false,
+            supportsFocusPointOfInterest: false,
+            minimumFocusDistanceMillimetres: nil,
+            horizontalFieldOfViewDegrees: nil,
             maxBracketedCapturePhotoCount: 0,
             maxWhiteBalanceGain: 0,
             minAvailableVideoZoomFactor: 0,
