@@ -1,0 +1,10 @@
+{
+  "_comment": "Written by app/tools/run-hardware-suite.sh after the device-only suite passes. Read by app/tools/require-hardware-verification.sh, which the release preflight refuses to pass without. Never edited by hand — a hand-edited entry is a claim nobody made.",
+  "commit": null,
+  "verifiedAt": null,
+  "device": null,
+  "systemVersion": null,
+  "testsExecuted": null,
+  "testsSkipped": null,
+  "note": "No hardware verification has ever been recorded. #17 and #18 are both merged with device runs outstanding."
+}
