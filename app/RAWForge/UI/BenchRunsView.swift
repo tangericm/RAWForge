@@ -59,10 +59,15 @@ private struct RunSubject: View {
 /// legitimate reason to record a bright frame as a dark reference.
 struct CalibrationView: View {
     @ObservedObject var model: CaptureModel
+    /// Observed directly, not through `model`: a nested
+    /// `ObservableObject` does not republish through its owner, so
+    /// reading `model.bench.darkProgress` would render once and then
+    /// go stale mid-run (#28).
+    @ObservedObject var bench: BenchModel
 
     private var plannedFrames: Int {
         (model.currentSet?.specs.count ?? 0)
-            * max(1, model.selectedSensors.count) * model.darkRepeats
+            * max(1, model.selectedSensors.count) * bench.darkRepeats
     }
 
     var body: some View {
@@ -80,8 +85,8 @@ struct CalibrationView: View {
             RunSubject(model: model)
 
             Section("Repeats") {
-                Stepper(value: $model.darkRepeats, in: 1...32) {
-                    LabeledContent("Frames per setting", value: "\(model.darkRepeats)")
+                Stepper(value: $bench.darkRepeats, in: 1...32) {
+                    LabeledContent("Frames per setting", value: "\(bench.darkRepeats)")
                 }
                 Text("Averaging N frames cuts noise by √N; black-level estimation typically "
                      + "wants 8–16 per setting.")
@@ -101,7 +106,7 @@ struct CalibrationView: View {
                 }
                 .disabled(model.busy || model.currentSet == nil || model.selectedSensors.isEmpty)
                 if model.busy {
-                    HStack { ProgressView(); Text(model.darkProgress).font(.caption2) }
+                    HStack { ProgressView(); Text(bench.darkProgress).font(.caption2) }
                 }
             } footer: {
                 Text("A setting that fails is abandoned on its own — the rest of the run "
@@ -130,6 +135,11 @@ struct CalibrationView: View {
 #if DEBUG
 struct InstrumentChecksView: View {
     @ObservedObject var model: CaptureModel
+    /// Observed directly, not through `model`: a nested
+    /// `ObservableObject` does not republish through its owner, so
+    /// reading `model.bench.darkProgress` would render once and then
+    /// go stale mid-run (#28).
+    @ObservedObject var bench: BenchModel
 
     var body: some View {
         List {
@@ -167,7 +177,7 @@ struct InstrumentChecksView: View {
                     Label("Zoom enforcement", systemImage: "arrow.up.left.and.down.right.magnifyingglass")
                 }
                 .disabled(model.session == nil || model.busy)
-                if let z = model.zoomProbe {
+                if let z = bench.zoomProbe {
                     Text(z.verdict).font(.caption).foregroundStyle(.orange)
                 }
             } header: {
