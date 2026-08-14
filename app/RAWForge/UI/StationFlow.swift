@@ -127,6 +127,10 @@ extension CaptureModel {
         pendingBrackets = []
         pendingSwaps = []
         lastFault = nil
+        // A pose is the scope of a focus decision, so what the last station's
+        // sensors settled at has no bearing on this one — the phone has moved.
+        focusContinuity.reset()
+        lastFocus = nil
         shotList.cursor = 0
         stationEstimateSeconds = SessionEstimate.forShotList(
             shotList.entries, minimumGap: minimumGap,
@@ -197,11 +201,29 @@ extension CaptureModel {
             }
             let wb = try await rig.lockWhiteBalance()
 
+            // Focus is taken here, beside the other two locks, because it is
+            // the same kind of thing: a parameter that would otherwise drift
+            // between frames with nothing in the log saying so (#18).
+            //
+            // A sensor returning for a second set at this station gets its own
+            // earlier measurement put back exactly; a sensor arriving for the
+            // first time acquires fresh. Never throws — a lens that cannot be
+            // held is recorded as such rather than costing the station.
+            let focus = await rig.applyFocus(
+                focusContinuity.resolution(for: entry.sensor, plan: focusPlan))
+            focusContinuity.record(focus, for: entry.sensor)
+            lastFocus = focus
+            logInfo(.rig, "focus \(focus.acquisition) on \(entry.sensor.rawValue) — "
+                    + "\(focus.mode)"
+                    + (focus.lensPosition.map { String(format: " at %.4f", $0) } ?? "")
+                    + (focus.note.map { " · \($0)" } ?? ""))
+
             set(.capturing)
             let shot = try await shoot(checked.kept, sensor: entry.sensor, wb: wb,
                                        session: session, station: stationIndex,
                                        bracketIndex: pendingBrackets.count + 1,
-                                       firing: entry.captureSet.firing)
+                                       firing: entry.captureSet.firing,
+                                       focus: focus)
             pendingBrackets.append(BracketRecord(
                 bracketIndex: pendingBrackets.count + 1, sensor: entry.sensor.rawValue,
                 sensorUniqueID: cap.uniqueID, captureSet: entry.captureSet,

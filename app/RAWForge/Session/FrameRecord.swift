@@ -26,6 +26,14 @@ struct FrameRecord: Codable, Equatable {
     /// so a writer that silently rounds or drops a value is caught.
     let dng: DNGWitness
 
+    /// Where the lens was, and how it got there (#18).
+    ///
+    /// Recorded on **every** frame even though a station holds one lock across
+    /// a whole bracket. The cost is a few bytes and the alternative is that a
+    /// lock which silently failed reads identically to one that held — which is
+    /// the class of claim this app exists not to make.
+    let focus: Focus?
+
     /// `videoZoomFactor` at the moment of capture. Always 1.0 by construction —
     /// recorded because it is a precondition of the payload being genuine
     /// full-sensor Bayer, and a claim the file cannot otherwise substantiate.
@@ -80,6 +88,59 @@ struct FrameRecord: Codable, Equatable {
         /// minimum channel is 1.0 (`R:2 G:2 B:4` → `R:1 G:1 B:2`), so what is
         /// set is not what reads back. Ratios survive, absolute scale does not.
         let whiteBalanceGains: [Float]?
+    }
+
+    /// The lens, recorded the same way everything else here is: what was asked
+    /// for, what the device did, and no reconciliation between them.
+    ///
+    /// `lensPosition` is a **normalised actuator coordinate, not a distance**.
+    /// It is comparable between frames on the same sensor of the same device
+    /// and meaningless anywhere else — 0.62 on the wide and 0.62 on the
+    /// ultra-wide are different distances. `minimumFocusDistanceMillimetres` is
+    /// carried alongside it because it is the only physical focus quantity iOS
+    /// reports, and without it a reader has no scale at all.
+    struct Focus: Codable, Equatable {
+
+        /// How this sensor's focus was decided: `automatic`, `point`, `manual`.
+        let intent: String
+
+        /// How the value in `lensPosition` was arrived at.
+        /// - `autofocused` — autofocus ran and the result was frozen.
+        /// - `restored` — an earlier measurement on *this same sensor* was
+        ///   re-commanded, which is exact because the actuator is the same one.
+        /// - `commanded` — the operator's own lens position was set directly.
+        /// - `notLocked` — the sensor cannot hold focus; the value is whatever
+        ///   the lens happened to be at, and it may have moved during the set.
+        let acquisition: String
+
+        /// `AVCaptureDevice.focusMode` at the moment of capture, by name.
+        let mode: String
+
+        let lensPosition: Float?
+
+        /// The ROI actually in force on this sensor, normalised to its own
+        /// frame. Nil when focus was not aimed.
+        let pointOfInterest: [Double]?
+
+        /// Set when the point above was not tapped on this sensor but mapped
+        /// from a tap on the named one (`FocusGeometry`). A reader should treat
+        /// a mapped point as approximate — it ignores parallax — and this is
+        /// how they can tell.
+        let pointMappedFromSensor: String?
+
+        /// Whether autofocus reported itself converged before the lock, or the
+        /// bounded wait simply ran out. The same distinction the stillness wait
+        /// records, for the same reason.
+        let converged: Bool?
+        let acquisitionSeconds: Double?
+
+        let minimumFocusDistanceMillimetres: Int?
+
+        /// Anything the app had to say about it — an unsupported lock, a point
+        /// that fell outside this sensor's frame, a wait that timed out.
+        let note: String?
+
+        var wasHeld: Bool { acquisition != "notLocked" }
     }
 
     struct DNGWitness: Codable, Equatable {

@@ -42,6 +42,22 @@ final class CaptureModel: ObservableObject {
 
     @Published var groupShotListBySensor = true
 
+    // MARK: - Focus (#18)
+
+    /// Chosen at the pose with the preview visible, never authored into a
+    /// protocol — a lens position has no meaning away from the thing it was
+    /// focused on. Reset when a station closes, because a pose is the scope of
+    /// a focus decision.
+    @Published var focusPlan = FocusPlan()
+
+    /// What each sensor actually settled at, this station. Not published: it is
+    /// bookkeeping for the flow, not something the interface reads.
+    var focusContinuity = FocusContinuity()
+
+    /// The last lock taken, for the capture screen to show. A station where
+    /// this says `notLocked` is one whose frames may have drifted.
+    @Published var lastFocus: FrameRecord.Focus?
+
     /// Adds one protocol on one sensor. Named directly rather than assembled
     /// from two pickers and a button: choosing what to shoot and where is a
     /// single decision, and making it three interactions was the main thing
@@ -238,7 +254,8 @@ final class CaptureModel: ObservableObject {
     func shoot(_ specs: [CaptureSpec], sensor: SensorCapability.Sensor,
                        wb: (set: [Float], readBack: [Float]),
                        session: SessionRecord, station: Int, bracketIndex: Int,
-                       firing: ExecutionMode) async throws -> Shot {
+                       firing: ExecutionMode,
+                       focus: FrameRecord.Focus? = nil) async throws -> Shot {
         var frames: [FrameRecord] = []
         var previousTimestamp: Double?
         var requestSizes: [Int]?
@@ -300,6 +317,10 @@ final class CaptureModel: ObservableObject {
                 deviceAchieved: device,
                 photoAchieved: Self.exposure(from: photo, wb: wb.readBack),
                 dng: witness,
+                // The lock was taken once for the whole set, so every frame
+                // carries the same record — which is the point. A set whose
+                // frames disagree about focus is a set where the lock failed.
+                focus: focus,
                 zoomFactor: rig.currentZoomFactor,
                 capturedAtUptime: ProcessInfo.processInfo.systemUptime,
                 capturedAt: Date(),
@@ -455,7 +476,12 @@ final class CaptureModel: ObservableObject {
                                 shutterSeconds: spec.shutterSeconds, iso: spec.iso, whiteBalanceGains: nil),
                             deviceAchieved: achieved,
                             photoAchieved: Self.exposure(from: photo, wb: []),
-                            dng: witness, zoomFactor: rig.currentZoomFactor,
+                            // Focus is deliberately unmanaged in a dark run: the
+                            // lens is capped, so there is nothing to focus on
+                            // and autofocus would only hunt. Nil says "not
+                            // managed", which is true, rather than reporting a
+                            // lens position that means nothing here.
+                            dng: witness, focus: nil, zoomFactor: rig.currentZoomFactor,
                             capturedAtUptime: ProcessInfo.processInfo.systemUptime,
                             capturedAt: Date(), photoTimestampSeconds:
                                 photo.timestamp.isValid ? photo.timestamp.seconds : nil,
