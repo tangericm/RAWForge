@@ -22,6 +22,7 @@ struct ContentView: View {
             let orphans = SessionStore.sweepOrphanedFrames()
             await model.probe()
             model.refreshProtocols()
+            model.restoreShotList()
             if orphans > 0 { model.status = "swept \(orphans) orphaned frame(s) from an unclosed station" }
         }
     }

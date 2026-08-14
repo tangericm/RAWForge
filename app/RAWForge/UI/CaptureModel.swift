@@ -42,11 +42,43 @@ final class CaptureModel: ObservableObject {
         guard let p = ProtocolLibrary.load(named: builderProtocolName) else { return }
         var entries = shotList.entries
         entries.append(ShotListEntry(index: entries.count, sensor: builderSensor, captureSet: p))
+        applyShotList(entries)
+    }
+
+    func removeFromShotList(at offsets: IndexSet) {
+        var entries = shotList.entries
+        entries.remove(atOffsets: offsets)
+        applyShotList(entries)
+    }
+
+    /// Moving an entry *is* authoring an order, so it turns grouping off rather
+    /// than silently undoing the move on the next regroup (#8 makes authored
+    /// order the override, not a mode you have to find).
+    func moveInShotList(from source: IndexSet, to destination: Int) {
+        var entries = shotList.entries
+        entries.move(fromOffsets: source, toOffset: destination)
+        groupShotListBySensor = false
+        applyShotList(entries)
+    }
+
+    private func applyShotList(_ entries: [ShotListEntry]) {
         shotList.entries = groupShotListBySensor ? ShotList.grouped(entries) : ShotList.authored(entries)
+        shotList.cursor = min(shotList.cursor, shotList.entries.count)
+        ShotListStore.save(shotList, grouped: groupShotListBySensor)
     }
 
     func clearShotList() {
         shotList = ShotList()
+        ShotListStore.clear()
+    }
+
+    /// Restores the plan but never the cursor: on relaunch any station in
+    /// flight is gone, so a half-walked cursor would describe a station that
+    /// never existed.
+    func restoreShotList() {
+        guard let stored = ShotListStore.load() else { return }
+        groupShotListBySensor = stored.groupedBySensor
+        shotList = ShotList(entries: stored.entries, cursor: 0)
     }
 
     /// The protocol's demand, authored on device. Never derived from the scene (#8).

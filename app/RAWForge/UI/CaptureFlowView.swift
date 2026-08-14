@@ -18,11 +18,13 @@ struct CaptureFlowView: View {
                 Section { ViewfinderPanel(model: model) }
                 stationSection
                 StationPlanView(model: model)
+                if model.phase == .sessionOpen { editableShotList }
                 buildSection
             }
             if let f = model.lastFault { faultSection(f) }
         }
         .navigationTitle("Capture")
+        .toolbar { if model.phase == .sessionOpen { EditButton() } }
         .onAppear { model.startFlow() }
     }
 
@@ -87,30 +89,22 @@ struct CaptureFlowView: View {
         }
     }
 
-    /// Superseded by StationPlanView's timeline, kept for the compact count.
-    private var shotListSection: some View {
-        Section("Shot list · \(model.shotList.cursor)/\(model.shotList.entries.count)") {
+    /// Editable only before a station is declared. Swipe deletes, drag
+    /// reorders — and reordering is authoring an order, so it turns grouping
+    /// off rather than silently undoing the move on the next regroup.
+    private var editableShotList: some View {
+        Section("Shot list · \(model.shotList.entries.count) set(s)") {
             if model.shotList.entries.isEmpty {
-                Text("empty").foregroundStyle(.secondary).font(.caption)
+                Text("empty — add a protocol below").foregroundStyle(.secondary).font(.caption)
             }
             ForEach(model.shotList.entries) { e in
-                HStack {
-                    Image(systemName: e.index < model.shotList.cursor ? "checkmark.circle.fill"
-                          : e.index == model.shotList.cursor ? "arrowtriangle.right.fill" : "circle")
-                        .foregroundStyle(e.index < model.shotList.cursor ? .green
-                                         : e.index == model.shotList.cursor ? .accentColor : .secondary)
-                    VStack(alignment: .leading) {
-                        Text(e.label).font(.callout)
-                        Text("\(e.frameCount) frames").font(.caption2).foregroundStyle(.secondary)
-                    }
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(e.label).font(.callout)
+                    Text("\(e.frameCount) frames").font(.caption2).foregroundStyle(.secondary)
                 }
-                .opacity(e.index < model.shotList.cursor ? 0.45 : 1)
             }
-            if !model.shotList.entries.isEmpty {
-                Text("\(model.shotList.totalFrames) frames total · "
-                     + "~\(model.shotList.totalFrames * 10) MB")
-                    .font(.caption2).foregroundStyle(.secondary)
-            }
+            .onDelete { model.removeFromShotList(at: $0) }
+            .onMove { model.moveInShotList(from: $0, to: $1) }
         }
     }
 
