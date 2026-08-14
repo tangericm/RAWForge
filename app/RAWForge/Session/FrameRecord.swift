@@ -146,6 +146,16 @@ struct BracketRecord: Codable, Equatable {
     /// The floor on frame spacing this run was executed under, if any.
     let minimumInterFrameGapSeconds: Double?
 
+    /// A wait after the sensor is configured and before the first frame fires
+    /// (#8's optional dwell, distinct from the inter-frame gap).
+    ///
+    /// Motivated by measurement: the single largest motion event across two
+    /// instrumented stations fell in the window immediately after the button
+    /// tap — gyro 0.44 rad/s against a station median of 0.023 — which is
+    /// finger-lift, not anything about capture. A dwell lets that decay before
+    /// the first frame instead of putting it inside one.
+    let dwellSeconds: Double?
+
     /// What this bracket was for, when it is one arm of a deliberate
     /// comparison — the warm and cool halves of the white-balance probe are
     /// otherwise distinguishable only by reading their gains.
