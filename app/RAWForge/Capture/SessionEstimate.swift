@@ -56,7 +56,7 @@ struct SessionEstimate {
     /// `bracketCeiling` is how many frames fit in one hardware request on the
     /// sensors in play. Passing nil skips seam accounting, which is right for a
     /// sequential run and for a caller that does not yet know the ceiling.
-    static func forShotList(_ entries: [ShotListEntry], mode: ExecutionMode,
+    static func forShotList(_ entries: [ShotListEntry],
                             minimumGap: TimeInterval, includeStillness: Bool = true,
                             bracketCeiling: Int? = nil,
                             profile: DeviceProfile = .active) -> SessionEstimate {
@@ -74,9 +74,12 @@ struct SessionEstimate {
             let specs = entry.captureSet.rendered(for: entry.sensor)
             frames += specs.count
 
+            // Firing mode belongs to the set, so a shot list may mix them.
+            let firing = entry.captureSet.firing
+
             // A set past the ceiling is split across requests, and each seam
             // costs seventeen times an in-request gap.
-            if mode == .hardwareBracket, let ceiling = bracketCeiling {
+            if firing == .hardwareBracket, let ceiling = bracketCeiling {
                 let extra = Swift.max(0, requestCount(frames: specs.count, ceiling: ceiling) - 1)
                 seams += extra
                 overhead += Double(extra) * profile.bracketSeam.value
@@ -84,7 +87,7 @@ struct SessionEstimate {
 
             for spec in specs {
                 exposure += spec.shutterSeconds
-                switch mode {
+                switch firing {
                 case .hardwareBracket:
                     // The pipeline holds a frame period per frame unless the
                     // exposure itself is longer, in which case exposure covers it.
@@ -92,7 +95,10 @@ struct SessionEstimate {
                 case .sequential:
                     overhead += profile.sequentialOverheadPerFrame.value
                 }
-                overhead += minimumGap
+                // Only sequential can honour a gap — a burst is one request
+                // with nowhere to insert a wait — so charging for it in a burst
+                // predicted time the app was never going to spend.
+                if firing == .sequential { overhead += minimumGap }
             }
         }
         return SessionEstimate(

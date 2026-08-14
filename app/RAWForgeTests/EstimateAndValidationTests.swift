@@ -3,16 +3,18 @@ import XCTest
 
 final class SessionEstimateTests: XCTestCase {
 
-    private func entry(_ sensor: SensorCapability.Sensor, shutter: Double, frames: Int) -> ShotListEntry {
-        ShotListEntry(index: 0, sensor: sensor,
-                      captureSet: .repeated(CaptureSpec(shutterSeconds: shutter, iso: 100), count: frames))
+    private func entry(_ sensor: SensorCapability.Sensor, shutter: Double, frames: Int,
+                       firing: ExecutionMode = .hardwareBracket) -> ShotListEntry {
+        var set = CaptureSet.repeated(CaptureSpec(shutterSeconds: shutter, iso: 100), count: frames)
+        set.executionMode = firing
+        return ShotListEntry(index: 0, sensor: sensor, captureSet: set)
     }
 
     /// A bracket holds a frame period per frame unless the exposure is longer,
     /// which is the measured `gap = max(33.4 ms, exposure)` (#14 item 9).
     func testBracketOverheadIsTheFramePeriodForShortExposures() {
         let e = SessionEstimate.forShotList([entry(.wide, shutter: 0.001, frames: 8)],
-                                            mode: .hardwareBracket, minimumGap: 0,
+                                            minimumGap: 0,
                                             includeStillness: false)
         XCTAssertEqual(e.frameCount, 8)
         // 8 frames x (33.4 ms - 1 ms) of overhead, plus one swap.
@@ -22,7 +24,7 @@ final class SessionEstimateTests: XCTestCase {
 
     func testLongExposuresAbsorbTheFramePeriod() {
         let e = SessionEstimate.forShotList([entry(.wide, shutter: 0.5, frames: 4)],
-                                            mode: .hardwareBracket, minimumGap: 0,
+                                            minimumGap: 0,
                                             includeStillness: false)
         // Exposure exceeds the frame period, so no per-frame overhead remains.
         XCTAssertEqual(e.overheadSeconds, DeviceProfile.reference.sensorSwap.value, accuracy: 1e-9)
@@ -32,19 +34,20 @@ final class SessionEstimateTests: XCTestCase {
     /// Sequential pays a per-request round trip that a bracket does not — the
     /// measured reason a bracket is ~7x faster for the same ladder.
     func testSequentialIsSlowerThanBracketForTheSameLadder() {
-        let list = [entry(.wide, shutter: 0.001, frames: 8)]
-        let bracket = SessionEstimate.forShotList(list, mode: .hardwareBracket,
-                                                  minimumGap: 0, includeStillness: false)
-        let sequential = SessionEstimate.forShotList(list, mode: .sequential,
-                                                     minimumGap: 0, includeStillness: false)
-        XCTAssertGreaterThan(sequential.typicalSeconds, bracket.typicalSeconds * 3)
+        let burst = SessionEstimate.forShotList(
+            [entry(.wide, shutter: 0.001, frames: 8)],
+            minimumGap: 0, includeStillness: false)
+        let sequential = SessionEstimate.forShotList(
+            [entry(.wide, shutter: 0.001, frames: 8, firing: .sequential)],
+            minimumGap: 0, includeStillness: false)
+        XCTAssertGreaterThan(sequential.typicalSeconds, burst.typicalSeconds * 3)
     }
 
     func testSwapIsCountedOncePerSensorRunNotPerEntry() {
         let list = [entry(.wide, shutter: 0.001, frames: 1),
                     entry(.wide, shutter: 0.001, frames: 1),
                     entry(.telephoto, shutter: 0.001, frames: 1)]
-        let e = SessionEstimate.forShotList(list, mode: .hardwareBracket,
+        let e = SessionEstimate.forShotList(list,
                                             minimumGap: 0, includeStillness: false)
         XCTAssertEqual(e.sensorSwaps, 2, "consecutive entries on one sensor share a swap")
     }
@@ -53,7 +56,7 @@ final class SessionEstimateTests: XCTestCase {
     /// when the failure is a station aborting mid-shoot.
     func testWorstCaseStorageUsesTheLargestObservedFrame() {
         let e = SessionEstimate.forShotList([entry(.wide, shutter: 0.001, frames: 10)],
-                                            mode: .hardwareBracket, minimumGap: 0)
+                                            minimumGap: 0)
         XCTAssertEqual(e.typicalBytes, 100_000_000)
         XCTAssertEqual(e.worstCaseBytes, 307_000_000)
         XCTAssertGreaterThan(e.worstCaseBytes, e.typicalBytes)
@@ -153,26 +156,26 @@ final class EstimateCalibrationTests: XCTestCase {
 /// ignored that would badly under-estimate any long set.
 final class BracketSeamEstimateTests: XCTestCase {
 
-    private func entry(frames: Int) -> ShotListEntry {
-        ShotListEntry(
-            index: 0, sensor: .wide,
-            captureSet: .repeated(CaptureSpec(shutterSeconds: 1.0 / 250, iso: 100),
-                                  count: frames, name: "repeat"))
+    private func entry(frames: Int, firing: ExecutionMode = .hardwareBracket) -> ShotListEntry {
+        var set = CaptureSet.repeated(CaptureSpec(shutterSeconds: 1.0 / 250, iso: 100),
+                                      count: frames, name: "repeat")
+        set.executionMode = firing
+        return ShotListEntry(index: 0, sensor: .wide, captureSet: set)
     }
 
     func testASetInsideTheCeilingHasNoSeams() {
-        let e = SessionEstimate.forShotList([entry(frames: 8)], mode: .hardwareBracket,
+        let e = SessionEstimate.forShotList([entry(frames: 8)], 
                                             minimumGap: 0, bracketCeiling: 8,
                                             profile: .reference)
         XCTAssertEqual(e.bracketSeams, 0)
     }
 
     func testSixteenFramesOnAnEightCeilingCostsOneSeam() {
-        let e = SessionEstimate.forShotList([entry(frames: 16)], mode: .hardwareBracket,
+        let e = SessionEstimate.forShotList([entry(frames: 16)], 
                                             minimumGap: 0, bracketCeiling: 8,
                                             profile: .reference)
         XCTAssertEqual(e.bracketSeams, 1)
-        let without = SessionEstimate.forShotList([entry(frames: 16)], mode: .hardwareBracket,
+        let without = SessionEstimate.forShotList([entry(frames: 16)], 
                                                   minimumGap: 0, bracketCeiling: nil,
                                                   profile: .reference)
         XCTAssertEqual(e.typicalSeconds - without.typicalSeconds,
@@ -181,7 +184,7 @@ final class BracketSeamEstimateTests: XCTestCase {
 
     func testSeamsScaleWithHowFarPastTheCeilingTheSetGoes() {
         for (frames, seams) in [(9, 1), (16, 1), (17, 2), (24, 2), (64, 7)] {
-            let e = SessionEstimate.forShotList([entry(frames: frames)], mode: .hardwareBracket,
+            let e = SessionEstimate.forShotList([entry(frames: frames)], 
                                                 minimumGap: 0, bracketCeiling: 8)
             XCTAssertEqual(e.bracketSeams, seams, "\(frames) frames on a ceiling of 8")
         }
@@ -190,7 +193,7 @@ final class BracketSeamEstimateTests: XCTestCase {
     /// Sequential reconfigures per rung and issues one request per frame, so
     /// there is no bracket boundary to pay for.
     func testSequentialHasNoSeamsAtAll() {
-        let e = SessionEstimate.forShotList([entry(frames: 64)], mode: .sequential,
+        let e = SessionEstimate.forShotList([entry(frames: 64, firing: .sequential)],
                                             minimumGap: 0, bracketCeiling: 8,
                                             profile: .reference)
         XCTAssertEqual(e.bracketSeams, 0)
@@ -203,5 +206,76 @@ final class BracketSeamEstimateTests: XCTestCase {
         XCTAssertEqual(SessionEstimate.requestCount(frames: 8, ceiling: 0), 0,
                        "a ceiling of zero must not divide by zero")
         XCTAssertEqual(SessionEstimate.requestCount(frames: 0, ceiling: 8), 0)
+    }
+}
+
+/// Firing mode is part of the recipe, because the two modes do not produce the
+/// same record: sequential asks the device what it achieved after each frame,
+/// and a burst cannot. A name that could mean either does not reproduce.
+final class FiringModeTests: XCTestCase {
+
+    private func set(_ frames: Int, firing: ExecutionMode?) -> CaptureSet {
+        var s = CaptureSet.repeated(CaptureSpec(shutterSeconds: 0.004, iso: 100),
+                                    count: frames, name: "ladder")
+        s.executionMode = firing
+        return s
+    }
+
+    private func entry(_ frames: Int, firing: ExecutionMode?) -> ShotListEntry {
+        ShotListEntry(index: 0, sensor: .wide, captureSet: set(frames, firing: firing))
+    }
+
+    /// Protocols written before firing joined the recipe have no value stored.
+    /// They read as burst — what 29 of the first 31 real brackets used.
+    func testAProtocolSavedBeforeThisExistedReadsAsBurst() {
+        XCTAssertEqual(set(4, firing: nil).firing, .hardwareBracket)
+    }
+
+    func testFiringSurvivesASaveAndReload() throws {
+        let stored = set(4, firing: .sequential)
+        let round = try JSONDecoder().decode(
+            CaptureSet.self, from: JSONEncoder().encode(stored))
+        XCTAssertEqual(round.firing, .sequential,
+                       "a recipe that does not carry its firing mode does not reproduce")
+    }
+
+    /// The stored tokens are load-bearing: 25 stations already on disk use them,
+    /// and only the labels changed.
+    func testTheStoredTokensDidNotChangeWhenTheLabelsDid() {
+        XCTAssertEqual(ExecutionMode.hardwareBracket.rawValue, "hardwareBracket")
+        XCTAssertEqual(ExecutionMode.sequential.rawValue, "sequential")
+        XCTAssertEqual(ExecutionMode.hardwareBracket.label, "Burst")
+        XCTAssertEqual(ExecutionMode.sequential.label, "Sequential")
+    }
+
+    /// A shot list may now mix modes, so the estimate has to read each entry
+    /// rather than apply one global setting to all of them.
+    func testAMixedShotListIsEstimatedPerEntry() {
+        let mixed = SessionEstimate.forShotList(
+            [entry(8, firing: .hardwareBracket), entry(8, firing: .sequential)],
+            minimumGap: 0, includeStillness: false)
+        let allBurst = SessionEstimate.forShotList(
+            [entry(8, firing: .hardwareBracket), entry(8, firing: .hardwareBracket)],
+            minimumGap: 0, includeStillness: false)
+        XCTAssertGreaterThan(mixed.typicalSeconds, allBurst.typicalSeconds,
+                             "the sequential half must cost more than a burst half")
+    }
+
+    /// A burst is one hardware request with nowhere to insert a wait, so
+    /// charging for a gap predicted time the app was never going to spend.
+    func testAGapIsNotChargedToABurstThatCannotHonourIt() {
+        let withGap = SessionEstimate.forShotList([entry(8, firing: .hardwareBracket)],
+                                                  minimumGap: 1.0, includeStillness: false)
+        let without = SessionEstimate.forShotList([entry(8, firing: .hardwareBracket)],
+                                                  minimumGap: 0, includeStillness: false)
+        XCTAssertEqual(withGap.typicalSeconds, without.typicalSeconds, accuracy: 1e-9)
+    }
+
+    func testAGapIsChargedToASequentialSetThatCanHonourIt() {
+        let withGap = SessionEstimate.forShotList([entry(8, firing: .sequential)],
+                                                  minimumGap: 1.0, includeStillness: false)
+        let without = SessionEstimate.forShotList([entry(8, firing: .sequential)],
+                                                  minimumGap: 0, includeStillness: false)
+        XCTAssertEqual(withGap.typicalSeconds - without.typicalSeconds, 8.0, accuracy: 1e-9)
     }
 }
