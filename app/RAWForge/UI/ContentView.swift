@@ -128,6 +128,23 @@ struct ContentView: View {
                     Text(w).font(.caption2).foregroundStyle(.orange)
                 }
             }
+            Stepper(value: $model.dwell, in: 0...5, step: 0.25) {
+                LabeledContent("Dwell before first frame",
+                               value: model.dwell == 0 ? "none" : String(format: "%.2fs", model.dwell))
+            }
+            Toggle("Authored sensor order", isOn: $model.useAuthoredSensorOrder)
+            if model.useAuthoredSensorOrder {
+                Text(model.orderedSensors.map(\.rawValue).joined(separator: " → "))
+                    .font(.caption).monospaced()
+                HStack {
+                    ForEach(report.usableSensors) { cap in
+                        Button(cap.sensor.rawValue) { model.appendToAuthoredOrder(cap.sensor) }
+                            .buttonStyle(.bordered).font(.caption)
+                    }
+                }
+                Text("tap in the order you want them shot")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
             Stepper(value: $model.minimumGap, in: 0...5, step: 0.25) {
                 LabeledContent("Min inter-frame gap",
                                value: model.minimumGap == 0 ? "none" : String(format: "%.2fs", model.minimumGap))

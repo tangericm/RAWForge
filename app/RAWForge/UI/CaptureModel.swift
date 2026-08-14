@@ -29,6 +29,11 @@ final class CaptureModel: ObservableObject {
     @Published var stopsPerRung: Double = 1
     @Published var isSweep: Bool = true
     @Published var minimumGap: Double = 0
+    /// Optional (#8) — zero means fire as soon as the sensor is configured.
+    @Published var dwell: Double = 0
+    /// Group-by-sensor is the default; an authored order overrides it (#8).
+    @Published var useAuthoredSensorOrder = false
+    @Published var authoredSensorOrder: [SensorCapability.Sensor] = []
 
     /// The protocol in force. Nil means the set is being authored from the
     /// pickers below and has not been named — #8's "no silent default" says a
@@ -74,7 +79,21 @@ final class CaptureModel: ObservableObject {
     /// Group by sensor, in the canonical order (#8's default; authored order is
     /// the override, not yet exposed).
     var orderedSensors: [SensorCapability.Sensor] {
-        SensorCapability.Sensor.allCases.filter { selectedSensors.contains($0) }
+        if useAuthoredSensorOrder {
+            let authored = authoredSensorOrder.filter { selectedSensors.contains($0) }
+            let rest = SensorCapability.Sensor.allCases
+                .filter { selectedSensors.contains($0) && !authored.contains($0) }
+            return authored + rest
+        }
+        return SensorCapability.Sensor.allCases.filter { selectedSensors.contains($0) }
+    }
+
+    /// Moves a sensor to the end of the authored order, which is how an order is
+    /// built by tapping: tap them in the sequence you want them shot.
+    func appendToAuthoredOrder(_ s: SensorCapability.Sensor) {
+        authoredSensorOrder.removeAll { $0 == s }
+        authoredSensorOrder.append(s)
+        useAuthoredSensorOrder = true
     }
 
     var currentSet: CaptureSet {
@@ -205,6 +224,14 @@ final class CaptureModel: ObservableObject {
                     motion: motionRecorder.summary(from: swapStart, to: swapEnd)))
                 previousSensor = sensor
 
+                // Dwell before the first frame, inside the station but outside
+                // any exposure — the tap-induced spike decays here rather than
+                // landing in a frame.
+                if dwell > 0 {
+                    progress = String(format: "%@ dwell %.2fs", sensor.rawValue, dwell)
+                    try? await Task.sleep(nanoseconds: UInt64(dwell * 1_000_000_000))
+                }
+
                 // Rails are per sensor: the same authored set validates
                 // differently against 1x and tele, and dropped rungs are
                 // recorded per bracket rather than for the station.
@@ -220,7 +247,8 @@ final class CaptureModel: ObservableObject {
                         sensorUniqueID: cap.uniqueID, captureSet: set,
                         renderedSpecs: checked.kept, evOffsetStops: offset,
                         executionMode: mode.rawValue, droppedRungs: checked.dropped,
-                        minimumInterFrameGapSeconds: nil, note: nil, frames: []))
+                        minimumInterFrameGapSeconds: nil, dwellSeconds: dwell > 0 ? dwell : nil,
+                        note: nil, frames: []))
                     continue
                 }
 
@@ -234,7 +262,7 @@ final class CaptureModel: ObservableObject {
                     renderedSpecs: checked.kept, evOffsetStops: offset,
                     executionMode: mode.rawValue, droppedRungs: checked.dropped,
                     minimumInterFrameGapSeconds: minimumGap > 0 ? minimumGap : nil,
-                    note: nil, frames: frames))
+                    dwellSeconds: dwell > 0 ? dwell : nil, note: nil, frames: frames))
             }
             rig.stopSession()
             motionRecorder.stop()
@@ -548,7 +576,8 @@ final class CaptureModel: ObservableObject {
                     bracketIndex: i + 1, sensor: sensor.rawValue, sensorUniqueID: cap.uniqueID,
                     captureSet: set, renderedSpecs: checked.kept, evOffsetStops: 0,
                     executionMode: mode.rawValue, droppedRungs: checked.dropped,
-                    minimumInterFrameGapSeconds: nil, note: "item3 " + arm.0, frames: frames))
+                    minimumInterFrameGapSeconds: nil, dwellSeconds: nil,
+                    note: "item3 " + arm.0, frames: frames))
             }
             rig.stopSession()
             motionRecorder.stop()
