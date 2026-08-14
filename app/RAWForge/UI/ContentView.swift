@@ -196,7 +196,7 @@ struct BenchView: View {
                            : "never measured — estimates borrowed from \(DeviceProfile.referenceDevice)")
             }
             NavigationLink {
-                CalibrationView(model: model)
+                CalibrationView(model: model, bench: model.bench)
             } label: {
                 runRow(icon: "moon.stars", tint: .indigo,
                        title: "Dark-frame calibration",
@@ -209,12 +209,12 @@ struct BenchView: View {
             // release rather than tucked behind a toggle.
             #if DEBUG
             NavigationLink {
-                InstrumentChecksView(model: model)
+                InstrumentChecksView(model: model, bench: model.bench)
             } label: {
                 runRow(icon: "checklist", tint: .teal,
                        title: "Instrument checks (debug)",
                        question: "Do the locks this app relies on reach the pixels?",
-                       state: model.zoomProbe == nil ? "not run this launch" : "run this launch")
+                       state: model.bench.zoomProbe == nil ? "not run this launch" : "run this launch")
             }
             #endif
             if let station = model.lastStation {
