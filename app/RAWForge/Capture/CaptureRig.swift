@@ -274,6 +274,195 @@ final class CaptureRig {
                 [back.redGain, back.greenGain, back.blueGain])
     }
 
+    // MARK: - Focus (#18)
+
+    /// A focus decision with everything already worked out: the point mapped
+    /// into *this* sensor's frame, and any exact position carried over from an
+    /// earlier lock on this same sensor.
+    ///
+    /// The rig deliberately does no resolving of its own. Which sensor a point
+    /// came from and whether a stored position is still applicable are facts
+    /// about the station, and a rig that guessed at them would be inventing
+    /// context it does not have.
+    struct FocusResolution {
+        var intent: FocusPlan.Intent = .automatic
+
+        /// Already in `AVCaptureDevice` coordinates, already mapped.
+        var point: CGPoint?
+        var mappedFrom: String?
+
+        /// A lens position measured earlier **on this sensor**, to be
+        /// re-commanded exactly rather than re-hunted. Only ever set by a
+        /// caller that knows the sensor has not changed.
+        var restore: Float?
+
+        var note: String?
+    }
+
+    /// How long autofocus is given before the app stops waiting and records
+    /// that it did. Generous rather than tight: a focus sweep in low light runs
+    /// past a second, and the failure mode this guards against is a station
+    /// hanging at the pose, not a slow lens.
+    static let focusConvergenceTimeout: TimeInterval = 2.0
+
+    /// Puts the lens where the station says it should be, and reports what
+    /// actually happened.
+    ///
+    /// **Never throws.** #6 makes Bayer the only hard boundary, so a sensor that
+    /// cannot lock focus still shoots — it shoots with a note saying focus was
+    /// not held, which is a fact a reader can act on. Aborting a station over it
+    /// would destroy frames to protect a property the frames could simply have
+    /// been annotated with.
+    func applyFocus(_ r: FocusResolution) async -> FrameRecord.Focus {
+        let began = ProcessInfo.processInfo.systemUptime
+        var notes: [String] = r.note.map { [$0] } ?? []
+
+        func finish(_ acquisition: String, converged: Bool?) -> FrameRecord.Focus {
+            let d = device
+            return FrameRecord.Focus(
+                intent: r.intent.label,
+                acquisition: acquisition,
+                mode: d.map { Self.name(of: $0.focusMode) } ?? "none",
+                lensPosition: d?.lensPosition,
+                pointOfInterest: r.point.map { [Double($0.x), Double($0.y)] },
+                pointMappedFromSensor: r.mappedFrom,
+                converged: converged,
+                acquisitionSeconds: ProcessInfo.processInfo.systemUptime - began,
+                minimumFocusDistanceMillimetres: d.flatMap {
+                    $0.minimumFocusDistance >= 0 ? $0.minimumFocusDistance : nil
+                },
+                note: notes.isEmpty ? nil : notes.joined(separator: "; "))
+        }
+
+        guard let d = device else {
+            notes.append("rig not configured")
+            return finish("notLocked", converged: nil)
+        }
+
+        // An exact position — either restored from this sensor's own earlier
+        // lock, or commanded by the operator. Both are the same operation; they
+        // differ only in who chose the number, which is worth recording.
+        let exact: (value: Float, acquisition: String)? = {
+            if let p = r.restore { return (p, "restored") }
+            if let p = r.intent.lensPosition { return (Float(p), "commanded") }
+            return nil
+        }()
+
+        if let exact {
+            if d.isLockingFocusWithCustomLensPositionSupported {
+                let clamped = min(max(exact.value, 0), 1)
+                if clamped != exact.value {
+                    notes.append(String(format: "lens position %.3f clamped to %.3f",
+                                        exact.value, clamped))
+                }
+                do {
+                    try d.lockForConfiguration()
+                    await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                        d.setFocusModeLocked(lensPosition: clamped) { _ in c.resume() }
+                    }
+                    d.unlockForConfiguration()
+                    logTrace(.rig, String(format: "focus %@ at %.4f", exact.acquisition, clamped))
+                    return finish(exact.acquisition, converged: true)
+                } catch {
+                    notes.append("could not lock the device for configuration: \(error)")
+                    return finish("notLocked", converged: nil)
+                }
+            }
+            // The position cannot be commanded, so autofocus below is the only
+            // route left. Saying so matters: a "restored" frame and a re-hunted
+            // one are not the same claim, and silently substituting one for the
+            // other is how a log starts lying.
+            notes.append("this sensor cannot be given a lens position — "
+                         + "autofocused instead of \(exact.acquisition)")
+        }
+
+        // Autofocus, aimed if the operator aimed it, then frozen.
+        do {
+            try d.lockForConfiguration()
+            if let pt = r.point {
+                if d.isFocusPointOfInterestSupported {
+                    d.focusPointOfInterest = CGPoint(x: min(max(pt.x, 0), 1),
+                                                     y: min(max(pt.y, 0), 1))
+                } else {
+                    notes.append("this sensor cannot aim autofocus — the point was ignored")
+                }
+            }
+            if d.isFocusModeSupported(.autoFocus) {
+                d.focusMode = .autoFocus
+            } else {
+                notes.append("this sensor does not support a one-shot autofocus")
+            }
+            d.unlockForConfiguration()
+        } catch {
+            notes.append("could not lock the device for configuration: \(error)")
+            return finish("notLocked", converged: nil)
+        }
+
+        // `.autoFocus` is documented to run once and revert to locked, but the
+        // revert is not instantaneous and firing into a moving lens is exactly
+        // the drift this ticket exists to remove.
+        let deadline = began + Self.focusConvergenceTimeout
+        while d.isAdjustingFocus && ProcessInfo.processInfo.systemUptime < deadline {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let converged = !d.isAdjustingFocus
+        if !converged {
+            notes.append(String(format: "autofocus had not converged after %.1f s — locked anyway",
+                                Self.focusConvergenceTimeout))
+            logWarn(.rig, "autofocus did not converge before the timeout — locking where it stands")
+        }
+
+        guard d.isFocusModeSupported(.locked) else {
+            notes.append("this sensor cannot hold focus — it may drift across the set")
+            logWarn(.rig, "\(sensor?.rawValue ?? "?") cannot lock focus; frames will say so")
+            return finish("notLocked", converged: converged)
+        }
+        do {
+            try d.lockForConfiguration()
+            d.focusMode = .locked
+            d.unlockForConfiguration()
+        } catch {
+            notes.append("could not freeze focus: \(error)")
+            return finish("notLocked", converged: converged)
+        }
+        logTrace(.rig, String(format: "focus locked at %.4f%@ (converged: %@)",
+                              d.lensPosition, r.point == nil ? "" : " on a point",
+                              converged ? "yes" : "no"))
+        return finish("autofocused", converged: converged)
+    }
+
+    /// Drives the lens directly while the operator is dragging a slider.
+    ///
+    /// Deliberately not `applyFocus`: that awaits a completion handler and
+    /// builds a record, and neither is wanted sixty times a second. Nothing
+    /// here is recorded, because nothing here is a capture — this exists purely
+    /// so the number under the slider means something to the person setting it.
+    /// What ends up in the log is whatever `applyFocus` commands at the pose.
+    func previewLensPosition(_ p: Float) {
+        guard let d = device, d.isLockingFocusWithCustomLensPositionSupported,
+              (try? d.lockForConfiguration()) != nil else { return }
+        d.setFocusModeLocked(lensPosition: min(max(p, 0), 1), completionHandler: nil)
+        d.unlockForConfiguration()
+    }
+
+    /// The active format's horizontal field of view, which is what makes a
+    /// focus point transferable between sensors at all.
+    var fieldOfViewDegrees: Double? {
+        guard let d = device, d.activeFormat.videoFieldOfView > 0 else { return nil }
+        return Double(d.activeFormat.videoFieldOfView)
+    }
+
+    var currentLensPosition: Float? { device?.lensPosition }
+
+    static func name(of mode: AVCaptureDevice.FocusMode) -> String {
+        switch mode {
+        case .locked:              return "locked"
+        case .autoFocus:           return "autoFocus"
+        case .continuousAutoFocus: return "continuousAutoFocus"
+        @unknown default:          return "unknown(\(mode.rawValue))"
+        }
+    }
+
     func achievedExposure() -> FrameRecord.Exposure {
         guard let d = device else {
             return FrameRecord.Exposure(shutterSeconds: 0, iso: 0, whiteBalanceGains: nil)

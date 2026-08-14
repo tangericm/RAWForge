@@ -154,6 +154,13 @@ struct PlanSheet: View {
         model.shotList.entries.contains { $0.captureSet.firing == .sequential }
     }
 
+    /// The sensors this station will actually use, in the order they appear.
+    private var plannedSensors: [SensorCapability.Sensor] {
+        var seen: [SensorCapability.Sensor] = []
+        for e in model.shotList.entries where !seen.contains(e.sensor) { seen.append(e.sensor) }
+        return seen
+    }
+
     private func pipColour(_ i: Int) -> Color {
         i < model.shotList.cursor ? .green : i == model.shotList.cursor ? .accentColor : .secondary
     }
@@ -213,6 +220,18 @@ struct PlanSheet: View {
                 LabeledContent("Pose") {
                     Text(model.poseIntent.isEmpty ? "unset" : model.poseIntent)
                         .foregroundStyle(model.poseIntent.isEmpty ? .orange : .secondary)
+                }
+            }
+            // Focus sits beside Pose because it is the same kind of thing: a
+            // property of *this* pose that cannot be authored in advance. A
+            // lens position means nothing away from what it was focused on, so
+            // it is never part of a protocol (#18).
+            NavigationLink {
+                FocusPreflightView(model: model)
+            } label: {
+                LabeledContent("Focus") {
+                    Text(model.focusPlan.summary(for: plannedSensors))
+                        .foregroundStyle(.secondary)
                 }
             }
             // How a set fires belongs to the set, not to the shoot — so this is

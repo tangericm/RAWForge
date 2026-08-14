@@ -98,6 +98,17 @@ enum CapabilityProbe {
                 : nil),
             supportsCustomExposure: device.isExposureModeSupported(.custom),
             supportsWhiteBalanceCustomGainLock: device.isLockingWhiteBalanceWithCustomDeviceGainsSupported,
+            supportsLockedFocus: device.isFocusModeSupported(.locked),
+            supportsCustomLensPosition: device.isLockingFocusWithCustomLensPositionSupported,
+            supportsFocusPointOfInterest: device.isFocusPointOfInterestSupported,
+            // Documented as -1 when the device cannot report it, which is not a
+            // distance and must not be stored as one.
+            minimumFocusDistanceMillimetres: device.minimumFocusDistance >= 0
+                ? device.minimumFocusDistance : nil,
+            // Zero would mean "no field of view", which is not a thing a camera
+            // has — so it is absence, not a measurement.
+            horizontalFieldOfViewDegrees: format.videoFieldOfView > 0
+                ? Double(format.videoFieldOfView) : nil,
             maxBracketedCapturePhotoCount: output.maxBracketedCapturePhotoCount,
             maxWhiteBalanceGain: device.maxWhiteBalanceGain,
             minAvailableVideoZoomFactor: Double(device.minAvailableVideoZoomFactor),

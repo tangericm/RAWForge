@@ -23,6 +23,11 @@ enum DemoSeed {
     /// `RAWFORGE_DEMO=single` fakes a phone with one rear camera — an SE — so
     /// the parts of the interface that should collapse can be seen collapsing.
     static var wantsSingleSensor: Bool { value == "single" }
+    /// `RAWFORGE_DEMO=focus` opens the focus pre-flight, which is otherwise
+    /// three taps deep behind a shot list a simulator cannot build. The preview
+    /// is black without a camera, but the layout, the mode picker and the
+    /// cross-sensor mapping are all real.
+    static var wantsFocus: Bool { value == "focus" || value == "focus-point" }
 
     /// A sensor that reports what an iPhone 15 Pro's does, so the plan's
     /// arithmetic works on real numbers rather than invented ones.
@@ -32,9 +37,49 @@ enum DemoSeed {
             modelID: "demo", bayerFormat: 0x62676734, allRawFormats: ["'bgg4'"],
             rawFormatsRequiredRunningSession: false, exclusionReason: nil,
             supportsCustomExposure: true, supportsWhiteBalanceCustomGainLock: true,
+            supportsLockedFocus: true, supportsCustomLensPosition: true,
+            supportsFocusPointOfInterest: true,
+            // Approximate, and only ever used to draw a demo. Real values come
+            // from the probe on real hardware; these exist so the focus screens
+            // have three genuinely different fields of view to move a point
+            // between rather than three copies of one number.
+            minimumFocusDistanceMillimetres: focusDistance(s),
+            horizontalFieldOfViewDegrees: fieldOfView(s),
             maxBracketedCapturePhotoCount: 8, maxWhiteBalanceGain: 4,
             minAvailableVideoZoomFactor: 1.0, minISO: 55, maxISO: 6400,
             minExposureSeconds: 1.0 / 71429, maxExposureSeconds: 1.0)
+    }
+
+    private static func fieldOfView(_ s: SensorCapability.Sensor) -> Double {
+        switch s {
+        case .ultraWide: return 106
+        case .wide:      return 69
+        case .telephoto: return 25
+        }
+    }
+
+    private static func focusDistance(_ s: SensorCapability.Sensor) -> Int {
+        switch s {
+        case .ultraWide: return 20
+        case .wide:      return 120
+        case .telephoto: return 400
+        }
+    }
+
+    /// A focus plan with something in it, so the pre-flight opens on a real
+    /// state rather than three defaults. `focus` shows a hand-set lens
+    /// position; `focus-point` shows a tapped point on the wide, which is what
+    /// makes the cross-sensor mapping offer appear on the other sensor.
+    @MainActor static func applyFocus(to model: CaptureModel) {
+        switch value {
+        case "focus":       model.focusPlan[.wide] = .manual(lensPosition: 0.42)
+        // Seeded on the *telephoto* so the screen opens on the wide with the
+        // mapping on offer — the offer only appears on a sensor still set to
+        // automatic, so seeding the wide would have hidden the thing this
+        // demo exists to show.
+        case "focus-point": model.focusPlan[.telephoto] = .point(x: 0.35, y: 0.42)
+        default:            break
+        }
     }
 
     /// A station worth drawing: a sweep and a long repeat, on two sensors, so
@@ -63,6 +108,7 @@ enum DemoSeed {
             cursor: 0)
         model.poseIntent = "tripod-rigid"
         model.phase = .sessionOpen
+        applyFocus(to: model)
     }
 }
 #endif
