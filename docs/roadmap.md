@@ -300,6 +300,56 @@ belong in CI; 18 need a real sensor and cannot run on a hosted runner.
 
 ---
 
+## 6. Backend: none, deliberately
+
+Nothing in this roadmap needs a server, and the absence is worth defending
+rather than merely tolerating.
+
+Going through the things that look server-shaped:
+
+| Wants a server? | Actually |
+|---|---|
+| Community device profiles | A static JSON file in this repo, fetched over HTTPS and cached. Contribution by pull request. |
+| Crash reporting | The unclean-exit marker and the log file, plus a share sheet. |
+| Protocol sharing | Files. They already are files, and file sharing is already on. |
+| Session transfer | #11 settled this: Files and a cable. A 2 GB session is not an upload. |
+| Analytics | Against the project's whole stance, and unnecessary. |
+| Distribution, updates, payment | Apple's infrastructure. |
+| `rawforge` Python package | PyPI. |
+| Documentation | GitHub Pages, static. |
+
+The one with a real argument is **device profiles**, because contribution is a
+write. Pull requests are the better answer anyway, not merely the cheaper one:
+a profile arrives as a reviewable diff with a person attached and a device named,
+which is the same provenance standard the app applies to its own measurements.
+A form posting anonymous numbers into a database would be *less* trustworthy
+than a file with a commit history.
+
+What a backend would actually cost:
+
+- **A privacy policy with teeth.** Right now the honest policy is "this app
+  collects nothing" — a one-line claim that is trivially true and trivially
+  auditable. The moment anything is transmitted that becomes a disclosure with
+  App Store review attached to it.
+- **An offline failure mode.** This is a field instrument used away from
+  buildings. Anything it needs the network for is something that can be missing
+  at a pose, and a capture tool that degrades without signal is worse than one
+  that never asks.
+- **An outage surface and a running cost**, permanently, for a tool whose entire
+  job happens on one device.
+
+**If a fetch is ever added** — profiles are the plausible case — the shape
+should be: a static file at a stable URL, read-only, cached on disk, checked at
+most once a launch, and completely optional. The app must work identically when
+it is unreachable, and it should say which profile it is using and when it was
+fetched. That is "a file on the internet", not a backend, and it does not change
+the privacy answer.
+
+The one thing that could genuinely become a service is **photonforge** — hosted
+processing of captured sessions is a coherent product. But that is a separate
+decision about a separate repo, and RAWForge should stay a thing that works with
+the network switched off.
+
 ## Suggested order
 
 **Phase 1 — honest on any iPhone.** Device characterisation, borrowed-value
