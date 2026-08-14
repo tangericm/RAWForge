@@ -11,6 +11,24 @@ struct ContentView: View {
 
     var body: some View {
         Group {
+            #if DEBUG
+            // The timeline is two taps deep behind a shot list that a simulator
+            // cannot build, so it would otherwise ship having only been
+            // compiled and never seen.
+            if DemoSeed.wantsTimeline {
+                NavigationStack {
+                    List { StationPlanView(model: model) }
+                        .navigationTitle("Timeline")
+                        .navigationBarTitleDisplayMode(.inline)
+                }
+            } else if model.cameraDenied {
+                CameraDeniedView()
+            } else if !booted {
+                BootingView()
+            } else {
+                tabs
+            }
+            #else
             if model.cameraDenied {
                 CameraDeniedView()
             } else if !booted {
@@ -18,6 +36,7 @@ struct ContentView: View {
             } else {
                 tabs
             }
+            #endif
         }
         .task {
             // Frames whose station never closed belong to a station that never
@@ -26,6 +45,13 @@ struct ContentView: View {
             if orphans > 0 {
                 logWarn(.store, "swept \(orphans) orphaned frame(s) from a station that never closed")
             }
+            #if DEBUG
+            if DemoSeed.isRequested {
+                DemoSeed.apply(to: model)
+                booted = true
+                return
+            }
+            #endif
             await model.probe()
             model.refreshProtocols()
             model.restoreShotList()

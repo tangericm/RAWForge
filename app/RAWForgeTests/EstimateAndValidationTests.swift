@@ -279,3 +279,106 @@ final class FiringModeTests: XCTestCase {
         XCTAssertEqual(withGap.typicalSeconds - without.typicalSeconds, 8.0, accuracy: 1e-9)
     }
 }
+
+/// Drawing a station against a clock.
+///
+/// The parts are tested rather than the pixels: where the time goes, what steps
+/// the shot list implies, and the one place the drawing departs from the clock.
+final class TimelineTests: XCTestCase {
+
+    private func entry(_ sensor: SensorCapability.Sensor, frames: Int,
+                       firing: ExecutionMode = .hardwareBracket) -> ShotListEntry {
+        var set = CaptureSet.repeated(CaptureSpec(shutterSeconds: 0.004, iso: 100),
+                                      count: frames, name: "ladder")
+        set.executionMode = firing
+        return ShotListEntry(index: 0, sensor: sensor, captureSet: set)
+    }
+
+    // MARK: - Where the time goes
+
+    func testTheBreakdownAccountsForEveryPartOfTheEstimate() {
+        let e = SessionEstimate.forShotList(
+            [entry(.wide, frames: 8), entry(.telephoto, frames: 16)],
+            minimumGap: 0, bracketCeiling: 8, profile: .reference)
+        XCTAssertEqual(e.breakdown.total, e.worstCaseSeconds, accuracy: 1e-9,
+                       "a part unaccounted for would draw a bar that does not add up")
+    }
+
+    /// The headline a plan should deliver without being read.
+    func testMostOfATwoSensorStationIsNotShooting() {
+        let e = SessionEstimate.forShotList(
+            [entry(.wide, frames: 4), entry(.telephoto, frames: 4)],
+            minimumGap: 0, bracketCeiling: 8, profile: .reference)
+        XCTAssertGreaterThan(e.breakdown.notShooting, 0.9,
+                             "two swaps and two settles dwarf eight short exposures")
+    }
+
+    func testASingleSensorStationSpendsNothingOnSwapping() {
+        let e = SessionEstimate.forShotList([entry(.wide, frames: 8)],
+                                            minimumGap: 0, includeStillness: false,
+                                            bracketCeiling: 8, profile: .reference)
+        XCTAssertEqual(e.breakdown.swaps, DeviceProfile.reference.sensorSwap.value, accuracy: 1e-9,
+                       "coming up on the first sensor is still a swap")
+        XCTAssertEqual(e.breakdown.seams, 0)
+    }
+
+    func testSeamsAppearOnlyWhenASetOutgrowsOneRequest() {
+        let short = SessionEstimate.forShotList([entry(.wide, frames: 8)],
+                                                minimumGap: 0, bracketCeiling: 8, profile: .reference)
+        let long = SessionEstimate.forShotList([entry(.wide, frames: 16)],
+                                               minimumGap: 0, bracketCeiling: 8, profile: .reference)
+        XCTAssertEqual(short.breakdown.seams, 0)
+        XCTAssertEqual(long.breakdown.seams, DeviceProfile.reference.bracketSeam.value, accuracy: 1e-9)
+    }
+
+    // MARK: - The steps a shot list implies
+
+    func testConsecutiveSetsOnOneSensorShareASwapAndASettle() {
+        let steps = StationTimeline.steps(
+            entries: [entry(.wide, frames: 4), entry(.wide, frames: 4),
+                      entry(.telephoto, frames: 4)],
+            minimumGap: 0, bracketCeiling: 8)
+        XCTAssertEqual(steps.filter { $0.kind == .swap }.count, 2)
+        XCTAssertEqual(steps.filter { $0.kind == .settle }.count, 2)
+        XCTAssertEqual(steps.filter { $0.kind == .set }.count, 3)
+    }
+
+    func testASetStepCarriesItsLadderShape() {
+        var sweep = CaptureSet.shutterSweep(
+            base: CaptureSpec(shutterSeconds: 1.0 / 125, iso: 100), stopsPerRung: 1, rungs: 5)
+        sweep.executionMode = .hardwareBracket
+        let steps = StationTimeline.steps(
+            entries: [ShotListEntry(index: 0, sensor: .wide, captureSet: sweep)],
+            minimumGap: 0, bracketCeiling: 8)
+        let rungs = steps.first { $0.kind == .set }?.rungs ?? []
+        XCTAssertEqual(rungs.count, 5)
+        // Normalised against the longest rung, so the ladder's shape is visible.
+        XCTAssertEqual(rungs.max() ?? 0, 1.0, accuracy: 1e-9)
+        XCTAssertLessThan(rungs.first ?? 1, 0.1, "a five-rung one-stop sweep spans 16x")
+    }
+
+    // MARK: - The one place the drawing departs from the clock
+
+    /// Duration is a bar rather than a block height, because a block has to
+    /// hold a title and a caption and so cannot go below about 130 points —
+    /// which made a 264 ms set and a 3.8 s set the same size while the view
+    /// claimed to be to scale. A bar has no such floor.
+    func testTheBarIsExactAcrossA450To1Ratio() {
+        XCTAssertEqual(StationTimeline.barFraction(0.033, longest: 14.9), 0.00221, accuracy: 1e-5)
+        XCTAssertEqual(StationTimeline.barFraction(14.9, longest: 14.9), 1.0, accuracy: 1e-9)
+    }
+
+    func testTheBarIsLinearInBetween() {
+        XCTAssertEqual(StationTimeline.barFraction(5, longest: 10), 0.5, accuracy: 1e-9)
+    }
+
+    func testAnEmptyOrZeroLengthPlanDoesNotDivideByZero() {
+        XCTAssertEqual(StationTimeline.barFraction(0, longest: 0), 0)
+        XCTAssertEqual(StationTimeline.barFraction(1, longest: 0), 0)
+    }
+
+    /// Nothing is allowed to draw past the end of its track.
+    func testABarNeverExceedsItsTrack() {
+        XCTAssertEqual(StationTimeline.barFraction(20, longest: 10), 1.0)
+    }
+}
