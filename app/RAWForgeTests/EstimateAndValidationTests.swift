@@ -119,3 +119,31 @@ final class DarkFrameValidationTests: XCTestCase {
         XCTAssertNil(DarkFrameValidation.check(.unavailable("no pixel buffer")))
     }
 }
+
+final class EstimateCalibrationTests: XCTestCase {
+
+    func testIdentityWhenThereIsNoHistory() {
+        let c = EstimateCalibration.identity
+        XCTAssertEqual(c.apply(10), 10)
+        XCTAssertNil(c.summary)
+    }
+
+    /// Below the sample floor the correction is noise and must not be applied.
+    func testTooFewSamplesAreNotApplied() {
+        let c = EstimateCalibration(factor: 1.8, sampleCount: 2)
+        XCTAssertFalse(c.isUseful)
+        XCTAssertEqual(c.apply(10), 10, "a two-sample correction would make the estimate worse")
+    }
+
+    func testCorrectionAppliesOnceThereIsEnoughHistory() {
+        let c = EstimateCalibration(factor: 1.4, sampleCount: 6)
+        XCTAssertTrue(c.isUseful)
+        XCTAssertEqual(c.apply(10), 14, accuracy: 1e-9)
+        XCTAssertTrue(c.summary?.contains("+40%") ?? false)
+    }
+
+    func testSmallDriftIsReportedAsTracking() {
+        XCTAssertTrue(EstimateCalibration(factor: 1.02, sampleCount: 8)
+            .summary?.contains("tracking") ?? false)
+    }
+}

@@ -16,20 +16,61 @@ import UIKit
 /// show the data being kept.
 struct SessionBrowser: View {
     @State private var sessions: [String] = []
+    @State private var pendingDelete: String?
+    @State private var deleteError: String?
 
     var body: some View {
         List {
             if sessions.isEmpty {
                 Text("No sessions yet.").foregroundStyle(.secondary)
             }
+            if let e = deleteError {
+                Text(e).font(.caption).foregroundStyle(.red)
+            }
+            if !sessions.isEmpty {
+                Section {
+                    LabeledContent("On disk", value: SessionExport.formatTotal(sessions))
+                    if let free = SessionStore.availableCapacityBytes() {
+                        LabeledContent("Free", value: SessionEstimate.formatBytes(free))
+                    }
+                }
+            }
             ForEach(sessions, id: \.self) { id in
                 NavigationLink(destination: SessionDetail(sessionId: id)) {
                     SessionRow(sessionId: id)
                 }
             }
+            .onDelete { offsets in
+                pendingDelete = offsets.first.map { sessions[$0] }
+            }
         }
         .navigationTitle("Sessions")
-        .onAppear { sessions = SessionStore.existingSessionIds().reversed() }
+        .toolbar { EditButton() }
+        .onAppear { reload() }
+        .confirmationDialog(
+            "Delete this session permanently?",
+            isPresented: Binding(get: { pendingDelete != nil },
+                                 set: { if !$0 { pendingDelete = nil } }),
+            titleVisibility: .visible
+        ) {
+            if let id = pendingDelete {
+                Button("Delete \(id) · \(SessionEstimate.formatBytes(SessionExport.sizeOnDisk(sessionId: id)))",
+                       role: .destructive) { delete(id) }
+            }
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
+        } message: {
+            Text("The frames and the log go together. There is no undo, and the app "
+                 + "does not track whether this session was transferred.")
+        }
+    }
+
+    private func reload() { sessions = SessionStore.existingSessionIds().reversed() }
+
+    private func delete(_ id: String) {
+        do { try SessionStore.deleteSession(id); deleteError = nil }
+        catch { deleteError = "Could not delete \(id): \(error.localizedDescription)" }
+        pendingDelete = nil
+        reload()
     }
 }
 
@@ -50,6 +91,7 @@ private struct SessionDetail: View {
     let sessionId: String
     @State private var record: SessionRecord?
     @State private var stations: [StationRecord] = []
+    @State private var unreadable: [String] = []
     @State private var archive: ExportedArchive?
     @State private var exporting = false
     @State private var exportError: String?
@@ -58,6 +100,14 @@ private struct SessionDetail: View {
         List {
             if let e = exportError {
                 Section { Text(e).font(.caption).foregroundStyle(.red) }
+            }
+            if !unreadable.isEmpty {
+                Section("Unreadable records") {
+                    ForEach(unreadable, id: \.self) { Text($0).font(.caption).monospaced() }
+                    Text("These station files exist but did not parse. Their frames are still "
+                         + "on disk; the log for them is not.")
+                        .font(.caption2).foregroundStyle(.orange)
+                }
             }
             if let r = record {
                 Section("Session") {
@@ -112,7 +162,9 @@ private struct SessionDetail: View {
         .sheet(item: $archive) { ShareSheet(items: [$0.url]) }
         .onAppear {
             record = SessionStore.loadSession(sessionId)
-            stations = SessionStore.loadStations(sessionId)
+            let loaded = SessionStore.loadStationsDetailed(sessionId)
+            stations = loaded.stations
+            unreadable = loaded.unreadable
         }
     }
 
