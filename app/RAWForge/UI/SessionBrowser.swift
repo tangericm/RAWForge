@@ -50,9 +50,15 @@ private struct SessionDetail: View {
     let sessionId: String
     @State private var record: SessionRecord?
     @State private var stations: [StationRecord] = []
+    @State private var archive: ExportedArchive?
+    @State private var exporting = false
+    @State private var exportError: String?
 
     var body: some View {
         List {
+            if let e = exportError {
+                Section { Text(e).font(.caption).foregroundStyle(.red) }
+            }
             if let r = record {
                 Section("Session") {
                     LabeledContent("Device", value: r.capability.device.modelIdentifier)
@@ -97,9 +103,37 @@ private struct SessionDetail: View {
         }
         .navigationTitle(sessionId)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            Button { export() } label: {
+                if exporting { ProgressView() } else { Image(systemName: "square.and.arrow.up") }
+            }
+            .disabled(exporting)
+        }
+        .sheet(item: $archive) { ShareSheet(items: [$0.url]) }
         .onAppear {
             record = SessionStore.loadSession(sessionId)
             stations = SessionStore.loadStations(sessionId)
+        }
+    }
+
+    /// #11 keeps Files and a cable as the primary transfer route. This is the
+    /// in-app path, because AirDropping a folder out of Files is awkward and a
+    /// session is a folder by design. Zipping runs off the main actor: a
+    /// three-sensor scene is ~2 GB.
+    private func export() {
+        exporting = true
+        exportError = nil
+        let id = sessionId
+        Task.detached(priority: .userInitiated) {
+            do {
+                let url = try SessionExport.archive(sessionId: id)
+                await MainActor.run { archive = ExportedArchive(url: url); exporting = false }
+            } catch {
+                await MainActor.run {
+                    exportError = error.localizedDescription
+                    exporting = false
+                }
+            }
         }
     }
 }
