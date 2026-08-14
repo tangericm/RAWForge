@@ -13,10 +13,10 @@ import Foundation
 /// never existed.
 enum ShotListStore {
 
-    private static var url: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("shot-list.json")
-    }
+    /// App state, not the user's data — a cursor into a half-walked shot list
+    /// is not something a photographer made, so it does not belong in the
+    /// directory that is shared to Files wholesale.
+    private static var url: URL { AppStorage.supportFile("shot-list.json") }
 
     struct Stored: Codable {
         let entries: [ShotListEntry]

@@ -9,6 +9,9 @@ struct RAWForgeApp: App {
         // to record the failure that opens it.
         DebugLog.shared.start(device: DeviceIdentity.current())
         ProtocolLibrary.ensureDirectory()
+        // Before anything reads the shot list or the profile: an install that
+        // predates the split still has them in Documents.
+        AppStorage.migrateAll()
     }
 
     var body: some Scene {
