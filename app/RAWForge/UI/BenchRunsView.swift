@@ -34,7 +34,9 @@ private struct RunSubject: View {
             }
         }
 
-        if let report = model.report, report.canCapture {
+        // With one usable sensor there is nothing to choose, and a toggle that
+        // must stay on is a control that costs attention and returns nothing.
+        if let report = model.report, report.canCapture, report.usableSensors.count > 1 {
             Section("Sensors") {
                 ForEach(report.usableSensors) { cap in
                     Toggle(cap.sensor.rawValue, isOn: Binding(

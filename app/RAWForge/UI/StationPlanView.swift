@@ -26,9 +26,13 @@ struct StationPlanView: View {
                 Section("Where the time goes") {
                     TimeBudgetBar(breakdown: e.breakdown)
                         .padding(.vertical, 4)
-                    Text(String(format: "%.0f%% of this station is not shooting — swaps, "
-                                + "settling and seams. The pose is held for all of it.",
-                                100 * e.breakdown.notShooting))
+                    // Named for what this station actually contains: a phone
+                    // with one rear camera never swaps, and saying it does
+                    // would be the sort of small lie this app avoids.
+                    Text(String(format: "%.0f%% of this station is not shooting — %@. "
+                                + "The pose is held for all of it.",
+                                100 * e.breakdown.notShooting,
+                                e.breakdown.overheadNames))
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 Section("Timeline") {
@@ -52,7 +56,7 @@ struct StationPlanView: View {
             line("Frames", "\(e.frameCount) across \(e.sensorSwaps) sensor(s)")
             line("Exposure", SessionEstimate.formatDuration(e.exposureSeconds))
             line("Overhead", SessionEstimate.formatDuration(e.overheadSeconds)
-                 + " (swaps, per-frame, gaps)")
+                 + " (" + e.breakdown.overheadNames + ")")
             if e.bracketSeams > 0 {
                 // Named separately because it is the one cost that is not
                 // obvious from the frame count: it appears only when a set is
