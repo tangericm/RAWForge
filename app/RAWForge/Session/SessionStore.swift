@@ -275,6 +275,41 @@ enum SessionStore {
         String(format: "%@_d%03d_r%02d_%@.dng", sessionId, setting, repeatIndex, sensor)
     }
 
+    /// Removes frames belonging to a station that never closed.
+    ///
+    /// The prototype buffers a station in memory so that a phone death takes it
+    /// with it — *"nothing was written; the buffered station goes with it."*
+    /// Holding 240 MB of DNGs in RAM to achieve that would be jetsam bait, so
+    /// frames are written through and this sweep restores the same guarantee at
+    /// launch: a frame whose station has no record is a station that never
+    /// existed, and it goes.
+    ///
+    /// Runs before anything else reads the sessions directory, so no orphan is
+    /// ever visible in the browser or counted in a capacity estimate.
+    @discardableResult
+    static func sweepOrphanedFrames() -> Int {
+        var removed = 0
+        for sessionId in existingSessionIds() {
+            let dir = directory(for: sessionId)
+            let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+            let closedStations = Set(loadStations(sessionId).map(\.stationIndex))
+            // Calibration runs write per setting, not per station, and are the
+            // documented carve-out (#15) — their frames are never orphans.
+            let darkSettings = files.filter { $0.lastPathComponent.hasPrefix("dark-") }
+            for f in files where f.pathExtension == "dng" {
+                let name = f.lastPathComponent
+                if !darkSettings.isEmpty, name.contains("_d") { continue }
+                guard let r = name.range(of: "_s"),
+                      let station = Int(name[r.upperBound...].prefix(3)) else { continue }
+                if !closedStations.contains(station) {
+                    try? FileManager.default.removeItem(at: f)
+                    removed += 1
+                }
+            }
+        }
+        return removed
+    }
+
     static func existingSessionIds() -> [String] {
         let contents = try? FileManager.default.contentsOfDirectory(
             at: sessionsRoot, includingPropertiesForKeys: nil)

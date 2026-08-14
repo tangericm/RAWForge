@@ -1,7 +1,34 @@
 import SwiftUI
 
+/// Three screens rather than one scrolling list: the instrument, the record,
+/// and the bench. The capture flow is the app; diagnostics are the harness that
+/// answered #14 and stay because they are how the instrument is checked, not
+/// how it is used.
 struct ContentView: View {
     @StateObject private var model = CaptureModel()
+
+    var body: some View {
+        TabView {
+            NavigationStack { CaptureFlowView(model: model) }
+                .tabItem { Label("Capture", systemImage: "camera.aperture") }
+            NavigationStack { SessionBrowser() }
+                .tabItem { Label("Sessions", systemImage: "folder") }
+            NavigationStack { DiagnosticsView(model: model) }
+                .tabItem { Label("Diagnostics", systemImage: "wrench.and.screwdriver") }
+        }
+        .task {
+            // Frames whose station never closed belong to a station that never
+            // existed. Swept before anything reads the directory.
+            let orphans = SessionStore.sweepOrphanedFrames()
+            await model.probe()
+            model.refreshProtocols()
+            if orphans > 0 { model.status = "swept \(orphans) orphaned frame(s) from an unclosed station" }
+        }
+    }
+}
+
+struct DiagnosticsView: View {
+    @ObservedObject var model: CaptureModel
 
     /// Standard stops. Rails are validated against the sensor before anything
     /// fires, and a rung outside them is dropped and recorded, never clamped.
@@ -13,7 +40,6 @@ struct ContentView: View {
     ]
 
     var body: some View {
-        NavigationStack {
             List {
                 statusSection
                 if let report = model.report {
@@ -24,12 +50,7 @@ struct ContentView: View {
                     deviceSection(report.device)
                 }
             }
-            .navigationTitle("RAWForge")
-            .toolbar {
-                NavigationLink(destination: SessionBrowser()) { Text("Sessions") }
-            }
-            .task { await model.probe(); model.refreshProtocols() }
-        }
+            .navigationTitle("Diagnostics")
     }
 
     private var statusSection: some View {
