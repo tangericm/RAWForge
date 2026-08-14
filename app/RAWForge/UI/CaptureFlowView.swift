@@ -19,7 +19,13 @@ struct CaptureFlowView: View {
     /// Jumps to the console. A fault is the moment the log is worth reading,
     /// and making the operator find the tab is making them find it later.
     var showConsole: () -> Void = {}
-    @State private var showingPlan = false
+    @State private var showingPlan = {
+        #if DEBUG
+        return DemoSeed.value == "1"
+        #else
+        return false
+        #endif
+    }()
     @State private var showingFault = true
     @State private var confirmingAbandon = false
 
