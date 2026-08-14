@@ -13,7 +13,10 @@ struct SequenceFault: Error {
 
 @MainActor
 final class CaptureModel: ObservableObject {
-    @Published private(set) var report: CapabilityReport?
+    /// Settable within the module so the flow's state machine can be driven in
+    /// tests without a camera. The probe is the only thing that writes it in
+    /// the app itself.
+    @Published var report: CapabilityReport?
     @Published var session: SessionRecord?
     @Published var status: String = "not probed"
     @Published private(set) var cameraDenied = false

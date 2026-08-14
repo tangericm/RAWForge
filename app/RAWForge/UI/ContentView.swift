@@ -38,7 +38,7 @@ struct ContentView: View {
 
     private var tabs: some View {
         TabView(selection: $tab) {
-            NavigationStack { CaptureFlowView(model: model) }
+            NavigationStack { CaptureFlowView(model: model, showConsole: { tab = 2 }) }
                 .tabItem { Label("Capture", systemImage: "camera.aperture") }.tag(0)
             NavigationStack { SessionBrowser() }
                 .tabItem { Label("Sessions", systemImage: "folder") }.tag(1)

@@ -82,7 +82,16 @@ extension CaptureModel {
         }
     }
 
+    /// Brings the flow up, and is safe to call again.
+    ///
+    /// It runs from the capture screen's `onAppear`, which fires every time that
+    /// tab is returned to — and checking the console mid-station is exactly what
+    /// the console is for. Resetting the phase unconditionally would have
+    /// stranded an open station's buffered brackets: the phase would say
+    /// `sessionOpen` while frames sat in memory belonging to a station that
+    /// could no longer be closed or aborted.
     func startFlow() {
+        guard !phase.isInStation else { return }
         phase = session == nil ? .noSession : .sessionOpen
         flowNote = phase.note
         startFraming()

@@ -19,16 +19,18 @@ struct StationPlanView: View {
     var body: some View {
         let e = estimate
         return Section("Plan") {
-            Color.clear.frame(height: 0)
-                .onAppear { calibration = EstimateCalibration.fromRecentStations() }
             if model.shotList.entries.isEmpty {
-                Text("nothing planned").font(.caption).foregroundStyle(.secondary)
+                Text("Nothing planned yet.").font(.caption).foregroundStyle(.secondary)
             } else {
                 timeline
                 Divider()
                 budget(e)
             }
         }
+        // Reading every recent station's log to derive the correction ratio is
+        // file work, so it happens once off the render path rather than inside
+        // a hidden zero-height row.
+        .task { calibration = EstimateCalibration.fromRecentStations() }
     }
 
     /// One row per set, dimmed once the cursor has passed it. The swap rows

@@ -66,11 +66,12 @@ struct LogConsoleView: View {
                 .pickerStyle(.segmented)
                 .onChange(of: minimum) { refresh(force: true) }
 
+                // Following is what you want while something is going wrong, and
+                // exactly what you don't want while reading back what did.
                 Toggle(isOn: $follow) {
                     Image(systemName: follow ? "arrow.down.to.line" : "hand.raised")
                 }
                 .toggleStyle(.button)
-                .help("Follow the tail")
             }
 
             ScrollView(.horizontal, showsIndicators: false) {

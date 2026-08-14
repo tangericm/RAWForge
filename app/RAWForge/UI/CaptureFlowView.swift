@@ -16,8 +16,12 @@ import SwiftUI
 /// difference between an instrument and a frozen screen.
 struct CaptureFlowView: View {
     @ObservedObject var model: CaptureModel
+    /// Jumps to the console. A fault is the moment the log is worth reading,
+    /// and making the operator find the tab is making them find it later.
+    var showConsole: () -> Void = {}
     @State private var showingPlan = false
     @State private var showingFault = true
+    @State private var confirmingAbandon = false
 
     var body: some View {
         ZStack {
@@ -41,6 +45,16 @@ struct CaptureFlowView: View {
             }
         }
         .sheet(isPresented: $showingPlan) { PlanSheet(model: model) }
+        .confirmationDialog("Abandon this station?", isPresented: $confirmingAbandon,
+                            titleVisibility: .visible) {
+            Button("Abandon station \(model.stationIndex)", role: .destructive) {
+                model.abortStation(.abandoned)
+            }
+            Button("Keep shooting", role: .cancel) {}
+        } message: {
+            Text("Its \(model.pendingBrackets.reduce(0) { $0 + $1.frames.count }) frame(s) so far "
+                 + "will be deleted. Stations already banked are untouched.")
+        }
         .onAppear { model.startFlow() }
         .onChange(of: model.lastFault) { showingFault = model.lastFault != nil }
     }
@@ -191,7 +205,7 @@ struct CaptureFlowView: View {
                 // Present at every point a station is in flight, because the
                 // reason to stop is usually that the pose is already lost.
                 Button(role: .destructive) {
-                    model.abortStation(.captureError, detail: "abandoned by the operator")
+                    confirmingAbandon = true
                 } label: {
                     Label("Abandon", systemImage: "xmark").font(.caption)
                 }
@@ -209,11 +223,17 @@ struct CaptureFlowView: View {
     private func faultBanner(_ f: StationFault) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "exclamationmark.octagon.fill").foregroundStyle(.red)
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text("Station aborted — \(f.operatorNote)").font(.caption).bold()
                 Text("Its frames were deleted. Stations already banked survive, so there "
                      + "is no partial state to interpret later.")
                     .font(.caption2).foregroundStyle(.secondary)
+                if f != .abandoned {
+                    Button { showConsole() } label: {
+                        Label("What happened", systemImage: "text.alignleft").font(.caption2)
+                    }
+                    .buttonStyle(.bordered).controlSize(.mini)
+                }
             }
             Spacer(minLength: 0)
             Button { showingFault = false } label: {

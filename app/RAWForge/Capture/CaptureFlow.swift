@@ -89,6 +89,13 @@ enum StationFault: String, Codable {
     case batteryDeath
     case uncappedFrameInDarkRun
 
+    /// Not a fault — the operator stopped. It shares the abort path because the
+    /// consequence is identical (the station's frames go, banked stations
+    /// survive), but it is recorded separately: filing a deliberate stop as a
+    /// `captureError` would leave the log asserting an API failure that never
+    /// happened, and that is the sort of claim this app exists not to make.
+    case abandoned
+
     var operatorNote: String {
         switch self {
         case .storageExhausted:      return "storage exhausted"
@@ -96,6 +103,7 @@ enum StationFault: String, Codable {
         case .captureError:          return "capture API error"
         case .batteryDeath:          return "battery death"
         case .uncappedFrameInDarkRun: return "an uncapped frame in a dark run"
+        case .abandoned:             return "abandoned at the pose"
         }
     }
 }

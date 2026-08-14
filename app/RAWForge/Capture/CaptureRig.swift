@@ -106,15 +106,6 @@ final class CaptureRig {
                              Double(dev.videoZoomFactor)))
     }
 
-    /// Formats add nothing to a log as decimal integers — `'bgg4'` is the thing
-    /// that can be compared against a DNG spec, `1650943796` is not.
-    private func fourCC(_ code: OSType) -> String {
-        let bytes = [UInt8((code >> 24) & 0xff), UInt8((code >> 16) & 0xff),
-                     UInt8((code >> 8) & 0xff), UInt8(code & 0xff)]
-        let text = String(bytes: bytes, encoding: .ascii) ?? "?"
-        return "'\(text)'"
-    }
-
     /// Fire-and-forget: `startRunning` blocks, so it never runs on the caller's
     /// thread. Ordering against configuration is guaranteed by the queue.
     func startSession() {
