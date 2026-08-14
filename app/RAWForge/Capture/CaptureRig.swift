@@ -64,9 +64,12 @@ final class CaptureRig {
     }
 
     private func configureOnQueue(_ sensor: SensorCapability.Sensor) throws {
+        let began = ProcessInfo.processInfo.systemUptime
+        logInfo(.rig, "configuring \(sensor.rawValue)")
         let discovery = AVCaptureDevice.DiscoverySession(
             deviceTypes: [sensor.deviceType], mediaType: .video, position: .back)
         guard let dev = discovery.devices.first else {
+            logError(.rig, "no device of type \(sensor.deviceType.rawValue) on the back")
             throw RigError.noDevice(sensor.rawValue)
         }
 
@@ -89,21 +92,47 @@ final class CaptureRig {
 
         guard let bayer = output.availableRawPhotoPixelFormatTypes
             .first(where: AVCapturePhotoOutput.isBayerRAWPixelFormat) else {
+            logError(.rig, "\(sensor.rawValue) offers no Bayer RAW format — available: "
+                     + output.availableRawPhotoPixelFormatTypes.map(fourCC).joined(separator: ", "))
             throw RigError.noBayerFormat(sensor.rawValue)
         }
         self.sensor = sensor
         self.device = dev
         self.bayerFormat = bayer
+        logInfo(.rig, String(format: "%@ ready in %.0f ms · %@ · bracket max %d · zoom %.3f",
+                             sensor.rawValue,
+                             (ProcessInfo.processInfo.systemUptime - began) * 1000,
+                             fourCC(bayer), output.maxBracketedCapturePhotoCount,
+                             Double(dev.videoZoomFactor)))
+    }
+
+    /// Formats add nothing to a log as decimal integers — `'bgg4'` is the thing
+    /// that can be compared against a DNG spec, `1650943796` is not.
+    private func fourCC(_ code: OSType) -> String {
+        let bytes = [UInt8((code >> 24) & 0xff), UInt8((code >> 16) & 0xff),
+                     UInt8((code >> 8) & 0xff), UInt8(code & 0xff)]
+        let text = String(bytes: bytes, encoding: .ascii) ?? "?"
+        return "'\(text)'"
     }
 
     /// Fire-and-forget: `startRunning` blocks, so it never runs on the caller's
     /// thread. Ordering against configuration is guaranteed by the queue.
     func startSession() {
-        sessionQueue.async { if !self.session.isRunning { self.session.startRunning() } }
+        sessionQueue.async {
+            guard !self.session.isRunning else { return }
+            let t = ProcessInfo.processInfo.systemUptime
+            self.session.startRunning()
+            logInfo(.rig, String(format: "session running after %.0f ms",
+                                 (ProcessInfo.processInfo.systemUptime - t) * 1000))
+        }
     }
 
     func stopSession() {
-        sessionQueue.async { if self.session.isRunning { self.session.stopRunning() } }
+        sessionQueue.async {
+            guard self.session.isRunning else { return }
+            self.session.stopRunning()
+            logInfo(.rig, "session stopped")
+        }
     }
 
     /// Awaits the session actually running, for callers that must not fire into
@@ -111,7 +140,12 @@ final class CaptureRig {
     func startSessionAndWait() async {
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             sessionQueue.async {
-                if !self.session.isRunning { self.session.startRunning() }
+                if !self.session.isRunning {
+                    let t = ProcessInfo.processInfo.systemUptime
+                    self.session.startRunning()
+                    logInfo(.rig, String(format: "session running after %.0f ms (awaited)",
+                                         (ProcessInfo.processInfo.systemUptime - t) * 1000))
+                }
                 cont.resume()
             }
         }
@@ -144,13 +178,17 @@ final class CaptureRig {
         let duration = CMTime(seconds: shutterSeconds, preferredTimescale: 1_000_000_000)
         guard CMTimeCompare(duration, f.minExposureDuration) >= 0,
               CMTimeCompare(duration, f.maxExposureDuration) <= 0 else {
-            throw RigError.unsupported(String(
+            let e = RigError.unsupported(String(
                 format: "shutter %.6fs is outside the sensor's rails %.6f–%.6fs",
                 shutterSeconds, f.minExposureDuration.seconds, f.maxExposureDuration.seconds))
+            logError(.rig, e.description)
+            throw e
         }
         guard iso >= f.minISO && iso <= f.maxISO else {
-            throw RigError.unsupported(String(
+            let e = RigError.unsupported(String(
                 format: "ISO %.0f is outside the sensor's rails %.0f–%.0f", iso, f.minISO, f.maxISO))
+            logError(.rig, e.description)
+            throw e
         }
 
         try d.lockForConfiguration()
@@ -167,7 +205,20 @@ final class CaptureRig {
             try? await Task.sleep(nanoseconds: 5_000_000)
             spins += 1
         }
-        return achievedExposure()
+        let achieved = achievedExposure()
+        // The spin count is the number worth having: a capture that fails with
+        // -11800 almost always fired into a device still converging, and this
+        // says whether it had settled or ran out of patience.
+        if spins >= 100 {
+            logWarn(.rig, String(format: "exposure still converging after 500 ms — fired anyway "
+                                 + "(asked %.6fs ISO %.0f, device reports %.6fs ISO %.0f)",
+                                 shutterSeconds, iso, achieved.shutterSeconds, achieved.iso))
+        } else {
+            logTrace(.rig, String(format: "exposure locked in %d spin(s) — asked %.6fs ISO %.0f, "
+                                  + "device %.6fs ISO %.0f", spins, shutterSeconds, iso,
+                                  achieved.shutterSeconds, achieved.iso))
+        }
+        return achieved
     }
 
     /// The Daylight lock, defined explicitly rather than inherited.
@@ -257,9 +308,11 @@ final class CaptureRig {
         guard let d = device else { throw RigError.notConfigured }
         let z = Double(d.videoZoomFactor)
         guard z == 1.0 else {
-            throw RigError.unsupported(String(
+            let e = RigError.unsupported(String(
                 format: "videoZoomFactor is %.3f, and a Bayer capture at anything but 1.0 "
                     + "terminates the process rather than returning an error — refusing", z))
+            logError(.rig, e.description)
+            throw e
         }
     }
 
@@ -315,9 +368,19 @@ final class CaptureRig {
     }
 
     private func run(_ settings: AVCapturePhotoSettings) async throws -> [AVCapturePhoto] {
-        try await withCheckedThrowingContinuation { cont in
+        let began = ProcessInfo.processInfo.systemUptime
+        return try await withCheckedThrowingContinuation { cont in
             let collector = PhotoCaptureCollector { [weak self] result in
                 self?.activeCollector = nil
+                let ms = (ProcessInfo.processInfo.systemUptime - began) * 1000
+                switch result {
+                case .success(let photos):
+                    logTrace(.capture, String(format: "request delivered %d photo(s) in %.0f ms",
+                                              photos.count, ms))
+                case .failure(let error):
+                    logError(.capture, String(format: "request failed after %.0f ms — %@",
+                                              ms, String(describing: error)))
+                }
                 cont.resume(with: result)
             }
             activeCollector = collector
@@ -344,6 +407,7 @@ private final class PhotoCaptureCollector: NSObject, AVCapturePhotoCaptureDelega
         // Recorded, not thrown: the rest of a bracket still arrives, and how
         // many frames landed is itself the result.
         if let error {
+            logError(.capture, "photo \(photos.count + 1) of this request failed — \(error)")
             if firstError == nil { firstError = error }
             return
         }

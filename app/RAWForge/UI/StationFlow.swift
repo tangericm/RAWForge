@@ -13,6 +13,75 @@ extension CaptureModel {
     var canBeginSet: Bool { phase == .stationOpen && shotList.current != nil }
     var canCloseStation: Bool { phase == .stationOpen && shotList.canClose }
 
+    /// What the one big button does right now.
+    ///
+    /// There is exactly one action available at any moment, and deciding which
+    /// belongs here rather than in the view: the rule is the flow's, and a
+    /// screen that works it out from four booleans will eventually disagree
+    /// with the flow about what is legal.
+    enum PrimaryAction: Equatable {
+        case openSession
+        case declareStation
+        case beginSet(index: Int, total: Int)
+        case closeStation
+        /// Nothing can be done yet, and this says what is missing.
+        case blocked(String)
+
+        var title: String {
+            switch self {
+            case .openSession:              return "Open session"
+            case .declareStation:           return "Declare station"
+            case .beginSet(let i, let n):   return "Capture set \(i) of \(n)"
+            case .closeStation:             return "Close station"
+            case .blocked(let why):         return why
+            }
+        }
+
+        var systemImage: String {
+            switch self {
+            case .openSession:    return "folder.badge.plus"
+            case .declareStation: return "mappin.and.ellipse"
+            case .beginSet:       return "camera.aperture"
+            case .closeStation:   return "checkmark.seal"
+            case .blocked:        return "exclamationmark.triangle"
+            }
+        }
+
+        var isEnabled: Bool { if case .blocked = self { return false }; return true }
+        /// Closing a station is the one that banks data, so it reads as
+        /// completion rather than as another shutter press.
+        var isTerminal: Bool { if case .closeStation = self { return true }; return false }
+    }
+
+    var primaryAction: PrimaryAction {
+        if report?.canCapture != true { return .blocked("No Bayer sensor on this device") }
+        switch phase {
+        case .noSession:
+            return .openSession
+        case .sessionOpen:
+            if shotList.entries.isEmpty { return .blocked("Add a set to the shot list") }
+            return .declareStation
+        case .stationOpen:
+            if shotList.canClose { return .closeStation }
+            if shotList.current != nil {
+                return .beginSet(index: shotList.cursor + 1, total: shotList.entries.count)
+            }
+            return .blocked("Nothing left to shoot")
+        case .swapping, .stilling, .settling, .capturing:
+            return .blocked(phase.title)
+        }
+    }
+
+    func performPrimaryAction() {
+        switch primaryAction {
+        case .openSession:    openSession(); startFlow()
+        case .declareStation: declareStation()
+        case .beginSet:       Task { await beginNextSet() }
+        case .closeStation:   closeStation()
+        case .blocked:        break
+        }
+    }
+
     func startFlow() {
         phase = session == nil ? .noSession : .sessionOpen
         flowNote = phase.note
@@ -36,9 +105,12 @@ extension CaptureModel {
         health.refresh()
         if let fault = health.faultIfUnhealthy() {
             status = "not starting a station — \(fault.operatorNote)"
+            logWarn(.flow, "station refused before it opened — \(fault.operatorNote); \(health.summary)")
             return
         }
         stationIndex += 1
+        logInfo(.flow, "station \(stationIndex) declared · \(shotList.entries.count) set(s), "
+                + "\(shotList.totalFrames) frame(s) · pose \(poseIntent.isEmpty ? "unset" : poseIntent)")
         stationOpenedAt = Date()
         pendingBrackets = []
         pendingSwaps = []
@@ -54,6 +126,9 @@ extension CaptureModel {
     func beginNextSet() async {
         guard canBeginSet, let entry = shotList.current,
               let session, let cap = capability(entry.sensor) else { return }
+
+        logInfo(.flow, "set \(shotList.cursor + 1)/\(shotList.entries.count) — "
+                + "\(entry.label), \(entry.frameCount) frame(s), mode \(mode.rawValue)")
 
         // Faults land at a set boundary rather than halfway through a bracket.
         health.refresh()
@@ -90,6 +165,12 @@ extension CaptureModel {
             stillnessLive = ""
 
             set(.settling)
+            // An operator-chosen hold on top of the measured transient decay,
+            // for a mount that is known to ring longer than a finger-lift.
+            if dwell > 0 {
+                logTrace(.flow, String(format: "extra dwell %.2f s", dwell))
+                try? await Task.sleep(nanoseconds: UInt64(dwell * 1_000_000_000))
+            }
             let offset = entry.captureSet.perSensorEVOffsetStops[entry.sensor.rawValue] ?? 0
             let rendered = CaptureSet(
                 name: entry.captureSet.name, version: entry.captureSet.version,
@@ -119,10 +200,13 @@ extension CaptureModel {
 
             rig.stopSession()
             shotList.cursor += 1
+            logInfo(.flow, String(format: "set banked — %d frame(s), stillness %@ after %.2f s",
+                                  frames.count, settled ? "settled" : "elevated", stillWait))
             set(.stationOpen)
             startFraming()
         } catch {
             rig.stopSession()
+            logFailure(.flow, "set \(shotList.cursor + 1) on \(entry.sensor.rawValue)", error)
             abortStation(.captureError, detail: "\(error)")
         }
     }
@@ -147,9 +231,19 @@ extension CaptureModel {
         do {
             try SessionStore.writeStation(record)
             lastStation = record
-            status = "station \(stationIndex) banked — \(record.brackets.reduce(0) { $0 + $1.frames.count }) frames"
+            let frames = record.brackets.reduce(0) { $0 + $1.frames.count }
+            status = "station \(stationIndex) banked — \(frames) frames"
+            logInfo(.flow, String(format: "station %d closed — %d frame(s), %d bracket(s), "
+                                  + "%.1f s wall clock (estimated %.1f s)",
+                                  stationIndex, frames, record.brackets.count,
+                                  record.closedAt.timeIntervalSince(record.openedAt),
+                                  stationEstimateSeconds ?? 0))
         } catch {
             status = "could not write station \(stationIndex) — \(error)"
+            // The frames are on disk and the record describing them is not,
+            // which is the one inconsistency the design is meant to preclude.
+            logError(.flow, "STATION RECORD NOT WRITTEN for station \(stationIndex) — \(error). "
+                     + "Its frames are on disk with no log describing them.")
         }
         pendingBrackets = []
         pendingSwaps = []
@@ -161,6 +255,9 @@ extension CaptureModel {
     /// Stations already banked survive.
     func abortStation(_ fault: StationFault, detail: String? = nil) {
         guard let session else { return }
+        logError(.flow, "station \(stationIndex) ABORTED — \(fault.operatorNote)"
+                 + (detail.map { ": \($0)" } ?? "")
+                 + " · \(pendingBrackets.count) bracket(s) discarded, \(health.summary)")
         motionRecorder.stop()
         SessionStore.deleteStationFrames(sessionId: session.sessionId, station: stationIndex)
         pendingBrackets = []
@@ -229,7 +326,11 @@ extension CaptureModel {
         return inBand
     }
 
+    /// Every transition is logged. The phase sequence is the single most useful
+    /// thing in the log when a station misbehaves: it says whether the swap
+    /// completed, whether the wait ran, and where it stopped.
     private func set(_ p: StationPhase) {
+        if phase != p { logInfo(.flow, "\(phase.rawValue) → \(p.rawValue)") }
         phase = p
         flowNote = p.note
     }

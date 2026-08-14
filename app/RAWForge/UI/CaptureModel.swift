@@ -71,9 +71,17 @@ final class CaptureModel: ObservableObject {
         ShotListStore.save(shotList, grouped: groupShotListBySensor)
     }
 
+    /// Re-applies the current grouping rule to the existing entries — what the
+    /// grouping toggle does. Turning it back on discards an authored order,
+    /// which is the honest behaviour: the two are alternatives, not layers.
+    func regroupShotList() {
+        applyShotList(shotList.entries)
+    }
+
     func clearShotList() {
         shotList = ShotList()
         ShotListStore.clear()
+        logInfo(.flow, "shot list cleared")
     }
 
     /// Restores the plan but never the cursor: on relaunch any station in
@@ -85,26 +93,19 @@ final class CaptureModel: ObservableObject {
         shotList = ShotList(entries: stored.entries, cursor: 0)
     }
 
-    /// The protocol's demand, authored on device. Never derived from the scene (#8).
-    @Published var requestedShutter: Double = 1.0 / 125
-    @Published var requestedISO: Float = 100
     @Published var mode: ExecutionMode = .hardwareBracket
-    @Published var frameCount: Int = 3
-    @Published var stopsPerRung: Double = 1
-    @Published var isSweep: Bool = true
     @Published var minimumGap: Double = 0
-    /// Optional (#8) — zero means fire as soon as the sensor is configured.
+    /// Extra hold before the first frame of a set, on top of the measured 0.4 s
+    /// transient decay. Optional (#8) — zero means fire as soon as the stillness
+    /// wait resolves, which is the common case.
     @Published var dwell: Double = 0
-    /// Group-by-sensor is the default; an authored order overrides it (#8).
-    @Published var useAuthoredSensorOrder = false
-    @Published var authoredSensorOrder: [SensorCapability.Sensor] = []
 
-    /// The protocol in force. Nil means the set is being authored from the
-    /// pickers below and has not been named — #8's "no silent default" says a
-    /// session is never shot under a protocol nobody chose, and an unnamed set
-    /// is a choice too, just an unsaved one.
+    /// The protocol in force for the bench runs — the dark-frame calibration and
+    /// the instrument checks, which shoot a set without a shot list. Nil is a
+    /// legitimate state and the screens that need one say so rather than
+    /// silently defaulting: #8's "no silent default" means a session is never
+    /// shot under a protocol nobody chose.
     @Published var selectedProtocol: CaptureSet?
-    @Published var protocolName: String = ""
     @Published var savedProtocols: [CaptureSet] = []
     /// Per-sensor EV offset in stops (#8). The sensors are not interchangeable.
     @Published var evOffsets: [String: Double] = [:]
@@ -141,66 +142,24 @@ final class CaptureModel: ObservableObject {
         report?.sensors.first { $0.sensor == s }
     }
 
-    /// Group by sensor, in the canonical order (#8's default; authored order is
-    /// the override, not yet exposed).
+    /// The bench runs sweep sensors in the canonical order.
     var orderedSensors: [SensorCapability.Sensor] {
-        if useAuthoredSensorOrder {
-            let authored = authoredSensorOrder.filter { selectedSensors.contains($0) }
-            let rest = SensorCapability.Sensor.allCases
-                .filter { selectedSensors.contains($0) && !authored.contains($0) }
-            return authored + rest
-        }
-        return SensorCapability.Sensor.allCases.filter { selectedSensors.contains($0) }
+        SensorCapability.Sensor.allCases.filter { selectedSensors.contains($0) }
     }
 
-    /// Moves a sensor to the end of the authored order, which is how an order is
-    /// built by tapping: tap them in the sequence you want them shot.
-    func appendToAuthoredOrder(_ s: SensorCapability.Sensor) {
-        authoredSensorOrder.removeAll { $0 == s }
-        authoredSensorOrder.append(s)
-        useAuthoredSensorOrder = true
+    /// The set the bench runs will shoot. Nil until a protocol is chosen — the
+    /// screens that need one refuse rather than inventing a default.
+    var currentSet: CaptureSet? {
+        guard let p = selectedProtocol else { return nil }
+        return CaptureSet(name: p.name, version: p.version, specs: p.specs,
+                          generator: p.generator, perSensorEVOffsetStops: evOffsets)
     }
 
-    var currentSet: CaptureSet {
-        if let p = selectedProtocol {
-            return CaptureSet(name: p.name, version: p.version, specs: p.specs,
-                              generator: p.generator, perSensorEVOffsetStops: evOffsets)
-        }
-        let base = CaptureSpec(shutterSeconds: requestedShutter, iso: requestedISO)
-        let authored: CaptureSet = isSweep
-            ? .shutterSweep(base: base, stopsPerRung: stopsPerRung, rungs: frameCount)
-            : .repeated(base, count: frameCount)
-        return CaptureSet(name: authored.name, version: authored.version, specs: authored.specs,
-                          generator: authored.generator, perSensorEVOffsetStops: evOffsets)
-    }
-
-    /// #8 keeps ISO a legitimate axis but wants it **warned, not forbidden**:
-    /// above roughly 8-9x a sensor's base ISO, Apple applies pure digital gain,
-    /// so a ladder climbing in ISO past that point is buying nothing real.
-    func isoWarning(for sensor: SensorCapability.Sensor) -> String? {
-        guard let cap = capability(sensor), let base = cap.minISO else { return nil }
-        let ceiling = base * 8.5
-        guard requestedISO > ceiling else { return nil }
-        return String(format: "ISO %.0f is past ~8.5x %@'s base of %.0f — beyond that "
-                      + "the gain is digital, not analogue. Bracket with shutter.",
-                      requestedISO, sensor.rawValue, base)
-    }
-
-    func refreshProtocols() { savedProtocols = ProtocolLibrary.all() }
-
-    /// Saving bumps the version (#8's auto-bump), so a set edited mid-shoot is
-    /// distinguishable from the one shot ten minutes earlier.
-    func saveProtocol() {
-        let name = protocolName.trimmingCharacters(in: .whitespaces)
-        guard !name.isEmpty else { status = "name the protocol before saving"; return }
-        do {
-            let stored = try ProtocolLibrary.save(currentSet, as: name)
-            selectedProtocol = stored
-            refreshProtocols()
-            status = "saved \(stored.name) v\(stored.version)"
-        } catch {
-            status = "could not save the protocol — \(error)"
-        }
+    func refreshProtocols() {
+        savedProtocols = ProtocolLibrary.all()
+        // A protocol edited in the sheet is a new version; the selection has to
+        // follow it or the bench keeps shooting the stale definition.
+        if let name = selectedProtocol?.name { selectedProtocol = ProtocolLibrary.load(named: name) }
     }
 
     // MARK: - Probe
@@ -209,6 +168,7 @@ final class CaptureModel: ObservableObject {
         guard await requestCamera() else {
             cameraDenied = true
             status = "camera permission denied — no sensor can be probed"
+            logError(.app, "camera permission denied — no sensor can be probed")
             return
         }
         status = "probing sensors…"
@@ -218,6 +178,16 @@ final class CaptureModel: ObservableObject {
         status = result.canCapture
             ? "\(result.usableSensors.count) of \(result.sensors.count) sensors deliver Bayer"
             : "no sensor on this device delivers Bayer RAW — capture refused"
+        logInfo(.probe, "probed \(result.sensors.count) sensor(s), "
+                + "\(result.usableSensors.count) deliver Bayer")
+        for s in result.sensors {
+            if s.isUsable {
+                logInfo(.probe, "\(s.sensor.rawValue) usable · \(s.bayerFormatFourCC ?? "?") · "
+                        + "bracket max \(s.maxBracketedCapturePhotoCount)")
+            } else {
+                logWarn(.probe, "\(s.sensor.rawValue) unusable — \(s.exclusionReason ?? "no reason given")")
+            }
+        }
     }
 
     func openSession() {
@@ -225,149 +195,22 @@ final class CaptureModel: ObservableObject {
         do {
             // A scene session records which calibration it was shot under and
             // how old it was, so a stale one is visible instead of assumed (#15).
-            session = try SessionStore.open(
+            let opened = try SessionStore.open(
                 capability: report, calibration: SessionStore.latestCalibration())
+            session = opened
             stationIndex = 0
-            status = "session \(session?.sessionId ?? "?") open"
+            status = "session \(opened.sessionId) open"
+            logInfo(.store, "session \(opened.sessionId) opened · calibration "
+                    + (opened.calibrationSessionId ?? "none referenced")
+                    + " · \((opened.availableCapacityBytesAtOpen ?? 0) / 1_000_000) MB free")
         } catch {
             status = "session open failed — \(error)"
+            logFailure(.store, "opening a session", error)
         }
     }
 
-    // MARK: - Run one station, spanning however many sensors the list names
+    // MARK: - Firing a set
 
-    func runStation() async {
-        guard let session else { status = "open a session first"; return }
-        let sensors = orderedSensors.filter { capability($0)?.isUsable == true }
-        guard !sensors.isEmpty else { status = "no usable sensor selected"; return }
-
-        busy = true
-        defer { busy = false; progress = "" }
-
-        // Storage exhausted is a hard fault (#10), checked before anything
-        // fires so the station never half-exists. Worst-case frame size, not
-        // average — a station that runs out mid-write is the failure this
-        // avoids.
-        let plannedFrames = sensors.count * currentSet.specs.count
-        guard SessionStore.hasRoom(forFrames: plannedFrames) else {
-            let free = SessionStore.availableCapacityBytes() ?? 0
-            status = "storage exhausted — \(plannedFrames) frames need up to "
-                + "\(plannedFrames * 30) MB, \(free / 1_000_000) MB free. Station not started."
-            return
-        }
-
-        stationIndex += 1
-        let station = stationIndex
-        let openedAt = Date()
-        let set = currentSet
-
-        var brackets: [BracketRecord] = []
-        var swaps: [StationRecord.SwapRecord] = []
-        var previousSensor: SensorCapability.Sensor?
-
-        // The IMU runs for the whole station, not per frame: the swap windows
-        // matter as much as the exposures, and at ~400 ms a swap is longer than
-        // an entire bracket (#7).
-        let stationStart = ProcessInfo.processInfo.systemUptime
-        motionRecorder.start()
-
-        do {
-            for (bracketIndex, sensor) in sensors.enumerated() {
-                guard let cap = capability(sensor) else { continue }
-
-                // The swap is timed because #7 left its cost unmeasured, and it
-                // is the window in which the pose is held but nothing is shot.
-                let swapStart = ProcessInfo.processInfo.systemUptime
-                progress = "configuring \(sensor.rawValue)…"
-                try await rig.configure(sensor)
-                rig.startSession()
-                let swapEnd = ProcessInfo.processInfo.systemUptime
-                swaps.append(StationRecord.SwapRecord(
-                    fromSensor: previousSensor?.rawValue,
-                    toSensor: sensor.rawValue,
-                    durationSeconds: swapEnd - swapStart,
-                    motion: motionRecorder.summary(from: swapStart, to: swapEnd)))
-                previousSensor = sensor
-
-                // Dwell before the first frame, inside the station but outside
-                // any exposure — the tap-induced spike decays here rather than
-                // landing in a frame.
-                if dwell > 0 {
-                    progress = String(format: "%@ dwell %.2fs", sensor.rawValue, dwell)
-                    try? await Task.sleep(nanoseconds: UInt64(dwell * 1_000_000_000))
-                }
-
-                // Rails are per sensor: the same authored set validates
-                // differently against 1x and tele, and dropped rungs are
-                // recorded per bracket rather than for the station.
-                // One definition, rendered per sensor by its EV offset (#8).
-                let offset = set.perSensorEVOffsetStops[sensor.rawValue] ?? 0
-                let renderedSet = CaptureSet(
-                    name: set.name, version: set.version, specs: set.rendered(for: sensor),
-                    generator: set.generator, perSensorEVOffsetStops: set.perSensorEVOffsetStops)
-                let checked = renderedSet.validated(against: cap)
-                guard !checked.kept.isEmpty else {
-                    brackets.append(BracketRecord(
-                        bracketIndex: bracketIndex + 1, sensor: sensor.rawValue,
-                        sensorUniqueID: cap.uniqueID, captureSet: set,
-                        renderedSpecs: checked.kept, evOffsetStops: offset,
-                        executionMode: mode.rawValue, droppedRungs: checked.dropped,
-                        minimumInterFrameGapSeconds: nil,
-                        stillnessSettled: nil, stillnessWaitSeconds: nil, motionAtFire: nil,
-                        dwellSeconds: dwell > 0 ? dwell : nil, note: nil, frames: []))
-                    continue
-                }
-
-                let wb = try await rig.lockWhiteBalance()
-                let frames = try await shoot(checked.kept, sensor: sensor, wb: wb,
-                                             session: session, station: station,
-                                             bracketIndex: bracketIndex + 1)
-                brackets.append(BracketRecord(
-                    bracketIndex: bracketIndex + 1, sensor: sensor.rawValue,
-                    sensorUniqueID: cap.uniqueID, captureSet: set,
-                    renderedSpecs: checked.kept, evOffsetStops: offset,
-                    executionMode: mode.rawValue, droppedRungs: checked.dropped,
-                    minimumInterFrameGapSeconds: minimumGap > 0 ? minimumGap : nil,
-                    stillnessSettled: nil, stillnessWaitSeconds: nil, motionAtFire: nil,
-                    dwellSeconds: dwell > 0 ? dwell : nil, note: nil, frames: frames))
-            }
-            rig.stopSession()
-            motionRecorder.stop()
-            let stationEnd = ProcessInfo.processInfo.systemUptime
-            let samples = motionRecorder.snapshot()
-            let streamFile = samples.isEmpty ? nil
-                : try? SessionStore.writeMotionStream(samples, sessionId: session.sessionId, station: station)
-
-            let record = StationRecord(
-                stationIndex: station, sessionId: session.sessionId,
-                openedAt: openedAt, closedAt: Date(), brackets: brackets, sensorSwaps: swaps,
-                motion: MotionSummary.over(samples, from: stationStart, to: stationEnd),
-                motionStreamFile: streamFile,
-                motionRequestedHz: motionRecorder.requestedHz,
-                poseIntent: poseIntent)
-            try SessionStore.writeStation(record)
-            lastStation = record
-
-            let total = brackets.reduce(0) { $0 + $1.frames.count }
-            let swapNote = swaps.dropFirst().map { String(format: "%.0f ms", $0.durationSeconds * 1000) }
-                .joined(separator: ", ")
-            status = "station \(station): \(total) frames across \(brackets.count) sensor(s)"
-                + (swapNote.isEmpty ? "" : " · swaps \(swapNote)")
-        } catch {
-            rig.stopSession()
-            motionRecorder.stop()
-            // #10's single rule: a hard fault flags, aborts the station and
-            // deletes that station's frames. A station spanning three sensors
-            // is still one station, so a fault on tele discards 1x too.
-            SessionStore.deleteStationFrames(sessionId: session.sessionId, station: station)
-            if let f = error as? SequenceFault {
-                status = "station \(station) ABORTED on \(f.sensor) frame \(f.frameIndex) "
-                    + "(\(f.completed) done) — \(f.underlying)"
-            } else {
-                status = "station \(station) ABORTED — \(error)"
-            }
-        }
-    }
 
     func shoot(_ specs: [CaptureSpec], sensor: SensorCapability.Sensor,
                        wb: (set: [Float], readBack: [Float]),
@@ -380,12 +223,19 @@ final class CaptureModel: ObservableObject {
         func bank(_ photo: AVCapturePhoto, _ spec: CaptureSpec, device: FrameRecord.Exposure?) throws {
             let index = frames.count + 1
             guard let data = photo.fileDataRepresentation() else {
+                logError(.capture, "frame \(index) on \(sensor.rawValue): fileDataRepresentation() "
+                         + "returned nil — the photo arrived but carries no file")
                 throw CaptureRig.RigError.captureFailed("frame \(index): fileDataRepresentation() returned nil")
             }
             let filename = SessionStore.frameFilename(
                 sessionId: session.sessionId, station: station,
                 bracket: bracketIndex, frame: index, sensor: sensor.rawValue)
-            _ = try SessionStore.writeFrame(data, named: filename, sessionId: session.sessionId)
+            do {
+                _ = try SessionStore.writeFrame(data, named: filename, sessionId: session.sessionId)
+            } catch {
+                logFailure(.store, "writing \(filename) (\(data.count / 1_000_000) MB)", error)
+                throw error
+            }
 
             let witness = DNGMetadata.read(data)
             let clip = ClippingStats.compute(
@@ -393,6 +243,16 @@ final class CaptureModel: ObservableObject {
                 activeArea: witness.activeArea,
                 blackLevel: witness.blackLevel?.first,
                 whiteLevel: witness.whiteLevel?.first)
+            logTrace(.capture, String(format: "frame %d/%d %@ · %.1f MB · asked %.6fs ISO %.0f, "
+                                      + "DNG says %.6fs ISO %d",
+                                      index, specs.count, filename, Double(data.count) / 1_000_000,
+                                      spec.shutterSeconds, spec.iso,
+                                      witness.exposureTimeSeconds ?? 0, witness.iso ?? 0))
+            // Statistics silently absent is how a clipping table ends up empty
+            // three days later with nothing saying why.
+            if let why = clip.unavailableReason {
+                logWarn(.capture, "frame \(index): no clipping statistics — \(why)")
+            }
 
             let stamp = photo.timestamp.isValid ? photo.timestamp.seconds : nil
             let uptimeNow = ProcessInfo.processInfo.systemUptime
@@ -479,12 +339,16 @@ final class CaptureModel: ObservableObject {
         guard let report, report.canCapture else { status = "no usable sensor"; return }
         let sensors = orderedSensors.filter { capability($0)?.isUsable == true }
         guard !sensors.isEmpty else { status = "no usable sensor selected"; return }
+        guard let set = currentSet else {
+            status = "choose a protocol before running a calibration"; return
+        }
 
         busy = true
         defer { busy = false; progress = ""; darkProgress = "" }
 
-        let set = currentSet
         let plannedFrames = sensors.count * set.specs.count * darkRepeats
+        logInfo(.probe, "dark calibration starting — \(sensors.count) sensor(s) × "
+                + "\(set.specs.count) setting(s) × \(darkRepeats) repeat(s) = \(plannedFrames) frames")
         guard SessionStore.hasRoom(forFrames: plannedFrames) else {
             status = "storage exhausted — \(plannedFrames) dark frames will not fit"
             return
@@ -615,13 +479,15 @@ final class CaptureModel: ObservableObject {
         guard let sensor = orderedSensors.first, let cap = capability(sensor), cap.isUsable else {
             status = "no usable sensor selected"; return
         }
+        guard let set = currentSet else {
+            status = "choose a protocol before running this check"; return
+        }
         busy = true
         defer { busy = false; progress = "" }
 
         stationIndex += 1
         let station = stationIndex
         let openedAt = Date()
-        let set = currentSet
         let checked = set.validated(against: cap)
         guard !checked.kept.isEmpty else { status = "every rung is outside the rails"; return }
 

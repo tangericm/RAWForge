@@ -44,9 +44,43 @@ final class DeviceHealth: ObservableObject {
     }
 
     func refresh() {
+        let previous = thermalState
         thermalState = ProcessInfo.processInfo.thermalState
         batteryLevel = UIDevice.current.batteryLevel
         batteryState = UIDevice.current.batteryState
+        // A thermal transition explains a run that suddenly takes half again as
+        // long, and it is invisible in every other record.
+        if previous != thermalState {
+            let rising = thermalState.rawValue > previous.rawValue
+            DebugLog.shared.write(rising && thermalFault ? .error : rising ? .warn : .info,
+                                  .app, "thermal state \(label(previous)) → \(thermalLabel)")
+        }
+    }
+
+    private func label(_ state: ProcessInfo.ThermalState) -> String {
+        switch state {
+        case .nominal: return "nominal"
+        case .fair: return "fair"
+        case .serious: return "serious"
+        case .critical: return "critical"
+        @unknown default: return "unknown"
+        }
+    }
+
+    /// Readable from anywhere, including the scene-phase handler, without
+    /// hopping to the main actor just to write one log line.
+    nonisolated static func snapshotSummary() -> String {
+        let thermal: String
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal: thermal = "nominal"
+        case .fair: thermal = "fair"
+        case .serious: thermal = "serious"
+        case .critical: thermal = "critical"
+        @unknown default: thermal = "unknown"
+        }
+        let free = SessionStore.availableCapacityBytes()
+            .map { "\(SessionEstimate.formatBytes($0)) free" } ?? "capacity unreadable"
+        return "thermal \(thermal) · \(free)"
     }
 
     var thermalLabel: String {
