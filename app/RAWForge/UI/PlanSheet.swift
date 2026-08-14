@@ -22,7 +22,7 @@ struct PlanSheet: View {
     private var isEditable: Bool { model.phase == .sessionOpen || model.phase == .noSession }
 
     private var estimate: SessionEstimate {
-        SessionEstimate.forShotList(model.shotList.entries, mode: model.mode,
+        SessionEstimate.forShotList(model.shotList.entries,
                                     minimumGap: model.minimumGap,
                                     bracketCeiling: model.bracketCeiling)
     }
@@ -74,7 +74,8 @@ struct PlanSheet: View {
                     }
                     VStack(alignment: .leading, spacing: 1) {
                         Text(e.captureSet.name).font(.callout)
-                        Text("\(e.sensor.rawValue) · v\(e.captureSet.version) · \(e.frameCount) frames")
+                        Text("\(e.sensor.rawValue) · v\(e.captureSet.version) · "
+                             + "\(e.frameCount) frames · \(e.captureSet.firing.label.lowercased())")
                             .font(.caption2).foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -138,6 +139,21 @@ struct PlanSheet: View {
         }
     }
 
+    /// Nothing unusual set reads as "nothing unusual set", so the row does not
+    /// invite a visit it does not need.
+    private var advancedSummary: String {
+        var bits: [String] = []
+        if model.dwell > 0 { bits.append(String(format: "%.2f s dwell", model.dwell)) }
+        if model.minimumGap > 0 && hasSequentialSet {
+            bits.append(String(format: "%.2f s gap", model.minimumGap))
+        }
+        return bits.isEmpty ? "defaults" : bits.joined(separator: " · ")
+    }
+
+    private var hasSequentialSet: Bool {
+        model.shotList.entries.contains { $0.captureSet.firing == .sequential }
+    }
+
     private func pipColour(_ i: Int) -> Color {
         i < model.shotList.cursor ? .green : i == model.shotList.cursor ? .accentColor : .secondary
     }
@@ -195,12 +211,14 @@ struct PlanSheet: View {
                         .foregroundStyle(model.poseIntent.isEmpty ? .orange : .secondary)
                 }
             }
+            // How a set fires belongs to the set, not to the shoot — so this is
+            // no longer a switch here. It is chosen when the protocol is
+            // written, and shown on every row of the shot list.
             NavigationLink {
-                ExecutionView(model: model)
+                AdvancedView(model: model)
             } label: {
-                LabeledContent("How it fires") {
-                    Text(model.mode == .hardwareBracket ? "bracket" : "sequential")
-                        .foregroundStyle(.secondary)
+                LabeledContent("Advanced") {
+                    Text(advancedSummary).foregroundStyle(.secondary)
                 }
             }
             NavigationLink {
@@ -273,31 +291,33 @@ private struct PoseIntentView: View {
     }
 }
 
-/// How sets are fired, as opposed to what they contain. Both modes are first
-/// class — the choice is about inter-frame gap, not about what can be expressed.
-private struct ExecutionView: View {
+/// The two expert knobs, kept off the path to a first capture.
+///
+/// Neither was set once across the first 25 real stations, which is the reason
+/// they are here rather than in the plan proper — but neither is cut, because
+/// each is the only lever for a case the app cannot rule out.
+private struct AdvancedView: View {
     @ObservedObject var model: CaptureModel
+
+    private var hasSequentialSet: Bool {
+        model.shotList.entries.contains { $0.captureSet.firing == .sequential }
+    }
 
     var body: some View {
         List {
-            Section {
-                Picker("Mode", selection: $model.mode) {
-                    ForEach(ExecutionMode.allCases) { Text($0.label).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                Text(model.mode == .hardwareBracket
-                     ? "One hardware request carries every rung's exposure, so the device is "
-                       + "never reconfigured mid-run and the gap is pipeline-bound. Capped by "
-                       + "the sensor's bracket maximum."
-                     : "One exposure lock per rung, each awaited. Unbounded in length — with "
-                       + "identical rungs nothing changes and nothing has to settle.")
-                    .font(.caption2).foregroundStyle(.secondary)
-            }
             Section("Timing") {
-                Stepper(value: $model.minimumGap, in: 0...5, step: 0.25) {
-                    LabeledContent("Min inter-frame gap",
-                                   value: model.minimumGap == 0 ? "none"
-                                          : String(format: "%.2f s", model.minimumGap))
+                // Only shown when the shot list holds a sequential set: a burst
+                // is one hardware request with nowhere to insert a wait, so the
+                // control would silently do nothing.
+                if hasSequentialSet {
+                    Stepper(value: $model.minimumGap, in: 0...5, step: 0.25) {
+                        LabeledContent("Min gap between frames",
+                                       value: model.minimumGap == 0 ? "none"
+                                              : String(format: "%.2f s", model.minimumGap))
+                    }
+                    Text("Sequential only. Spaces frames deliberately — to pace a long run "
+                         + "rather than let it heat the sensor.")
+                        .font(.caption2).foregroundStyle(.secondary)
                 }
                 Stepper(value: $model.dwell, in: 0...5, step: 0.25) {
                     LabeledContent("Extra dwell before first frame",
@@ -309,7 +329,7 @@ private struct ExecutionView: View {
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }
-        .navigationTitle("How it fires")
+        .navigationTitle("Advanced")
         .navigationBarTitleDisplayMode(.inline)
     }
 }

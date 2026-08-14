@@ -129,7 +129,7 @@ extension CaptureModel {
         lastFault = nil
         shotList.cursor = 0
         stationEstimateSeconds = SessionEstimate.forShotList(
-            shotList.entries, mode: mode, minimumGap: minimumGap,
+            shotList.entries, minimumGap: minimumGap,
             bracketCeiling: bracketCeiling).typicalSeconds
         motionRecorder.start()
         set(.stationOpen)
@@ -141,7 +141,7 @@ extension CaptureModel {
               let session, let cap = capability(entry.sensor) else { return }
 
         logInfo(.flow, "set \(shotList.cursor + 1)/\(shotList.entries.count) — "
-                + "\(entry.label), \(entry.frameCount) frame(s), mode \(mode.rawValue)")
+                + "\(entry.label), \(entry.frameCount) frame(s), \(entry.captureSet.firing.label.lowercased())")
 
         // Faults land at a set boundary rather than halfway through a bracket.
         health.refresh()
@@ -200,12 +200,13 @@ extension CaptureModel {
             set(.capturing)
             let shot = try await shoot(checked.kept, sensor: entry.sensor, wb: wb,
                                        session: session, station: stationIndex,
-                                       bracketIndex: pendingBrackets.count + 1)
+                                       bracketIndex: pendingBrackets.count + 1,
+                                       firing: entry.captureSet.firing)
             pendingBrackets.append(BracketRecord(
                 bracketIndex: pendingBrackets.count + 1, sensor: entry.sensor.rawValue,
                 sensorUniqueID: cap.uniqueID, captureSet: entry.captureSet,
                 renderedSpecs: checked.kept, evOffsetStops: offset,
-                executionMode: mode.rawValue,
+                executionMode: entry.captureSet.firing.rawValue,
                 bracketRequestSizes: shot.bracketRequestSizes,
                 droppedRungs: checked.dropped,
                 minimumInterFrameGapSeconds: minimumGap > 0 ? minimumGap : nil,

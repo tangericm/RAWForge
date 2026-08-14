@@ -175,14 +175,20 @@ struct BenchView: View {
                        question: "What does this sensor read with no light at all?",
                        state: calibrationState)
             }
+            // Developer tools, not features. They answered #14's questions,
+            // which are closed, and guideline 2.3.1(a) forbids shipping a
+            // hidden or undocumented feature — so they are compiled out of
+            // release rather than tucked behind a toggle.
+            #if DEBUG
             NavigationLink {
                 InstrumentChecksView(model: model)
             } label: {
                 runRow(icon: "checklist", tint: .teal,
-                       title: "Instrument checks",
+                       title: "Instrument checks (debug)",
                        question: "Do the locks this app relies on reach the pixels?",
                        state: model.zoomProbe == nil ? "not run this launch" : "run this launch")
             }
+            #endif
             if let station = model.lastStation {
                 NavigationLink {
                     LastStationView(station: station)

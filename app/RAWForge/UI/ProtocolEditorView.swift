@@ -26,6 +26,7 @@ struct ProtocolEditorView: View {
     @State private var shutter = 1.0 / 125
     @State private var iso: Float = 100
     @State private var evOffsets: [String: Double] = [:]
+    @State private var firing: ExecutionMode = .hardwareBracket
     @State private var notice: String?
     @State private var loaded = false
 
@@ -45,7 +46,8 @@ struct ProtocolEditorView: View {
             ? .shutterSweep(base: base, stopsPerRung: stopsPerRung, rungs: rungs)
             : .repeated(base, count: rungs)
         return CaptureSet(name: set.name, version: set.version, specs: set.specs,
-                          generator: set.generator, perSensorEVOffsetStops: evOffsets)
+                          generator: set.generator, perSensorEVOffsetStops: evOffsets,
+                          executionMode: firing)
     }
 
     private var trimmedName: String { name.trimmingCharacters(in: .whitespaces) }
@@ -54,6 +56,7 @@ struct ProtocolEditorView: View {
         NavigationStack {
             List {
                 definitionSection
+                firingSection
                 offsetSection
                 rungsSection
             }
@@ -117,6 +120,34 @@ struct ProtocolEditorView: View {
             }
         } header: {
             Text("Definition")
+        }
+    }
+
+    /// Part of the recipe, because the two modes do not produce the same
+    /// record — so a protocol that could fire either way is a name that does
+    /// not reproduce.
+    private var firingSection: some View {
+        Section {
+            Picker("Firing", selection: $firing) {
+                ForEach(ExecutionMode.allCases) { Text($0.label).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            Text(firing.explanation).font(.caption2).foregroundStyle(.secondary)
+            if firing == .hardwareBracket,
+               let cap = model.report?.usableSensors.first,
+               draft.specs.count > cap.maxBracketedCapturePhotoCount {
+                let requests = SessionEstimate.requestCount(
+                    frames: draft.specs.count, ceiling: cap.maxBracketedCapturePhotoCount)
+                Label("Longer than one request holds, so it fires as \(requests) bursts with a "
+                      + "\(Int(DeviceProfile.active.bracketSeam.value * 1000)) ms seam between them.",
+                      systemImage: "rectangle.split.2x1")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("How it fires")
+        } footer: {
+            Text("Saved with the protocol, so re-running this name produces the same kind of "
+                 + "record rather than whatever a global switch happened to be set to.")
         }
     }
 
@@ -190,6 +221,7 @@ struct ProtocolEditorView: View {
         guard let set = editing else { return }
         name = set.name
         evOffsets = set.perSensorEVOffsetStops
+        firing = set.firing
         switch set.generator {
         case .shutterSweep(let base, let stops, let n):
             isSweep = true; shutter = base.shutterSeconds; iso = base.iso

@@ -12,7 +12,7 @@ struct StationPlanView: View {
     @State private var calibration: EstimateCalibration = .identity
 
     private var estimate: SessionEstimate {
-        SessionEstimate.forShotList(model.shotList.entries, mode: model.mode,
+        SessionEstimate.forShotList(model.shotList.entries,
                                     minimumGap: model.minimumGap,
                                     bracketCeiling: model.bracketCeiling)
     }
@@ -66,7 +66,7 @@ struct StationPlanView: View {
     }
 
     private func setDuration(_ entry: ShotListEntry) -> TimeInterval {
-        SessionEstimate.forShotList([entry], mode: model.mode,
+        SessionEstimate.forShotList([entry],
                                     minimumGap: model.minimumGap,
                                     includeStillness: false,
                                     bracketCeiling: model.bracketCeiling).typicalSeconds
