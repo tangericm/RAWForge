@@ -211,7 +211,13 @@ final class DebugLog: @unchecked Sendable {
         entry = Entry(id: nextID, at: Date(), uptime: ProcessInfo.processInfo.systemUptime,
                       level: level, category: category, message: text)
         ring.append(entry)
-        if ring.count > Self.ringCapacity { ring.removeFirst(ring.count - Self.ringCapacity) }
+        // Trimmed in blocks rather than one at a time. `removeFirst(1)` on a
+        // full array shifts every remaining element, which would put an O(n)
+        // memmove on the capture path for every trace line of a 300-frame run;
+        // dropping a quarter at once amortises that to nothing.
+        if ring.count > Self.ringCapacity {
+            ring.removeFirst(Self.ringCapacity / 4)
+        }
         lock.unlock()
 
         switch level {
