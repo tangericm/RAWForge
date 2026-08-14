@@ -142,14 +142,6 @@ final class CaptureModel: ObservableObject {
         "tripod-rigid", "tripod-soft", "handheld",
         "dark-frame", "calibration",
     ]
-    @Published private(set) var zoomProbe: ZoomProbeResult?
-
-    /// Averaging N frames cuts noise by root-N, and black-level estimation
-    /// typically wants 8-16 per setting (#15). Named explicitly rather than
-    /// implied.
-    @Published var darkRepeats: Int = 8
-    @Published private(set) var darkProgress: String = ""
-
     /// A station is a pose and may span sensors (#7). The shot list names which
     /// ones; pinning to a single sensor is just a list of length one, not a
     /// separate mode.
@@ -159,6 +151,14 @@ final class CaptureModel: ObservableObject {
     let motionRecorder = MotionRecorder()
     let health = DeviceHealth()
     var stationIndex = 0
+
+    /// Characterising the instrument, which is not shooting a scene (#28).
+    ///
+    /// A separate observable rather than more properties here: the runs share
+    /// the rig and nothing else, and they were a third of this file. Views that
+    /// need them observe `bench` directly — nested `ObservableObject`s do not
+    /// republish, and pretending otherwise is how a screen stops updating.
+    lazy var bench = BenchModel(rig: rig, motionRecorder: motionRecorder)
 
     func capability(_ s: SensorCapability.Sensor) -> SensorCapability? {
         report?.sensors.first { $0.sensor == s }
@@ -241,21 +241,11 @@ final class CaptureModel: ObservableObject {
 
     // MARK: - Firing a set
 
-    /// What one capture set produced: its frames, and — when it ran as
-    /// brackets — how it was split across hardware requests. The split is not a
-    /// detail: the seam between two requests is a longer gap than the ones
-    /// inside them, and a reader comparing frame timings needs to know where it
-    /// falls rather than inferring it.
-    struct Shot {
-        let frames: [FrameRecord]
-        let bracketRequestSizes: [Int]?
-    }
-
     func shoot(_ specs: [CaptureSpec], sensor: SensorCapability.Sensor,
                        wb: (set: [Float], readBack: [Float]),
                        session: SessionRecord, station: Int, bracketIndex: Int,
                        firing: ExecutionMode,
-                       focus: FrameRecord.Focus? = nil) async throws -> Shot {
+                       focus: FrameRecord.Focus? = nil) async throws -> SetShot {
         var frames: [FrameRecord] = []
         var previousTimestamp: Double?
         var requestSizes: [Int]?
@@ -372,10 +362,10 @@ final class CaptureModel: ObservableObject {
                                     completed: frames.count, underlying: error)
             }
         }
-        return Shot(frames: frames, bracketRequestSizes: requestSizes)
+        return SetShot(frames: frames, bracketRequestSizes: requestSizes)
     }
 
-    private static func exposure(from photo: AVCapturePhoto, wb: [Float]) -> FrameRecord.Exposure? {
+    static func exposure(from photo: AVCapturePhoto, wb: [Float]) -> FrameRecord.Exposure? {
         guard let exif = photo.metadata[kCGImagePropertyExifDictionary as String] as? [String: Any] else {
             return nil
         }
@@ -385,154 +375,30 @@ final class CaptureModel: ObservableObject {
             whiteBalanceGains: wb)
     }
 
-    /// A dark-frame calibration run (#15): the same capture set with the lens
-    /// capped, as its own session type, referenced by id from the scene
-    /// sessions that depend on it.
+    // MARK: - Bench runs, dispatched rather than performed (#28)
+    //
+    // These wrappers exist so the bench keeps no opinion about app state. Each
+    // gathers what the run needs, awaits it, and applies the outcome here.
+    // `BenchModel` never reads or writes anything on this object.
+
     func runDarkCalibration() async {
         guard let report, report.canCapture else { status = "no usable sensor"; return }
         let sensors = orderedSensors.filter { capability($0)?.isUsable == true }
-        guard !sensors.isEmpty else { status = "no usable sensor selected"; return }
         guard let set = currentSet else {
             status = "choose a protocol before running a calibration"; return
         }
-
         busy = true
-        defer { busy = false; progress = ""; darkProgress = "" }
-
-        let plannedFrames = sensors.count * set.specs.count * darkRepeats
-        logInfo(.probe, "dark calibration starting — \(sensors.count) sensor(s) × "
-                + "\(set.specs.count) setting(s) × \(darkRepeats) repeat(s) = \(plannedFrames) frames")
-        guard SessionStore.hasRoom(forFrames: plannedFrames) else {
-            status = "storage exhausted — \(plannedFrames) dark frames will not fit"
-            return
-        }
-
-        let calib: SessionRecord
-        do {
-            calib = try SessionStore.open(capability: report, sessionType: "calibration")
-        } catch {
-            status = "could not open a calibration session — \(error)"; return
-        }
-        session = calib
-        let thermalAtOpen = SessionRecord.thermalLabel()
-
-        var settingIndex = 0
-        var totalKept = 0, totalRejected = 0
-
-        for sensor in sensors {
-            guard let cap = capability(sensor) else { continue }
-            do { try await rig.configure(sensor); await rig.startSessionAndWait() }
-            catch { status = "could not open \(sensor.rawValue) — \(error)"; continue }
-
-            let checked = set.validated(against: cap)
-            for spec in checked.kept {
-                settingIndex += 1
-                let index = settingIndex
-                var frames: [FrameRecord] = []
-                var rejections: [DarkFrameRejection] = []
-                var aborted = false
-                var abortReason: String?
-
-                do {
-                    _ = try await rig.lockWhiteBalance()
-                    let achieved = try await rig.lockExposure(
-                        shutterSeconds: spec.shutterSeconds, iso: spec.iso)
-
-                    for r in 1...darkRepeats {
-                        darkProgress = "\(sensor.rawValue) setting \(index) "
-                            + "\(spec.shutterLabel) ISO \(Int(spec.iso)) — repeat \(r)/\(darkRepeats)"
-                        let photo = try await rig.captureSingle()
-                        guard let data = photo.fileDataRepresentation() else {
-                            throw CaptureRig.RigError.captureFailed("no DNG data")
-                        }
-                        let witness = DNGMetadata.read(data)
-                        let clip = ClippingStats.compute(
-                            from: photo, bayerFormat: rig.bayerFormat,
-                            activeArea: witness.activeArea,
-                            blackLevel: witness.blackLevel?.first,
-                            whiteLevel: witness.whiteLevel?.first)
-                        let verdict = DarkFrameValidation.check(clip)
-
-                        // Reject, do not warn (#15). A frame that is not dark is
-                        // not written as a dark frame — but the refusal is.
-                        guard verdict?.passed == true else {
-                            rejections.append(DarkFrameRejection(
-                                sensor: sensor.rawValue, shutterSeconds: spec.shutterSeconds,
-                                iso: spec.iso, repeatIndex: r, validation: verdict,
-                                note: verdict?.failureReason
-                                    ?? "could not validate — no clipping statistics available"))
-                            aborted = true
-                            abortReason = verdict?.failureReason ?? "validation unavailable"
-                            break
-                        }
-
-                        let name = SessionStore.darkFrameFilename(
-                            sessionId: calib.sessionId, setting: index,
-                            repeatIndex: r, sensor: sensor.rawValue)
-                        _ = try SessionStore.writeFrame(data, named: name, sessionId: calib.sessionId)
-                        frames.append(FrameRecord(
-                            frameIndex: r, filename: name, sensor: sensor.rawValue,
-                            requested: FrameRecord.Exposure(
-                                shutterSeconds: spec.shutterSeconds, iso: spec.iso, whiteBalanceGains: nil),
-                            deviceAchieved: achieved,
-                            photoAchieved: Self.exposure(from: photo, wb: []),
-                            // Focus is deliberately unmanaged in a dark run: the
-                            // lens is capped, so there is nothing to focus on
-                            // and autofocus would only hunt. Nil says "not
-                            // managed", which is true, rather than reporting a
-                            // lens position that means nothing here.
-                            dng: witness, focus: nil, zoomFactor: rig.currentZoomFactor,
-                            capturedAtUptime: ProcessInfo.processInfo.systemUptime,
-                            capturedAt: Date(), photoTimestampSeconds:
-                                photo.timestamp.isValid ? photo.timestamp.seconds : nil,
-                            gapFromPreviousSeconds: nil, clipping: clip, motion: nil,
-                            motionNeighbourhood: nil, uptimeAtDelivery: nil, latestMotionTimestamp: nil))
-                    }
-                } catch {
-                    aborted = true
-                    abortReason = "\(error)"
-                }
-
-                if aborted {
-                    // The abort unit is this setting, not the run (#15).
-                    SessionStore.deleteDarkSettingFrames(sessionId: calib.sessionId, setting: index)
-                    frames = []
-                }
-                totalKept += frames.count
-                totalRejected += rejections.count
-                try? SessionStore.writeDarkSetting(DarkSettingRecord(
-                    sensor: sensor.rawValue, shutterSeconds: spec.shutterSeconds, iso: spec.iso,
-                    requestedRepeats: darkRepeats, frames: frames, rejections: rejections,
-                    aborted: aborted, abortReason: abortReason),
-                    sessionId: calib.sessionId, index: index)
-
-                // The cap being off makes every remaining setting pointless, and
-                // a full mirror is minutes of wall clock. Stop on the first
-                // setting rather than grinding through 336 refusals.
-                if index == 1 && aborted && !rejections.isEmpty {
-                    rig.stopSession()
-                    status = "cap check failed — \(abortReason ?? "not dark"). Run stopped at setting 1."
-                    return
-                }
-            }
-            rig.stopSession()
-        }
-
-        status = "calibration \(calib.sessionId): \(totalKept) frames kept, "
-            + "\(totalRejected) rejected, thermal \(thermalAtOpen) → \(SessionRecord.thermalLabel())"
+        defer { busy = false; progress = "" }
+        let outcome = await bench.runDarkCalibration(BenchModel.DarkRequest(
+            report: report, sensors: sensors, set: set, repeats: bench.darkRepeats))
+        // A calibration opens its own session, and adopting it is the caller's
+        // decision rather than the run's — which is the whole point of handing
+        // back an outcome instead of writing through.
+        if let s = outcome.session { session = s }
+        status = outcome.status
     }
 
     #if DEBUG
-    /// #14 item 3: does a locked white balance reach the Bayer *pixels*, or only
-    /// `AsShotNeutral`?
-    ///
-    /// Shoots the whole capture set twice from one pose, under two deliberately
-    /// extreme and opposite gain settings, as two brackets of one station. The
-    /// set is a ladder rather than a single frame on purpose: with no
-    /// viewfinder there is no way to know on device which exposure is properly
-    /// exposed, and a pair compared at a near-black exposure would read as
-    /// identical whatever the white balance did. Choosing the usable rung is
-    /// left to the workstation, which is where judgement belongs (#8).
     func runWhiteBalanceProbe() async {
         guard let session else { status = "open a session first"; return }
         guard let sensor = orderedSensors.first, let cap = capability(sensor), cap.isUsable else {
@@ -543,83 +409,26 @@ final class CaptureModel: ObservableObject {
         }
         busy = true
         defer { busy = false; progress = "" }
-
         stationIndex += 1
-        let station = stationIndex
-        let openedAt = Date()
-        let checked = set.validated(against: cap)
-        guard !checked.kept.isEmpty else { status = "every rung is outside the rails"; return }
-
-        let arms: [(String, Float, Float, Float)] = [
-            ("warm r3 g1 b1", 3, 1, 1),
-            ("cool r1 g1 b3", 1, 1, 3),
-        ]
-        var brackets: [BracketRecord] = []
-        motionRecorder.start()
-        do {
-            try await rig.configure(sensor)
-            await rig.startSessionAndWait()
-            for (i, arm) in arms.enumerated() {
-                progress = "WB probe — \(arm.0)"
-                let wb = try await rig.lockWhiteBalanceGains(r: arm.1, g: arm.2, b: arm.3)
-                let shot = try await shoot(checked.kept, sensor: sensor, wb: wb,
-                                           session: session, station: station, bracketIndex: i + 1,
-                                           firing: set.firing)
-                brackets.append(BracketRecord(
-                    bracketIndex: i + 1, sensor: sensor.rawValue, sensorUniqueID: cap.uniqueID,
-                    captureSet: set, renderedSpecs: checked.kept, evOffsetStops: 0,
-                    executionMode: set.firing.rawValue,
-                    bracketRequestSizes: shot.bracketRequestSizes,
-                    droppedRungs: checked.dropped,
-                    minimumInterFrameGapSeconds: nil,
-                    stillnessSettled: nil, stillnessWaitSeconds: nil, motionAtFire: nil,
-                    dwellSeconds: nil, note: "item3 " + arm.0, frames: shot.frames))
-            }
-            rig.stopSession()
-            motionRecorder.stop()
-            let record = StationRecord(
-                stationIndex: station, sessionId: session.sessionId, openedAt: openedAt,
-                closedAt: Date(), brackets: brackets,
-                motionRequestedHz: motionRecorder.requestedHz,
-                poseIntent: poseIntent.isEmpty ? "item3 white-balance pixel path" : poseIntent)
-            try SessionStore.writeStation(record)
-            lastStation = record
-            status = "WB probe: \(brackets.reduce(0){ $0 + $1.frames.count }) frames, "
-                + "\(arms.count) gain settings — compare pixels off device"
-        } catch {
-            rig.stopSession(); motionRecorder.stop()
-            SessionStore.deleteStationFrames(sessionId: session.sessionId, station: station)
-            status = "WB probe ABORTED — \(error)"
-        }
+        let outcome = await bench.runWhiteBalanceProbe(BenchModel.WhiteBalanceRequest(
+            session: session, sensor: sensor, capability: cap, set: set,
+            stationIndex: stationIndex, poseIntent: poseIntent,
+            run: { specs, sensor, wb, session, station, bracketIndex, firing in
+                try await self.shoot(specs, sensor: sensor, wb: wb, session: session,
+                                     station: station, bracketIndex: bracketIndex,
+                                     firing: firing)
+            }))
+        if let st = outcome.station { lastStation = st }
+        status = outcome.status
     }
 
-    /// #14 item 10, run on the currently selected sensor.
     func runZoomProbe() async {
         guard let session else { status = "open a session first"; return }
         guard let sensor = orderedSensors.first else { status = "no sensor selected"; return }
         busy = true
         defer { busy = false }
-        do {
-            try await rig.configure(sensor)
-            await rig.startSessionAndWait()
-            defer { rig.stopSession() }
-            // Each stage is flushed to disk as it happens, so a crash inside
-            // AVFoundation still leaves a record of how far the probe got.
-            var stages: [String] = []
-            let result = await rig.probeZoomEnforcement { stageName in
-                stages.append(stageName)
-                try? SessionStore.writeProbe(stages, named: "zoom-probe-stages.json",
-                                             sessionId: session.sessionId)
-            }
-            zoomProbe = result
-            try? SessionStore.writeProbe(result, named: "zoom-probe-\(sensor.rawValue).json",
-                                         sessionId: session.sessionId)
-            status = result.verdict
-        } catch {
-            status = "zoom probe could not configure \(sensor.rawValue) — \(error)"
-        }
+        status = await bench.runZoomProbe(session: session, sensor: sensor).status
     }
-
     #endif
 
     private func requestCamera() async -> Bool {

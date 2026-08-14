@@ -178,6 +178,22 @@ struct FrameRecord: Codable, Equatable {
     }
 }
 
+/// What one capture set produced: its frames, and — when it ran as brackets —
+/// how it was split across hardware requests.
+///
+/// The split is not a detail: the seam between two requests is a longer gap
+/// than the ones inside them, and a reader comparing frame timings needs to
+/// know where it falls rather than inferring it.
+///
+/// Top-level rather than nested inside `CaptureModel` because it is the
+/// currency passed between the station flow and the bench runs, and a shared
+/// type living inside one of its two callers is how the two stay welded
+/// together (#28).
+struct SetShot {
+    let frames: [FrameRecord]
+    let bracketRequestSizes: [Int]?
+}
+
 /// One bracket: an ordered run of frames from a single sensor at one station.
 /// The sensor is an attribute of the bracket, not of the station (#7).
 struct BracketRecord: Codable, Equatable {
