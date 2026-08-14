@@ -171,9 +171,9 @@ struct ProtocolEditorView: View {
                                                                 ceiling: ceiling)
                     Label("Past \(cap.sensor.rawValue)'s hardware bracket ceiling of \(ceiling), "
                           + "so this fires as \(requests) requests. Frames within a request are "
-                          + "\(Int(SessionEstimate.sensorFramePeriod * 1000)) ms apart; each seam "
+                          + "\(Int(DeviceProfile.active.sensorFramePeriod.value * 1000)) ms apart; each seam "
                           + "between requests costs about "
-                          + "\(Int(SessionEstimate.bracketSeam * 1000)) ms.",
+                          + "\(Int(DeviceProfile.active.bracketSeam.value * 1000)) ms.",
                           systemImage: "rectangle.split.3x1")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
