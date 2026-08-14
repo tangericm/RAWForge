@@ -90,7 +90,7 @@ struct CalibrationView: View {
                 if plannedFrames > 0 {
                     LabeledContent("Planned", value: "\(plannedFrames) frames")
                     LabeledContent("Worst case", value: SessionEstimate.formatBytes(
-                        Int64(plannedFrames) * SessionEstimate.worstCaseFrameBytes))
+                        Int64(plannedFrames) * Int64(DeviceProfile.active.worstCaseFrameBytes.value)))
                 }
                 Button {
                     Task { await model.runDarkCalibration() }
