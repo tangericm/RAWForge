@@ -19,7 +19,10 @@ enum DemoSeed {
     static var isRequested: Bool { value != nil }
     /// `RAWFORGE_DEMO=timeline` opens the timeline directly, which is otherwise
     /// two taps deep and unreachable without a camera.
-    static var wantsTimeline: Bool { value == "timeline" }
+    static var wantsTimeline: Bool { value == "timeline" || value == "single" }
+    /// `RAWFORGE_DEMO=single` fakes a phone with one rear camera — an SE — so
+    /// the parts of the interface that should collapse can be seen collapsing.
+    static var wantsSingleSensor: Bool { value == "single" }
 
     /// A sensor that reports what an iPhone 15 Pro's does, so the plan's
     /// arithmetic works on real numbers rather than invented ones.
@@ -37,9 +40,11 @@ enum DemoSeed {
     /// A station worth drawing: a sweep and a long repeat, on two sensors, so
     /// the swap, the settle and a seam all appear.
     @MainActor static func apply(to model: CaptureModel) {
-        model.report = CapabilityReport(
-            device: DeviceIdentity.current(),
-            sensors: [sensor(.wide), sensor(.ultraWide), sensor(.telephoto)])
+        model.report = wantsSingleSensor
+            ? CapabilityReport(device: DeviceIdentity.current(),
+                               sensors: [sensor(.wide), .absent(.ultraWide), .absent(.telephoto)])
+            : CapabilityReport(device: DeviceIdentity.current(),
+                               sensors: [sensor(.wide), sensor(.ultraWide), sensor(.telephoto)])
 
         var sweep = CaptureSet.shutterSweep(
             base: CaptureSpec(shutterSeconds: 1.0 / 125, iso: 100),
@@ -50,10 +55,12 @@ enum DemoSeed {
             CaptureSpec(shutterSeconds: 1.0 / 250, iso: 100), count: 16, name: "repeat-16")
         repeated.executionMode = .sequential
 
-        model.shotList = ShotList(entries: [
-            ShotListEntry(index: 0, sensor: .wide, captureSet: sweep),
-            ShotListEntry(index: 1, sensor: .telephoto, captureSet: repeated),
-        ], cursor: 0)
+        model.shotList = ShotList(entries: wantsSingleSensor
+            ? [ShotListEntry(index: 0, sensor: .wide, captureSet: sweep),
+               ShotListEntry(index: 1, sensor: .wide, captureSet: repeated)]
+            : [ShotListEntry(index: 0, sensor: .wide, captureSet: sweep),
+               ShotListEntry(index: 1, sensor: .telephoto, captureSet: repeated)],
+            cursor: 0)
         model.poseIntent = "tripod-rigid"
         model.phase = .sessionOpen
     }

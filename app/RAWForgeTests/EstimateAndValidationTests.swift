@@ -313,12 +313,38 @@ final class TimelineTests: XCTestCase {
                              "two swaps and two settles dwarf eight short exposures")
     }
 
-    func testASingleSensorStationSpendsNothingOnSwapping() {
-        let e = SessionEstimate.forShotList([entry(.wide, frames: 8)],
-                                            minimumGap: 0, includeStillness: false,
-                                            bracketCeiling: 8, profile: .reference)
-        XCTAssertEqual(e.breakdown.swaps, DeviceProfile.reference.sensorSwap.value, accuracy: 1e-9,
-                       "coming up on the first sensor is still a swap")
+    /// The flow calls `configure` and waits for the session on **every** set,
+    /// so charging it per sensor change under-estimated every multi-set station
+    /// — maximally on a phone with one rear camera, where no set ever changes
+    /// sensor.
+    func testSetupIsChargedPerSetNotPerSensorChange() {
+        let three = SessionEstimate.forShotList(
+            [entry(.wide, frames: 1), entry(.wide, frames: 1), entry(.wide, frames: 1)],
+            minimumGap: 0, includeStillness: false, bracketCeiling: 8, profile: .reference)
+        XCTAssertEqual(three.breakdown.setup,
+                       3 * DeviceProfile.reference.sensorSwap.value, accuracy: 1e-9,
+                       "three sets on one sensor pay three configures")
+        XCTAssertEqual(three.sensorSwaps, 1, "but they are still one sensor run")
+    }
+
+    /// The stillness wait runs per set too, for the same reason.
+    func testSettlingIsChargedPerSetNotPerSensorChange() {
+        let two = SessionEstimate.forShotList(
+            [entry(.wide, frames: 1), entry(.wide, frames: 1)],
+            minimumGap: 0, bracketCeiling: 8, profile: .reference)
+        XCTAssertEqual(two.breakdown.settles,
+                       2 * DeviceProfile.reference.stillnessTimeout.value, accuracy: 1e-9)
+    }
+
+    /// A one-sensor phone is the case this correction matters most for: nothing
+    /// about its station is a "swap", yet every set still pays a setup.
+    func testASingleSensorStationStillPaysSetupForEverySet() {
+        let e = SessionEstimate.forShotList(
+            [entry(.wide, frames: 4), entry(.wide, frames: 4)],
+            minimumGap: 0, includeStillness: false, bracketCeiling: 8, profile: .reference)
+        XCTAssertEqual(e.sensorSwaps, 1, "one sensor, one run")
+        XCTAssertGreaterThan(e.breakdown.setup, DeviceProfile.reference.sensorSwap.value,
+                             "yet more than one setup is paid for")
         XCTAssertEqual(e.breakdown.seams, 0)
     }
 
@@ -333,14 +359,29 @@ final class TimelineTests: XCTestCase {
 
     // MARK: - The steps a shot list implies
 
-    func testConsecutiveSetsOnOneSensorShareASwapAndASettle() {
+    /// Consecutive sets on one sensor do **not** share a setup. This test used
+    /// to assert that they did, which was the bug: the flow calls `configure`
+    /// and waits for stillness on every set, so the timeline must draw them
+    /// every time or it would show a station shorter than the one that runs.
+    func testEverySetGetsItsOwnSetupAndSettleEvenOnOneSensor() {
         let steps = StationTimeline.steps(
             entries: [entry(.wide, frames: 4), entry(.wide, frames: 4),
                       entry(.telephoto, frames: 4)],
             minimumGap: 0, bracketCeiling: 8)
-        XCTAssertEqual(steps.filter { $0.kind == .swap }.count, 2)
-        XCTAssertEqual(steps.filter { $0.kind == .settle }.count, 2)
+        XCTAssertEqual(steps.filter { $0.kind == .swap }.count, 3)
+        XCTAssertEqual(steps.filter { $0.kind == .settle }.count, 3)
         XCTAssertEqual(steps.filter { $0.kind == .set }.count, 3)
+    }
+
+    /// Only the label distinguishes them — a swap and a re-arm are not the same
+    /// event, even though the app pays for them the same way.
+    func testASetupIsCalledASwapOnlyWhenTheSensorActuallyChanges() {
+        let steps = StationTimeline.steps(
+            entries: [entry(.wide, frames: 4), entry(.wide, frames: 4),
+                      entry(.telephoto, frames: 4)],
+            minimumGap: 0, bracketCeiling: 8)
+        let titles = steps.filter { $0.kind == .swap }.map(\.title)
+        XCTAssertEqual(titles, ["Swap to 1x", "Configure 1x", "Swap to tele"])
     }
 
     func testASetStepCarriesItsLadderShape() {
