@@ -24,9 +24,14 @@ struct SessionEstimate {
     /// across three swaps; longer than an entire 8-frame bracket.
     static let sensorSwap: TimeInterval = 0.40
 
-    /// The stillness wait's ceiling. It resolves early when the device settles,
-    /// so this is a bound rather than an expectation.
-    static let stillnessTimeout: TimeInterval = 4.0
+    /// The stillness settle window, and it is a real expectation rather than a
+    /// ceiling: it is the measured decay time of the tap transient, so a set
+    /// pays it in full unless the device is already in the tripod band.
+    ///
+    /// Measured by replaying six motion streams in 0.2 s windows from station
+    /// open — the first window runs 1.5-4.3x steady state on every mount and
+    /// each reaches its baseline by 0.2-0.4 s.
+    static let stillnessTimeout: TimeInterval = 0.4
 
     /// 1,675 real iPhone DNGs averaged 10.0 MB with a maximum of 30.7 MB (#11).
     static let averageFrameBytes: Int64 = 10_000_000

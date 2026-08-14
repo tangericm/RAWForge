@@ -44,9 +44,9 @@ struct StationPlanView: View {
                         detail: SessionEstimate.formatDuration(SessionEstimate.sensorSwap)
                             + " · pose held, nothing shot",
                         dim: isPast)
-                    row(icon: "hand.raised", tint: .blue, title: "wait for still",
-                        detail: "up to \(SessionEstimate.formatDuration(SessionEstimate.stillnessTimeout))"
-                            + " · no override", dim: isPast)
+                    row(icon: "hand.raised", tint: .blue, title: "settle",
+                        detail: SessionEstimate.formatDuration(SessionEstimate.stillnessTimeout)
+                            + " · measured tap-transient decay", dim: isPast)
                 }
                 row(icon: isPast ? "checkmark.circle.fill"
                         : isNow ? "arrowtriangle.right.fill" : "circle",

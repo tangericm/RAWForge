@@ -62,3 +62,4 @@ Thumbs.db
 # Local scratch
 .research/
 scratch/
+app/build/

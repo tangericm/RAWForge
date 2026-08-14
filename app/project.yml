@@ -12,7 +12,35 @@ options:
   deploymentTarget:
     iOS: "17.0"          # the platform floor settled in #6
   createIntermediateGroups: true
+schemes:
+  RAWForge:
+    build:
+      targets:
+        RAWForge: all
+        RAWForgeTests: [test]
+    test:
+      targets: [RAWForgeTests]
+
 targets:
+  RAWForgeTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [RAWForgeTests]
+    dependencies:
+      - target: RAWForge
+    settings:
+      base:
+        # Xcode 26 supplies no default, same as the app target — without this
+        # the bundle builds as bare ".xctest" and two tasks race to produce it.
+        PRODUCT_NAME: "$(TARGET_NAME)"
+        PRODUCT_BUNDLE_IDENTIFIER: com.tangericm.rawforge.tests
+        # xcodegen sets TEST_HOST from the dependency but leaves BUNDLE_LOADER
+        # empty, so the bundle cannot resolve the app's symbols and fails to
+        # link. Both are needed for a host-app unit test bundle.
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        SWIFT_VERSION: "5.0"
+        GENERATE_INFOPLIST_FILE: "YES"
+
   RAWForge:
     type: application
     platform: iOS
@@ -24,6 +52,10 @@ targets:
         # Xcode 26 supplies no default; without this the product builds as a
         # bare ".app" and two tasks race to produce it.
         PRODUCT_NAME: "$(TARGET_NAME)"
+        # Named explicitly so `@testable import RAWForge` resolves — the module
+        # name otherwise follows PRODUCT_NAME, which was empty here once already.
+        PRODUCT_MODULE_NAME: RAWForge
+        ENABLE_TESTABILITY: "YES"
         ALWAYS_SEARCH_USER_PATHS: "NO"
         TARGETED_DEVICE_FAMILY: "1"      # iPhone only
         SWIFT_VERSION: "5.0"             # AVFoundation delegate callbacks land
