@@ -98,7 +98,8 @@ final class CaptureModel: ObservableObject {
         shotList = ShotList(entries: stored.entries, cursor: 0)
     }
 
-    @Published var mode: ExecutionMode = .hardwareBracket
+    /// Only sequential sets can honour this, so the control that sets it only
+    /// appears when the shot list contains one.
     @Published var minimumGap: Double = 0
     /// Extra hold before the first frame of a set, on top of the measured 0.4 s
     /// transient decay. Optional (#8) — zero means fire as soon as the stillness
@@ -236,7 +237,8 @@ final class CaptureModel: ObservableObject {
 
     func shoot(_ specs: [CaptureSpec], sensor: SensorCapability.Sensor,
                        wb: (set: [Float], readBack: [Float]),
-                       session: SessionRecord, station: Int, bracketIndex: Int) async throws -> Shot {
+                       session: SessionRecord, station: Int, bracketIndex: Int,
+                       firing: ExecutionMode) async throws -> Shot {
         var frames: [FrameRecord] = []
         var previousTimestamp: Double?
         var requestSizes: [Int]?
@@ -311,7 +313,7 @@ final class CaptureModel: ObservableObject {
             previousTimestamp = stamp ?? previousTimestamp
         }
 
-        switch mode {
+        switch firing {
         case .sequential:
             var lastFired: TimeInterval?
             for (i, spec) in specs.enumerated() {
@@ -319,6 +321,8 @@ final class CaptureModel: ObservableObject {
                 do {
                     let achieved = try await rig.lockExposure(
                         shutterSeconds: spec.shutterSeconds, iso: spec.iso)
+                    // Only sequential can honour a gap: a burst is one request
+                    // with nowhere to insert a wait.
                     if let last = lastFired, minimumGap > 0 {
                         let elapsed = ProcessInfo.processInfo.systemUptime - last
                         if elapsed < minimumGap {
@@ -492,6 +496,7 @@ final class CaptureModel: ObservableObject {
             + "\(totalRejected) rejected, thermal \(thermalAtOpen) → \(SessionRecord.thermalLabel())"
     }
 
+    #if DEBUG
     /// #14 item 3: does a locked white balance reach the Bayer *pixels*, or only
     /// `AsShotNeutral`?
     ///
@@ -532,11 +537,12 @@ final class CaptureModel: ObservableObject {
                 progress = "WB probe — \(arm.0)"
                 let wb = try await rig.lockWhiteBalanceGains(r: arm.1, g: arm.2, b: arm.3)
                 let shot = try await shoot(checked.kept, sensor: sensor, wb: wb,
-                                           session: session, station: station, bracketIndex: i + 1)
+                                           session: session, station: station, bracketIndex: i + 1,
+                                           firing: set.firing)
                 brackets.append(BracketRecord(
                     bracketIndex: i + 1, sensor: sensor.rawValue, sensorUniqueID: cap.uniqueID,
                     captureSet: set, renderedSpecs: checked.kept, evOffsetStops: 0,
-                    executionMode: mode.rawValue,
+                    executionMode: set.firing.rawValue,
                     bracketRequestSizes: shot.bracketRequestSizes,
                     droppedRungs: checked.dropped,
                     minimumInterFrameGapSeconds: nil,
@@ -587,6 +593,8 @@ final class CaptureModel: ObservableObject {
             status = "zoom probe could not configure \(sensor.rawValue) — \(error)"
         }
     }
+
+    #endif
 
     private func requestCamera() async -> Bool {
         switch AVCaptureDevice.authorizationStatus(for: .video) {

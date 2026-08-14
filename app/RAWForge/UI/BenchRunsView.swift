@@ -118,8 +118,14 @@ struct CalibrationView: View {
 }
 
 /// The instrument checks: runs whose output is a *finding about the app*, not a
-/// scene. Kept apart from capture because a station shot to answer a question
-/// about the pipeline is not a station of data.
+/// scene.
+///
+/// Compiled only into debug builds. Both probes answered questions in #14 that
+/// are now closed, and guideline 2.3.1(a) forbids shipping a hidden or
+/// undocumented feature — so the honest options were to remove them or to
+/// document a developer tool to a reviewer. Gating only the link would have
+/// left the screen in the binary while the commit claimed it was gone.
+#if DEBUG
 struct InstrumentChecksView: View {
     @ObservedObject var model: CaptureModel
 
@@ -183,3 +189,4 @@ struct InstrumentChecksView: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 }
+#endif

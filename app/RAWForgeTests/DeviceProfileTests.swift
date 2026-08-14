@@ -67,14 +67,14 @@ final class DeviceProfileTests: XCTestCase {
     func testAMeasuredProfileChangesThePlanRatherThanJustTheLabel() {
         let entry = Self.entry(frames: 8)
         let borrowed = SessionEstimate.forShotList(
-            [entry], mode: .hardwareBracket, minimumGap: 0,
+            [entry], minimumGap: 0,
             bracketCeiling: 8, profile: .reference)
 
         // A phone twice as slow per frame should produce a visibly longer plan.
         var slow = DeviceProfile.reference
         slow = Self.with(slow, framePeriod: .measured(0.0668, samples: 7, spread: 0.001))
         let measured = SessionEstimate.forShotList(
-            [entry], mode: .hardwareBracket, minimumGap: 0,
+            [entry], minimumGap: 0,
             bracketCeiling: 8, profile: slow)
 
         XCTAssertGreaterThan(measured.typicalSeconds, borrowed.typicalSeconds,
@@ -86,13 +86,13 @@ final class DeviceProfileTests: XCTestCase {
     func testStorageFiguresComeFromTheProfileToo() {
         var fat = DeviceProfile.reference
         fat.worstCaseFrameBytes = .measured(60_000_000, samples: 20, spread: 0)
-        let e = SessionEstimate.forShotList([Self.entry(frames: 10)], mode: .hardwareBracket,
+        let e = SessionEstimate.forShotList([Self.entry(frames: 10)], 
                                            minimumGap: 0, profile: fat)
         XCTAssertEqual(e.worstCaseBytes, 600_000_000)
     }
 
     func testAnEstimateCarriesTheProfileItWasBuiltFrom() {
-        let e = SessionEstimate.forShotList([Self.entry(frames: 3)], mode: .hardwareBracket,
+        let e = SessionEstimate.forShotList([Self.entry(frames: 3)], 
                                            minimumGap: 0, profile: .reference)
         XCTAssertFalse(e.profile.isCharacterised,
                        "the plan screen decides whether to warn from this")
@@ -160,9 +160,10 @@ final class DeviceProfileTests: XCTestCase {
     // MARK: - Fixtures
 
     private static func entry(frames: Int) -> ShotListEntry {
-        ShotListEntry(index: 0, sensor: .wide,
-                      captureSet: .repeated(CaptureSpec(shutterSeconds: 0.001, iso: 100),
-                                            count: frames, name: "r"))
+        var set = CaptureSet.repeated(CaptureSpec(shutterSeconds: 0.001, iso: 100),
+                                      count: frames, name: "r")
+        set.executionMode = .hardwareBracket
+        return ShotListEntry(index: 0, sensor: .wide, captureSet: set)
     }
 
     private static func with(_ p: DeviceProfile, framePeriod: Reading) -> DeviceProfile {
