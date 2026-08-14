@@ -12,6 +12,27 @@ struct DeviceIdentity: Codable, Equatable {
     let appVersion: String
     let appBuild: String
 
+    /// The commit the binary was built from, stamped at build time.
+    ///
+    /// The build number says *when*; this says *from what*. Without it a log
+    /// cannot be tied back to source, which is exactly the problem the old
+    /// hardcoded `1.0 (1)` caused during testing — every build reported the
+    /// same thing. A `-dirty` suffix means the binary corresponds to no commit
+    /// anyone else can check out, which is worth knowing before chasing a bug
+    /// through code that was never what ran.
+    let appCommit: String?
+
+    /// `1.0 (2608141530) 67ea37f-dirty` — everything needed to identify a build.
+    var buildDescription: String {
+        let base = "\(appVersion) (\(appBuild))"
+        guard let appCommit, appCommit != "unknown" else { return base }
+        return "\(base) \(appCommit)"
+    }
+
+    /// True when the binary was built from a working tree with uncommitted
+    /// changes, so it matches no commit in the history.
+    var isDirtyBuild: Bool { appCommit?.hasSuffix("-dirty") ?? false }
+
     /// True when the session was recorded under the simulator. A simulated
     /// session can never be a calibration source, and the header has to say so
     /// rather than let a reader assume otherwise.
@@ -26,6 +47,7 @@ struct DeviceIdentity: Codable, Equatable {
             systemVersion: UIDevice.current.systemVersion,
             appVersion: info?["CFBundleShortVersionString"] as? String ?? "?",
             appBuild: info?["CFBundleVersion"] as? String ?? "?",
+            appCommit: info?["RAWForgeCommit"] as? String,
             isSimulator: simulated != nil)
     }
 
