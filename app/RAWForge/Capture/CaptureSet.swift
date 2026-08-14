@@ -55,6 +55,22 @@ struct CaptureSet: Codable, Equatable {
     /// rendered specs would lose the fact that one protocol produced all three.
     let perSensorEVOffsetStops: [String: Double]
 
+    /// How this set is fired, and therefore what record it produces.
+    ///
+    /// Part of the recipe rather than a setting on the shoot, because the two
+    /// modes do not produce the same data: sequential asks the device what it
+    /// achieved after each frame and records the answer, and a burst cannot —
+    /// every frame rides one request, so the device would report the last rung
+    /// for all of them. A name that could mean either is a name that does not
+    /// reproduce, which is the whole claim this app makes over a manual camera.
+    ///
+    /// Optional in storage only: protocols saved before firing joined the
+    /// recipe have no value, and `firing` reads them as burst — what 29 of the
+    /// first 31 real brackets used.
+    var executionMode: ExecutionMode?
+
+    var firing: ExecutionMode { executionMode ?? .hardwareBracket }
+
     /// The authored set shifted by this sensor's offset. Identity when there is
     /// no offset, which is the common case.
     func rendered(for sensor: SensorCapability.Sensor) -> [CaptureSpec] {
@@ -161,10 +177,25 @@ enum ExecutionMode: String, Codable, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    /// The stored raw values stay `sequential` and `hardwareBracket`: sessions
+    /// already on disk use those tokens, and renaming them would split old
+    /// records from new for a cosmetic gain. Only the label changed.
     var label: String {
         switch self {
         case .sequential:      return "Sequential"
-        case .hardwareBracket: return "Bracket (≤ max)"
+        case .hardwareBracket: return "Burst"
+        }
+    }
+
+    /// The trade, in one line, wherever the choice is offered.
+    var explanation: String {
+        switch self {
+        case .hardwareBracket:
+            return "All frames in one request, as fast as the sensor allows. "
+                + "The camera cannot report what it did per frame."
+        case .sequential:
+            return "One frame at a time, re-setting the camera between each. "
+                + "Slower, and the only mode that records the camera's own read-back."
         }
     }
 }
