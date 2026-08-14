@@ -129,6 +129,11 @@ struct BracketRecord: Codable, Equatable {
     /// it, with no external registry to consult.
     let captureSet: CaptureSet?
 
+    /// What actually fired on this sensor after its EV offset was applied.
+    /// The canonical definition is in `captureSet`; this is the rendering (#8).
+    let renderedSpecs: [CaptureSpec]?
+    let evOffsetStops: Double?
+
     /// How it ran. The choice is about inter-frame gap, not about what can be
     /// expressed, so it is recorded alongside the timings it explains.
     let executionMode: String?

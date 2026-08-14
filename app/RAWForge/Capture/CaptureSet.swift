@@ -45,6 +45,25 @@ struct CaptureSet: Codable, Equatable {
     /// this records what asked for them.
     let generator: Generator
 
+    /// One definition across sensors, with an optional per-sensor EV offset
+    /// (#8). The sensors are not interchangeable — useful ISO ceilings differ
+    /// (1x 400-450, 0.5x 250-267, tele 144-156) — so the same authored ladder
+    /// may want shifting on a slower sensor. Keyed by sensor token, in stops.
+    ///
+    /// **Both canonical and rendered are stored**: the set below is what was
+    /// authored, and `rendered(for:)` is what actually fired. Keeping only the
+    /// rendered specs would lose the fact that one protocol produced all three.
+    let perSensorEVOffsetStops: [String: Double]
+
+    /// The authored set shifted by this sensor's offset. Identity when there is
+    /// no offset, which is the common case.
+    func rendered(for sensor: SensorCapability.Sensor) -> [CaptureSpec] {
+        guard let stops = perSensorEVOffsetStops[sensor.rawValue], stops != 0 else { return specs }
+        return specs.map {
+            CaptureSpec(shutterSeconds: $0.shutterSeconds * pow(2, stops), iso: $0.iso)
+        }
+    }
+
     enum Generator: Codable, Equatable {
         case manual
         case repeated(spec: CaptureSpec, count: Int)
@@ -71,7 +90,8 @@ struct CaptureSet: Codable, Equatable {
     static func repeated(_ spec: CaptureSpec, count: Int, name: String = "repeat", version: Int = 1) -> CaptureSet {
         CaptureSet(name: name, version: version,
                    specs: Array(repeating: spec, count: max(1, count)),
-                   generator: .repeated(spec: spec, count: max(1, count)))
+                   generator: .repeated(spec: spec, count: max(1, count)),
+                   perSensorEVOffsetStops: [:])
     }
 
     /// Geometric spacing, equal in stops (#8) — each rung doubles or halves the
@@ -87,7 +107,8 @@ struct CaptureSet: Codable, Equatable {
             return CaptureSpec(shutterSeconds: base.shutterSeconds * pow(2, stops), iso: base.iso)
         }
         return CaptureSet(name: name, version: version, specs: specs,
-                          generator: .shutterSweep(base: base, stopsPerRung: stopsPerRung, rungs: n))
+                          generator: .shutterSweep(base: base, stopsPerRung: stopsPerRung, rungs: n),
+                          perSensorEVOffsetStops: [:])
     }
 
     // MARK: - Rails
