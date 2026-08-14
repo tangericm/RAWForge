@@ -16,12 +16,28 @@ extension CaptureModel {
     func startFlow() {
         phase = session == nil ? .noSession : .sessionOpen
         flowNote = phase.note
+        startFraming()
+    }
+
+    /// Framing runs between stations, when the operator is walking to the next
+    /// pose and needs to see where the camera points. Never touched mid-station:
+    /// the capture path owns the session once a set begins.
+    func startFraming() {
+        guard !busy, phase == .sessionOpen || phase == .stationOpen else { return }
+        let sensor = shotList.current?.sensor ?? builderSensor
+        guard capability(sensor)?.isUsable == true else { return }
+        rig.prepareForFraming(sensor)
     }
 
     /// Stations accumulate rather than being planned up front (#10), so this is
     /// an explicit act at the pose, not a slot filled in beforehand.
     func declareStation() {
         guard canDeclareStation else { return }
+        health.refresh()
+        if let fault = health.faultIfUnhealthy() {
+            status = "not starting a station — \(fault.operatorNote)"
+            return
+        }
         stationIndex += 1
         stationOpenedAt = Date()
         pendingBrackets = []
@@ -36,6 +52,14 @@ extension CaptureModel {
     func beginNextSet() async {
         guard canBeginSet, let entry = shotList.current,
               let session, let cap = capability(entry.sensor) else { return }
+
+        // Faults land at a set boundary rather than halfway through a bracket.
+        health.refresh()
+        if let fault = health.faultIfUnhealthy() { abortStation(fault); return }
+        if !SessionStore.hasRoom(forFrames: entry.frameCount) {
+            abortStation(.storageExhausted); return
+        }
+
         busy = true
         defer { busy = false }
 
@@ -86,6 +110,7 @@ extension CaptureModel {
             rig.stopSession()
             shotList.cursor += 1
             set(.stationOpen)
+            startFraming()
         } catch {
             rig.stopSession()
             abortStation(.captureError, detail: "\(error)")
@@ -118,6 +143,7 @@ extension CaptureModel {
         pendingBrackets = []
         pendingSwaps = []
         set(.sessionOpen)
+        startFraming()
     }
 
     /// One rule: a hard fault flags, aborts the station, and deletes its frames.
@@ -129,9 +155,10 @@ extension CaptureModel {
         pendingBrackets = []
         pendingSwaps = []
         lastFault = fault
+        set(.sessionOpen)
+        startFraming()
         status = "station \(stationIndex) ABORTED — \(fault.operatorNote)"
             + (detail.map { ": \($0)" } ?? "") + ". Frames deleted; banked stations survive."
-        set(.sessionOpen)
     }
 
     func closeSession() {

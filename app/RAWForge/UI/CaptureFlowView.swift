@@ -14,7 +14,12 @@ struct CaptureFlowView: View {
         List {
             phaseBanner
             if model.phase == .noSession { sessionSection }
-            else { stationSection; shotListSection; buildSection }
+            else {
+                Section { ViewfinderPanel(model: model) }
+                stationSection
+                StationPlanView(model: model)
+                buildSection
+            }
             if let f = model.lastFault { faultSection(f) }
         }
         .navigationTitle("Capture")
@@ -82,9 +87,7 @@ struct CaptureFlowView: View {
         }
     }
 
-    /// The shot list with its cursor. Done entries are dimmed, the current one
-    /// is marked — the operator should be able to see where they are at
-    /// arm's length without reading.
+    /// Superseded by StationPlanView's timeline, kept for the compact count.
     private var shotListSection: some View {
         Section("Shot list · \(model.shotList.cursor)/\(model.shotList.entries.count)") {
             if model.shotList.entries.isEmpty {

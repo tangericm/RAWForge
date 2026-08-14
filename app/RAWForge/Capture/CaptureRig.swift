@@ -74,8 +74,27 @@ final class CaptureRig {
         self.bayerFormat = bayer
     }
 
-    func startSession() { if !session.isRunning { session.startRunning() } }
-    func stopSession()  { if session.isRunning  { session.stopRunning()  } }
+    func startSession() {
+        guard !session.isRunning else { return }
+        // The session runs on a background queue: startRunning blocks, and on
+        // the main actor that is a visible hitch at the top of every set.
+        let s = session
+        DispatchQueue.global(qos: .userInitiated).async { s.startRunning() }
+    }
+
+    func stopSession() {
+        guard session.isRunning else { return }
+        let s = session
+        DispatchQueue.global(qos: .userInitiated).async { s.stopRunning() }
+    }
+
+    /// Brings a sensor up purely so the viewfinder has something to show.
+    /// Never called mid-station — framing is for between stations, when the
+    /// operator is walking to the next pose.
+    func prepareForFraming(_ sensor: SensorCapability.Sensor) {
+        guard (try? configure(sensor)) != nil else { return }
+        startSession()
+    }
 
     // MARK: - Deterministic parameters
 
