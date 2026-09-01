@@ -26,7 +26,7 @@ overhead, not this codebase.
 |---|---|---|---|
 | **Simulator suite** | every push and PR | yes | `.github/workflows/ci.yml` |
 | **Release build + developer-code check** | every push and PR | yes | `app/tools/release-check.sh` |
-| **Hardware suite** | manually, phone tethered | at release only | `app/tools/run-hardware-suite.sh` |
+| **Hardware Release suite** | manually, phone tethered | at release only | `app/tools/run-hardware-suite.sh` |
 
 ### Simulator suite
 
@@ -55,7 +55,10 @@ run as a broken check (`BLIND`) rather than passing as a clean result.
 
 ## The hardware gate
 
-A subset of the suite needs a real sensor. The rule:
+A subset of the suite needs a real sensor, and several reliability/performance
+regressions only exist in the optimized production path. The hardware gate runs
+the **Release** suite, with the one Debug-build configuration assertion omitted.
+The rule:
 
 > **A commit is "hardware verified" if the device suite passed on it, or on an
 > ancestor of it with no changes under `app/` since.**
