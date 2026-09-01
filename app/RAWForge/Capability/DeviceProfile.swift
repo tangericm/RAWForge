@@ -130,14 +130,32 @@ struct DeviceProfile: Codable, Equatable {
     /// itself, which nobody browsing Files should be editing.
     static var fileURL: URL { AppStorage.supportFile("device-profile.json") }
 
-    /// The profile in force. Loaded once and cached, because it is read on
-    /// every estimate and the plan re-renders as the shot list is edited.
-    private static var cached: DeviceProfile?
+    /// The profile in force is read on every plan render. The cache owns its
+    /// lock rather than exposing shared mutable static state, which keeps this
+    /// safe when estimates move off the main actor under Swift 6.
+    private final class Cache: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: DeviceProfile?
+
+        func read() -> DeviceProfile? {
+            lock.lock()
+            defer { lock.unlock() }
+            return stored
+        }
+
+        func write(_ value: DeviceProfile?) {
+            lock.lock()
+            stored = value
+            lock.unlock()
+        }
+    }
+
+    private static let cache = Cache()
 
     static var active: DeviceProfile {
-        if let cached { return cached }
+        if let cached = cache.read() { return cached }
         let loaded = loadFromDisk() ?? reference
-        cached = loaded
+        cache.write(loaded)
         return loaded
     }
 
@@ -160,7 +178,7 @@ struct DeviceProfile: Codable, Equatable {
     func save() throws -> URL {
         let url = Self.fileURL
         try JSONEncoder.rawforge.encode(self).write(to: url, options: .atomic)
-        Self.cached = self
+        Self.cache.write(self)
         logInfo(.app, "device profile saved — \(readings.count - borrowedCount) of "
                 + "\(readings.count) readings measured on \(modelIdentifier)")
         return url
@@ -168,7 +186,7 @@ struct DeviceProfile: Codable, Equatable {
 
     static func forget() {
         try? FileManager.default.removeItem(at: fileURL)
-        cached = nil
+        cache.write(nil)
     }
 
     /// Raises the largest-frame figure when a real capture exceeds it.
@@ -190,7 +208,12 @@ struct DeviceProfile: Codable, Equatable {
             observed,
             samples: (active.worstCaseFrameBytes.sampleCount ?? 0) + 1,
             spread: 0)
-        try? updated.save()
+        do {
+            try updated.save()
+        } catch {
+            logFailure(.app, "save the newly observed frame-size ceiling", error)
+            return
+        }
         logInfo(.app, "largest frame seen on this device is now "
                 + "\(Int(observed / 1_000_000)) MB")
     }

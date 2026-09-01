@@ -111,7 +111,7 @@ private struct BootingView: View {
 private struct CameraDeniedView: View {
     var body: some View {
         ContentUnavailableView {
-            Label("Camera access is off", systemImage: "camera.slash")
+            Label("Camera access is off", systemImage: "exclamationmark.triangle.fill")
         } description: {
             Text("RAWForge cannot probe a sensor, let alone capture one, without it. "
                  + "Nothing else in the app will work until it is granted.")

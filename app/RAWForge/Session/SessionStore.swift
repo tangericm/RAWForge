@@ -305,12 +305,11 @@ enum SessionStore {
 
     /// Removes frames belonging to a station that never closed.
     ///
-    /// The prototype buffers a station in memory so that a phone death takes it
-    /// with it — *"nothing was written; the buffered station goes with it."*
-    /// Holding 240 MB of DNGs in RAM to achieve that would be jetsam bait, so
-    /// frames are written through and this sweep restores the same guarantee at
-    /// launch: a frame whose station has no record is a station that never
-    /// existed, and it goes.
+    /// The station invariant says that a phone death must take an unfinished
+    /// station with it. Holding hundreds of megabytes of DNGs in RAM to achieve
+    /// that would be jetsam bait, so frames are written through and this sweep
+    /// restores the same guarantee at launch: a frame whose station has no
+    /// record is a station that never existed, and it goes.
     ///
     /// Runs before anything else reads the sessions directory, so no orphan is
     /// ever visible in the browser or counted in a capacity estimate.
@@ -333,6 +332,12 @@ enum SessionStore {
                     try? FileManager.default.removeItem(at: f)
                     removed += 1
                 }
+            }
+            for f in files where f.lastPathComponent.hasPrefix("motion-")
+                    && f.pathExtension == "jsonl" {
+                let number = f.deletingPathExtension().lastPathComponent.dropFirst("motion-".count)
+                guard let station = Int(number), !closedStations.contains(station) else { continue }
+                try? FileManager.default.removeItem(at: f)
             }
         }
         return removed

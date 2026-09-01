@@ -10,7 +10,13 @@ import Foundation
 /// for `setExposureModeCustom` being honoured rather than overridden by fusion,
 /// and it is offered only on single-camera devices, so sensor auto-switching
 /// cannot arise once the device is open.
-final class CaptureRig {
+/// `DispatchQueue.async` requires a sendable capture. This type is safe under
+/// the ownership rule used throughout the app: callers use it from the main
+/// actor, while session topology and start/stop operations are serialized on
+/// `sessionQueue`. Configuration publishes its state only before resuming its
+/// checked continuation. The unchecked conformance documents that boundary;
+/// it does not make arbitrary concurrent use supported.
+final class CaptureRig: @unchecked Sendable {
 
     enum RigError: Error, CustomStringConvertible {
         case noDevice(String)
@@ -247,6 +253,7 @@ final class CaptureRig {
                 [back.redGain, back.greenGain, back.blueGain])
     }
 
+    #if DEBUG
     /// Locks explicit per-channel gains rather than a temperature.
     ///
     /// Item 3 needs two *deliberately extreme* and opposite settings, not two
@@ -273,6 +280,7 @@ final class CaptureRig {
         return ([gains.redGain, gains.greenGain, gains.blueGain],
                 [back.redGain, back.greenGain, back.blueGain])
     }
+    #endif
 
     // MARK: - Focus (#18)
 

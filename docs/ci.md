@@ -30,7 +30,7 @@ overhead, not this codebase.
 
 ### Simulator suite
 
-147 tests. 13 of them skip — those are the device-only ones, and **a skip reads
+148 tests. 13 of them skip — those are the device-only ones, and **a skip reads
 as green**, which is the entire reason the hardware gate below exists.
 
 ### Release build and the developer-code check

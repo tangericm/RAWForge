@@ -41,23 +41,6 @@ enum DNGMetadata {
             imageHeight: props[kCGImagePropertyPixelHeight] as? Int)
     }
 
-    /// The full dictionary dump, for the cases where a named tag is missing and
-    /// what is actually in the file is the question.
-    static func dump(_ data: Data) -> [String: String] {
-        guard let src = CGImageSourceCreateWithData(data as CFData, nil),
-              let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any] else {
-            return [:]
-        }
-        var out: [String: String] = [:]
-        for (group, key) in [("DNG", kCGImagePropertyDNGDictionary),
-                             ("EXIF", kCGImagePropertyExifDictionary),
-                             ("TIFF", kCGImagePropertyTIFFDictionary)] {
-            guard let d = props[key] as? [CFString: Any] else { continue }
-            for (k, v) in d { out["\(group).\(k as String)"] = describe(v) ?? "<nil>" }
-        }
-        return out
-    }
-
     private static let empty = FrameRecord.DNGWitness(
         exposureTimeSeconds: nil, iso: nil, asShotNeutral: nil, blackLevel: nil,
         whiteLevel: nil, cfaPattern: nil, activeArea: nil, uniqueCameraModel: nil,

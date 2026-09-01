@@ -6,10 +6,13 @@ import XCTest
 final class StoreIntegrationTests: XCTestCase {
 
     private var created: [String] = []
+    private var createdProtocols: [String] = []
 
     override func tearDown() {
         for id in created { try? SessionStore.deleteSession(id) }
+        for name in createdProtocols { ProtocolLibrary.delete(named: name) }
         created = []
+        createdProtocols = []
         ShotListStore.clear()
         super.tearDown()
     }
@@ -35,6 +38,12 @@ final class StoreIntegrationTests: XCTestCase {
             brackets: [], sensorSwaps: []))
     }
 
+    private func writeMotion(_ session: String, station: Int) throws {
+        let name = String(format: "motion-%03d.jsonl", station)
+        try Data("{}\n".utf8).write(
+            to: SessionStore.directory(for: session).appendingPathComponent(name))
+    }
+
     // MARK: - Filenames
 
     func testFrameFilenameIsZeroPaddedAndSelfDescribing() {
@@ -58,7 +67,8 @@ final class StoreIntegrationTests: XCTestCase {
         let id = try makeSession("Orphan")
         try writeFrame(id, station: 1, frame: 1)
         try writeFrame(id, station: 1, frame: 2)
-        XCTAssertEqual(SessionExport.sizeOnDisk(sessionId: id), 128)
+        try writeMotion(id, station: 1)
+        XCTAssertEqual(SessionStore.frameAndStationCount(sessionId: id).frames, 2)
 
         SessionStore.sweepOrphanedFrames()
 
@@ -66,6 +76,8 @@ final class StoreIntegrationTests: XCTestCase {
             at: SessionStore.directory(for: id), includingPropertiesForKeys: nil)
         XCTAssertTrue(files.filter { $0.pathExtension == "dng" }.isEmpty,
                       "frames of a station that never closed must not survive")
+        XCTAssertFalse(files.contains { $0.lastPathComponent == "motion-001.jsonl" },
+                       "motion from a station that never closed must not survive")
     }
 
     /// And a station that did close must be untouched — the sweep is not a
@@ -73,6 +85,7 @@ final class StoreIntegrationTests: XCTestCase {
     func testSweepPreservesFramesOfAClosedStation() throws {
         let id = try makeSession("Closed")
         try writeFrame(id, station: 1, frame: 1)
+        try writeMotion(id, station: 1)
         try writeStation(id, index: 1)
 
         SessionStore.sweepOrphanedFrames()
@@ -80,6 +93,7 @@ final class StoreIntegrationTests: XCTestCase {
         let files = try FileManager.default.contentsOfDirectory(
             at: SessionStore.directory(for: id), includingPropertiesForKeys: nil)
         XCTAssertEqual(files.filter { $0.pathExtension == "dng" }.count, 1)
+        XCTAssertTrue(files.contains { $0.lastPathComponent == "motion-001.jsonl" })
     }
 
     /// The mixed case is the one that matters: banked stations survive while
@@ -137,6 +151,25 @@ final class StoreIntegrationTests: XCTestCase {
         ShotListStore.save(ShotList(entries: [], cursor: 0), grouped: true)
         ShotListStore.clear()
         XCTAssertNil(ShotListStore.load())
+    }
+
+    // MARK: - Protocol persistence
+
+    func testProtocolLibraryPreservesSequentialFiringMode() throws {
+        let name = "TEST-sequential-\(UUID().uuidString)"
+        createdProtocols.append(name)
+        var captureSet = CaptureSet.repeated(
+            CaptureSpec(shutterSeconds: 1.0 / 125, iso: 100),
+            count: 16,
+            name: name)
+        captureSet.executionMode = .sequential
+
+        _ = try ProtocolLibrary.save(captureSet, as: name)
+
+        XCTAssertEqual(
+            ProtocolLibrary.load(named: name)?.firing,
+            .sequential,
+            "saving through the protocol library must preserve how the frames fire")
     }
 
     // MARK: - Export
