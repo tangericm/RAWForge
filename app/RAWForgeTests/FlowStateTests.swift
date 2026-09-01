@@ -49,66 +49,66 @@ final class FlowStateTests: XCTestCase {
 
     func testWithoutABayerSensorNothingIsOffered() {
         let m = model(canCapture: false)
-        guard case .blocked = m.primaryAction else {
+        guard case .blocked = m.station.primaryAction else {
             return XCTFail("a device with no Bayer sensor must offer no action")
         }
-        XCTAssertFalse(m.primaryAction.isEnabled)
+        XCTAssertFalse(m.station.primaryAction.isEnabled)
     }
 
     func testOpensASessionFirst() {
         let m = model()
-        m.phase = .noSession
-        XCTAssertEqual(m.primaryAction, .openSession)
+        m.station.phase = .noSession
+        XCTAssertEqual(m.station.primaryAction, .openSession)
     }
 
     /// A station with nothing to shoot is not a station, so declaring one is
     /// refused rather than allowed and then found to be empty.
     func testAStationCannotBeDeclaredWithAnEmptyShotList() {
         let m = model()
-        m.phase = .sessionOpen
-        guard case .blocked = m.primaryAction else {
+        m.station.phase = .sessionOpen
+        guard case .blocked = m.station.primaryAction else {
             return XCTFail("an empty shot list must block declaring a station")
         }
     }
 
     func testDeclaresAStationOnceTheListHasSomethingInIt() {
         let m = model()
-        m.phase = .sessionOpen
-        m.shotList.entries = [entry(.wide, frames: 3)]
-        XCTAssertEqual(m.primaryAction, .declareStation)
+        m.station.phase = .sessionOpen
+        m.station.shotList.entries = [entry(.wide, frames: 3)]
+        XCTAssertEqual(m.station.primaryAction, .declareStation)
     }
 
     func testWalksTheShotListOneSetAtATime() {
         let m = model()
-        m.phase = .stationOpen
-        m.shotList.entries = [entry(.wide, frames: 3), entry(.telephoto, frames: 3)]
-        m.shotList.cursor = 0
-        XCTAssertEqual(m.primaryAction, .beginSet(index: 1, total: 2))
-        m.shotList.cursor = 1
-        XCTAssertEqual(m.primaryAction, .beginSet(index: 2, total: 2))
+        m.station.phase = .stationOpen
+        m.station.shotList.entries = [entry(.wide, frames: 3), entry(.telephoto, frames: 3)]
+        m.station.shotList.cursor = 0
+        XCTAssertEqual(m.station.primaryAction, .beginSet(index: 1, total: 2))
+        m.station.shotList.cursor = 1
+        XCTAssertEqual(m.station.primaryAction, .beginSet(index: 2, total: 2))
     }
 
     /// Closing only becomes available once the whole list is done — there is no
     /// partial-completion state because there is no way to leave one.
     func testClosingIsOnlyOfferedOnceTheListIsFinished() {
         let m = model()
-        m.phase = .stationOpen
-        m.shotList.entries = [entry(.wide, frames: 3)]
-        m.shotList.cursor = 0
-        XCTAssertNotEqual(m.primaryAction, .closeStation)
-        m.shotList.cursor = 1
-        XCTAssertEqual(m.primaryAction, .closeStation)
-        XCTAssertTrue(m.primaryAction.isTerminal)
+        m.station.phase = .stationOpen
+        m.station.shotList.entries = [entry(.wide, frames: 3)]
+        m.station.shotList.cursor = 0
+        XCTAssertNotEqual(m.station.primaryAction, .closeStation)
+        m.station.shotList.cursor = 1
+        XCTAssertEqual(m.station.primaryAction, .closeStation)
+        XCTAssertTrue(m.station.primaryAction.isTerminal)
     }
 
     func testNothingIsOfferedWhileAWaitIsRunning() {
         let m = model()
-        m.shotList.entries = [entry(.wide, frames: 3)]
+        m.station.shotList.entries = [entry(.wide, frames: 3)]
         for phase in [StationPhase.swapping, .stilling, .settling, .capturing] {
-            m.phase = phase
-            XCTAssertFalse(m.primaryAction.isEnabled,
+            m.station.phase = phase
+            XCTAssertFalse(m.station.primaryAction.isEnabled,
                            "\(phase.rawValue) must not offer an action")
-            XCTAssertEqual(m.primaryAction.title, phase.title,
+            XCTAssertEqual(m.station.primaryAction.title, phase.title,
                            "a blocked button should say what is being waited on")
         }
     }
@@ -124,41 +124,41 @@ final class FlowStateTests: XCTestCase {
     func testReturningToTheScreenDoesNotStrandAnOpenStation() {
         let m = model()
         m.session = try? SessionStore.open(capability: m.report!)
-        m.phase = .stationOpen
-        m.shotList.entries = [entry(.wide, frames: 3)]
-        m.shotList.cursor = 1
+        m.station.phase = .stationOpen
+        m.station.shotList.entries = [entry(.wide, frames: 3)]
+        m.station.shotList.cursor = 1
 
-        m.startFlow()
+        m.station.startFlow()
 
-        XCTAssertEqual(m.phase, .stationOpen, "an in-flight station must survive a tab switch")
-        XCTAssertEqual(m.primaryAction, .closeStation, "and must still be closeable")
+        XCTAssertEqual(m.station.phase, .stationOpen, "an in-flight station must survive a tab switch")
+        XCTAssertEqual(m.station.primaryAction, .closeStation, "and must still be closeable")
         if let id = m.session?.sessionId { try? SessionStore.deleteSession(id) }
     }
 
     func testStartingWithNoSessionLandsOnTheNoSessionPhase() {
         let m = model()
         m.session = nil
-        m.phase = .capturing          // stale state from a previous run
-        m.startFlow()
+        m.station.phase = .capturing          // stale state from a previous run
+        m.station.startFlow()
         // Still in a station, so it is left alone rather than reset.
-        XCTAssertEqual(m.phase, .capturing)
+        XCTAssertEqual(m.station.phase, .capturing)
 
-        m.phase = .sessionOpen
-        m.startFlow()
-        XCTAssertEqual(m.phase, .noSession)
+        m.station.phase = .sessionOpen
+        m.station.startFlow()
+        XCTAssertEqual(m.station.phase, .noSession)
     }
 
     // MARK: - The shot list itself
 
     func testGroupingBySensorSurvivesARegroup() {
         let m = model()
-        m.groupShotListBySensor = true
-        m.shotList.entries = ShotList.grouped([
+        m.station.groupShotListBySensor = true
+        m.station.shotList.entries = ShotList.grouped([
             entry(.wide, frames: 1), entry(.telephoto, frames: 1), entry(.wide, frames: 2),
         ])
-        m.regroupShotList()
-        XCTAssertEqual(m.shotList.entries.map(\.sensor), [.wide, .wide, .telephoto])
-        XCTAssertEqual(m.shotList.entries.map(\.index), [0, 1, 2],
+        m.station.regroupShotList()
+        XCTAssertEqual(m.station.shotList.entries.map(\.sensor), [.wide, .wide, .telephoto])
+        XCTAssertEqual(m.station.shotList.entries.map(\.index), [0, 1, 2],
                        "indices are renumbered so entry ids stay unique")
     }
 
@@ -166,10 +166,10 @@ final class FlowStateTests: XCTestCase {
     /// than silently undoing the move on the next regroup.
     func testReorderingTurnsGroupingOff() {
         let m = model()
-        m.groupShotListBySensor = true
-        m.shotList.entries = [entry(.wide, frames: 1), entry(.telephoto, frames: 1)]
-        m.moveInShotList(from: IndexSet(integer: 1), to: 0)
-        XCTAssertFalse(m.groupShotListBySensor)
-        XCTAssertEqual(m.shotList.entries.map(\.sensor), [.telephoto, .wide])
+        m.station.groupShotListBySensor = true
+        m.station.shotList.entries = [entry(.wide, frames: 1), entry(.telephoto, frames: 1)]
+        m.station.moveInShotList(from: IndexSet(integer: 1), to: 0)
+        XCTAssertFalse(m.station.groupShotListBySensor)
+        XCTAssertEqual(m.station.shotList.entries.map(\.sensor), [.telephoto, .wide])
     }
 }

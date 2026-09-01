@@ -1,6 +1,41 @@
 # ADR-0001 — What may live on `CaptureModel`
 
-**Status:** accepted · **Date:** 2026-08-14 · **Issue:** [#28](https://github.com/tangericm/RAWForge/issues/28)
+**Status:** accepted, amended 2026-09-01 · **Date:** 2026-08-14 · **Issues:** [#28](https://github.com/tangericm/RAWForge/issues/28), [#32](https://github.com/tangericm/RAWForge/issues/32)
+
+## 2026-09-01 amendment — the station moved
+
+The revisit condition below has been met: #17 and #18 passed their hardware
+gates, and the station now has a real test seam. `StationController` owns the
+shot list, focus continuity, phase transitions, pending records, stillness,
+bank and abort. Camera, persistence, motion, health and time enter through
+narrow interfaces; production adapters use AVFoundation/CoreMotion/Documents,
+while tests use in-memory implementations of those same interfaces.
+
+Station-focused views observe the controller directly. `CaptureModel` is now
+the composition root plus the device probe, protocol library and bench
+coordination; it does not republish the controller's individual properties.
+The old `StationFlow` extension is gone; three app-wide composition calls used
+by boot and the debug bench remain on the root.
+
+The capture executor moved with its camera dependency into
+`LiveStationCapture`. This closes the exact seam the original decision left
+visible: the DEBUG white-balance probe and scene stations now use the same live
+capture adapter, while station lifecycle tests use a deterministic adapter.
+
+During the move, a lifecycle test exposed that framing was requested while
+`busy` was still true. The guard therefore discarded the request and left the
+preview stopped after either capture or abort. Framing now resumes after the
+busy flag clears, and the regression is covered. The same lifecycle tests also
+caught that a pose-specific manual focus plan survived close; close, abort and
+session close now clear it before the next pose.
+
+After the split, `CaptureModel` is 206 lines with five published properties
+(449/26 before #32), and the 375-line `StationFlow` extension no longer exists.
+Six controller tests exercise complete success, sensor return, failure cleanup,
+banking and tab-return paths without constructing a camera.
+
+The historical decision below remains as the evidence for why this extraction
+was deferred rather than attempted without a safety net.
 
 ## Context
 

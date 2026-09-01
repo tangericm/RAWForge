@@ -26,21 +26,17 @@ import Foundation
 /// with everything it needs and hands back an outcome, and the caller applies
 /// that outcome to its own state. Nothing here reaches back.
 ///
-/// ## What is deliberately still coupled
+/// ## The shared capture seam
 ///
-/// The white-balance probe needs to fire a capture set, which is
-/// `CaptureModel.shoot` — 137 lines that were explicitly out of scope for this
-/// ticket, because extracting them buys tidiness and not testability (`shoot`
-/// calls into the rig, the store, and the DNG reader, so testing it needs a
-/// faked rig behind a protocol, which is a design change rather than a move).
-/// It is injected as `SetRunner` instead. That closure is not an accident — it
-/// is the named seam a later ticket would cut along, kept visible rather than
-/// buried.
+/// The white-balance probe and scene stations both need to fire a capture set.
+/// #32 put that executor behind `StationCapturing`; the live implementation is
+/// `LiveStationCapture`, while this model still receives the operation as a
+/// `SetRunner` because a bench run should not own scene lifecycle.
 @MainActor
 final class BenchModel: ObservableObject {
 
-    /// How a capture set is fired. Injected rather than owned: see the note
-    /// above on why `shoot` did not move with these runs.
+    /// How a capture set is fired. Injected rather than owned: the bench asks
+    /// for a capture but does not own the scene controller that normally does.
     typealias SetRunner = (_ specs: [CaptureSpec],
                            _ sensor: SensorCapability.Sensor,
                            _ wb: (set: [Float], readBack: [Float]),
@@ -332,6 +328,6 @@ final class BenchModel: ObservableObject {
     #endif
 
     private static func exposure(from photo: AVCapturePhoto, wb: [Float]) -> FrameRecord.Exposure? {
-        CaptureModel.exposure(from: photo, wb: wb)
+        LiveStationCapture.exposure(from: photo, wb: wb)
     }
 }
