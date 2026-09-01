@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 #
-# Runs the device-only tests on a tethered phone and records that it happened.
+# Runs the Release test suite on a tethered phone and records that it happened.
 #
 # The tests this exists for are the ones a simulator cannot answer: whether
 # a Bayer format is actually offered, whether an exposure lock lands where it
-# was asked, whether a bracket past the ceiling splits at the seam. Everywhere
+# was asked, whether a bracket past the ceiling splits at the seam, and whether
+# repeated production Bench runs leave the camera service usable. Everywhere
 # else they skip, and a skip reads as green.
 #
 # Two refusals are deliberate:
@@ -101,6 +102,8 @@ set +e
 xcodebuild -project RAWForge.xcodeproj -scheme RAWForge \
   -destination "platform=iOS,id=$UDID" \
   -derivedDataPath /tmp/rawforge-hardware \
+  -configuration Release ENABLE_TESTABILITY=YES \
+  -skip-testing:RAWForgeTests/BuildConfigurationTests/testDebugBuildsActuallyDefineDEBUG \
   DEVELOPMENT_TEAM="$TEAM" -allowProvisioningUpdates \
   test 2>&1 | tee "$LOG" | grep -E "Executed [0-9]+ test|TEST SUCCEEDED|TEST FAILED|error:"
 STATUS=${PIPESTATUS[0]}

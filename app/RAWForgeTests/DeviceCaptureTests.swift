@@ -104,6 +104,27 @@ final class DeviceCaptureTests: XCTestCase {
         XCTAssertLessThan(reading.value, 0.010,
                           "characterisation did not use the cheap same-sensor path")
     }
+
+    /// #33 appeared only after repeating the production Bench path: one run
+    /// could pass, then a later maximum-size RAW bracket invalidated the camera
+    /// service until the phone restarted. Three runs in one process preserve
+    /// that state and a final independent frame proves the service is still
+    /// usable rather than merely that the last profile returned.
+    func testReleaseThreeCharacterisationsLeaveTheCameraUsable() async throws {
+        for run in 1...3 {
+            let profile = try await DeviceCharacterisation.run(rig: rig, report: report)
+            XCTAssertTrue(profile.sensorFramePeriod.isMeasured, "run \(run) did not finish")
+            XCTAssertTrue(profile.bracketSeam.isMeasured, "run \(run) did not cross a seam")
+        }
+
+        try await rig.configure(firstSensor.sensor)
+        await rig.startSessionAndWait()
+        _ = try await rig.lockExposure(shutterSeconds: 1.0 / 250,
+                                       iso: max(firstSensor.minISO ?? 100, 100))
+        let photo = try await rig.captureSingle()
+        XCTAssertGreaterThan(photo.fileDataRepresentation()?.count ?? 0, 1_000_000,
+                             "the Bench returned, but the next RAW capture did not")
+    }
     #endif
 
     /// A Bayer capture at any zoom factor other than 1.0 terminates the process

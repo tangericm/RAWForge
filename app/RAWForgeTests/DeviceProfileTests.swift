@@ -184,6 +184,17 @@ final class DeviceProfileTests: XCTestCase {
         XCTAssertEqual(DeviceCharacterisation.spread([]), 0)
     }
 
+    /// Three gaps are enough for a median that rejects one delayed frame. The
+    /// characterisation used to fill the device's entire bracket allowance,
+    /// spending eight 12 MP RAW buffers to learn the same number and making a
+    /// resource-exhaustion failure more likely before the real seam test.
+    func testFramePeriodUsesFourFramesRatherThanTheHardwareMaximum() {
+        XCTAssertEqual(DeviceCharacterisation.framePeriodSampleCount(bracketCeiling: 8), 4)
+        XCTAssertEqual(DeviceCharacterisation.framePeriodSampleCount(bracketCeiling: 4), 4)
+        XCTAssertEqual(DeviceCharacterisation.framePeriodSampleCount(bracketCeiling: 3), 3)
+        XCTAssertEqual(DeviceCharacterisation.framePeriodSampleCount(bracketCeiling: 2), 0)
+    }
+
     // MARK: - Sessions
 
     func testASessionRecordsTheProfileItWasPlannedAgainst() throws {
