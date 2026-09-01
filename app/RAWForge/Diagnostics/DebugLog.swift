@@ -62,7 +62,7 @@ final class DebugLog: @unchecked Sendable {
     struct Entry: Identifiable {
         let id: UInt64
         let at: Date
-        let uptime: TimeInterval
+        let elapsedSinceLaunch: TimeInterval
         let level: Level
         let category: Category
         let message: String
@@ -74,8 +74,8 @@ final class DebugLog: @unchecked Sendable {
         }
 
         var line: String {
-            String(format: "%@ %+9.3f %-5@ %-7@ %@",
-                   clock, uptime, level.label as NSString,
+            String(format: "%@ +%.3fs %-5@ %-7@ %@",
+                   clock, elapsedSinceLaunch, level.label as NSString,
                    category.rawValue as NSString, message)
         }
     }
@@ -98,6 +98,8 @@ final class DebugLog: @unchecked Sendable {
     private let io = DispatchQueue(label: "com.tangericm.rawforge.debuglog", qos: .utility)
     private var handle: FileHandle?
     private let osLog = Logger(subsystem: "com.tangericm.rawforge", category: "rawforge")
+    private let uptime: () -> TimeInterval
+    private var launchOriginUptime: TimeInterval
 
     private static let clockFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -112,7 +114,12 @@ final class DebugLog: @unchecked Sendable {
         return f
     }()
 
-    private init() {}
+    init(uptime: @escaping () -> TimeInterval = {
+        ProcessInfo.processInfo.systemUptime
+    }) {
+        self.uptime = uptime
+        launchOriginUptime = uptime()
+    }
 
     // MARK: - Files
 
@@ -139,6 +146,7 @@ final class DebugLog: @unchecked Sendable {
     /// exactly what an out-of-range zoom or an unhandled AVFoundation exception
     /// does, and neither leaves anything else behind.
     func start(device: DeviceIdentity) {
+        launchOriginUptime = uptime()
         let stamp = Self.stampFormatter.string(from: Date())
         let dir = Self.directory
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -212,7 +220,8 @@ final class DebugLog: @unchecked Sendable {
         nextID += 1
         generationCounter += 1
         counts[level, default: 0] += 1
-        entry = Entry(id: nextID, at: Date(), uptime: ProcessInfo.processInfo.systemUptime,
+        entry = Entry(id: nextID, at: Date(),
+                      elapsedSinceLaunch: max(0, uptime() - launchOriginUptime),
                       level: level, category: category, message: text)
         ring.append(entry)
         // Trimmed in blocks rather than one at a time. `removeFirst(1)` on a

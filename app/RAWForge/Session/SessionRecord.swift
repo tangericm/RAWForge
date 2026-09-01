@@ -36,11 +36,6 @@ struct SessionRecord: Codable, Equatable {
     let sessionId: String
     let openedAt: Date
 
-    /// `systemUptime` at session open. Wall-clock is subject to NTP steps and
-    /// timezone changes; inter-frame gaps (#9) are measured against a
-    /// monotonic clock and anchored here.
-    let openedAtUptime: TimeInterval
-
     let capability: CapabilityReport
 
     /// Recorded at session open (#11), against the conservative capacity figure
@@ -68,7 +63,7 @@ struct SessionRecord: Codable, Equatable {
     }
 
     static let currentFormat = "rawforge.session"
-    static let currentSchemaVersion = 4
+    static let currentSchemaVersion = 5
 
     static func thermalLabel() -> String {
         switch ProcessInfo.processInfo.thermalState {
@@ -80,7 +75,7 @@ struct SessionRecord: Codable, Equatable {
         }
     }
 
-    init(sessionId: String, openedAt: Date, openedAtUptime: TimeInterval,
+    init(sessionId: String, openedAt: Date,
          capability: CapabilityReport, availableCapacityBytes: Int64?,
          sessionType: String = "scene",
          calibrationSessionId: String? = nil, calibrationAgeSeconds: Double? = nil,
@@ -96,11 +91,43 @@ struct SessionRecord: Codable, Equatable {
         self.schemaVersion = Self.currentSchemaVersion
         self.sessionId = sessionId
         self.openedAt = openedAt
-        self.openedAtUptime = openedAtUptime
         self.capability = capability
         self.excluded = capability.excludedSensors.map {
             Exclusion(sensor: $0.sensor.rawValue,
                       reason: $0.exclusionReason ?? "unusable, reason not recorded")
         }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case format, schemaVersion, sessionType
+        case calibrationSessionId, calibrationAgeSeconds, thermalStateAtOpen
+        case sessionId, openedAt, capability
+        case availableCapacityBytesAtOpen, capacityMeasuredWith, deviceProfile, excluded
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        format = try container.decode(String.self, forKey: .format)
+        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        guard format == Self.currentFormat, schemaVersion == Self.currentSchemaVersion else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .schemaVersion,
+                in: container,
+                debugDescription: "unsupported session format \(format) schema \(schemaVersion)")
+        }
+        sessionType = try container.decode(String.self, forKey: .sessionType)
+        calibrationSessionId = try container.decodeIfPresent(
+            String.self, forKey: .calibrationSessionId)
+        calibrationAgeSeconds = try container.decodeIfPresent(
+            Double.self, forKey: .calibrationAgeSeconds)
+        thermalStateAtOpen = try container.decode(String.self, forKey: .thermalStateAtOpen)
+        sessionId = try container.decode(String.self, forKey: .sessionId)
+        openedAt = try container.decode(Date.self, forKey: .openedAt)
+        capability = try container.decode(CapabilityReport.self, forKey: .capability)
+        availableCapacityBytesAtOpen = try container.decodeIfPresent(
+            Int64.self, forKey: .availableCapacityBytesAtOpen)
+        capacityMeasuredWith = try container.decode(String.self, forKey: .capacityMeasuredWith)
+        deviceProfile = try container.decodeIfPresent(DeviceProfile.self, forKey: .deviceProfile)
+        excluded = try container.decode([Exclusion].self, forKey: .excluded)
     }
 }

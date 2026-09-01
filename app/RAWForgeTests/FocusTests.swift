@@ -302,7 +302,7 @@ final class FocusSchemaTests: XCTestCase {
         let old = """
         {"frameIndex":1,"filename":"f.dng","sensor":"1x",
          "requested":{"shutterSeconds":0.01,"iso":100},
-         "dng":{},"capturedAtUptime":12.0,"capturedAt":760000000}
+         "dng":{},"capturedAtSegmentStartSeconds":12.0,"capturedAt":760000000}
         """.data(using: .utf8)!
         let frame = try JSONDecoder().decode(FrameRecord.self, from: old)
         XCTAssertNil(frame.focus, "no focus record is not a claim that focus was unlocked")

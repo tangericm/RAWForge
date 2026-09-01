@@ -200,8 +200,7 @@ final class DeviceProfileTests: XCTestCase {
     func testASessionRecordsTheProfileItWasPlannedAgainst() throws {
         let report = CapabilityReport(device: DeviceIdentity.current(), sensors: [])
         let session = SessionRecord(sessionId: "test", openedAt: Date(),
-                                    openedAtUptime: 0, capability: report,
-                                    availableCapacityBytes: nil)
+                                    capability: report, availableCapacityBytes: nil)
         let round = try JSONDecoder.rawforge.decode(
             SessionRecord.self, from: JSONEncoder.rawforge.encode(session))
         XCTAssertNotNil(round.deviceProfile,

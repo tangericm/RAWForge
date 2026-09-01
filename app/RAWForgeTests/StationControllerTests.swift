@@ -18,7 +18,7 @@ final class StationControllerTests: XCTestCase {
             health: FakeStationHealth(),
             clock: .immediate)
         controller.report = report
-        controller.session = session(report: report)
+        controller.openSession()
         controller.shotList.entries = [entry(.wide, frames: 3)]
         controller.phase = .sessionOpen
 
@@ -133,6 +133,40 @@ final class StationControllerTests: XCTestCase {
         XCTAssertEqual(controller.primaryAction, .closeStation)
     }
 
+    func testBankedFramesAndMotionUseCaptureSegmentRelativeTime() async throws {
+        let report = capabilityReport()
+        let capture = FakeStationCapture()
+        capture.emitsFrame = true
+        let persistence = FakeStationPersistence(report: report)
+        let motion = FakeStationMotion()
+        motion.emitsSamplesAndSummaries = true
+        let controller = StationController(
+            capture: capture,
+            persistence: persistence,
+            motion: motion,
+            health: FakeStationHealth(),
+            clock: testClock(startingUptime: 1_000))
+        controller.report = report
+        controller.openSession()
+        controller.startFlow()
+        controller.addToShotList(
+            .repeated(.init(shutterSeconds: 0.01, iso: 100), count: 1),
+            sensor: .wide)
+        controller.declareStation()
+
+        await controller.beginNextSet()
+        controller.closeStation()
+
+        let station = try XCTUnwrap(persistence.writtenStation)
+        let frame = try XCTUnwrap(station.brackets.first?.frames.first)
+        XCTAssertLessThan(frame.capturedAtSegmentStartSeconds, 10)
+        XCTAssertLessThan(station.motion?.windowEnd ?? 100, 10)
+        XCTAssertLessThan(station.sensorSwaps.first?.motion?.windowEnd ?? 100, 10)
+        XCTAssertLessThan(station.brackets.first?.motionAtFire?.windowEnd ?? 100, 10)
+        XCTAssertEqual(station.captureSegmentID, capture.requests.first?.timebase.segmentID)
+        XCTAssertEqual(station.monotonicTimebase, CaptureTimebase.persistedName)
+    }
+
     // MARK: - Fixtures
 
     private func capabilityReport(
@@ -155,12 +189,6 @@ final class StationControllerTests: XCTestCase {
             minExposureSeconds: 1.0 / 66_000, maxExposureSeconds: 1)
     }
 
-    private func session(report: CapabilityReport) -> SessionRecord {
-        SessionRecord(sessionId: "test-session", openedAt: Date(timeIntervalSince1970: 10),
-                      openedAtUptime: 10, capability: report,
-                      availableCapacityBytes: 1_000_000_000)
-    }
-
     private func entry(_ sensor: SensorCapability.Sensor, frames: Int) -> ShotListEntry {
         ShotListEntry(index: 0, sensor: sensor,
                       captureSet: .repeated(
@@ -178,8 +206,32 @@ final class StationControllerTests: XCTestCase {
             persistence: persistence ?? FakeStationPersistence(report: report),
             motion: FakeStationMotion(), health: FakeStationHealth(), clock: .immediate)
         controller.report = report
-        controller.session = session(report: report)
+        controller.openSession()
         return controller
+    }
+
+    private func testClock(startingUptime: TimeInterval) -> StationClock {
+        let box = TestClockBox(uptime: startingUptime)
+        return StationClock(
+            date: { box.date },
+            uptime: {
+                defer { box.uptime += 0.05 }
+                return box.uptime
+            },
+            sleep: { seconds in
+                box.uptime += max(0, seconds)
+                box.date = box.date.addingTimeInterval(max(0, seconds))
+            })
+    }
+}
+
+private final class TestClockBox {
+    var uptime: TimeInterval
+    var date: Date
+
+    init(uptime: TimeInterval) {
+        self.uptime = uptime
+        date = Date(timeIntervalSince1970: uptime)
     }
 }
 
@@ -191,6 +243,7 @@ private final class FakeStationCapture: StationCapturing {
     var requests: [StationCaptureRequest] = []
     var stopCount = 0
     var captureError: Error?
+    var emitsFrame = false
 
     func prepareForFraming(_ sensor: SensorCapability.Sensor) {
         framingSensors.append(sensor)
@@ -213,7 +266,8 @@ private final class FakeStationCapture: StationCapturing {
                  progress: @escaping (String) -> Void) async throws -> SetShot {
         requests.append(request)
         if let captureError { throw captureError }
-        return SetShot(frames: [], bracketRequestSizes: [request.specs.count])
+        let frames = emitsFrame ? [frameFixture(request: request)] : []
+        return SetShot(frames: frames, bracketRequestSizes: [request.specs.count])
     }
     func stop() { stopCount += 1 }
 }
@@ -223,11 +277,11 @@ private final class FakeStationPersistence: StationPersisting {
     var hasRoom = true
     var writtenStations: [StationRecord] = []
     var deletedStations: [Int] = []
+    var writtenStation: StationRecord? { writtenStations.last }
     init(report: CapabilityReport) { self.report = report }
     func open(capability: CapabilityReport) throws -> SessionRecord {
         SessionRecord(sessionId: "test-session", openedAt: Date(timeIntervalSince1970: 10),
-                      openedAtUptime: 10, capability: capability,
-                      availableCapacityBytes: 1_000_000_000)
+                      capability: capability, availableCapacityBytes: 1_000_000_000)
     }
     func hasRoom(forFrames count: Int) -> Bool { hasRoom }
     func writeMotionStream(_ samples: [MotionSample], sessionId: String,
@@ -238,12 +292,30 @@ private final class FakeStationPersistence: StationPersisting {
 
 private final class FakeStationMotion: StationMotionRecording {
     var startCount = 0
+    var emitsSamplesAndSummaries = false
+    private var timebase: CaptureTimebase?
     let requestedHz: Double = 100
-    func start() { startCount += 1 }
+    func start(timebase: CaptureTimebase) {
+        startCount += 1
+        self.timebase = timebase
+    }
     func stop() {}
-    func summary(from start: TimeInterval, to end: TimeInterval) -> MotionSummary? { nil }
-    func snapshot() -> [MotionSample] { [] }
-    func latestTimestamp() -> TimeInterval? { nil }
+    func summary(from start: TimeInterval, to end: TimeInterval) -> MotionSummary? {
+        guard emitsSamplesAndSummaries else { return nil }
+        return motionSummaryFixture(windowStart: start, windowEnd: end)
+    }
+    func snapshot() -> [MotionSample] {
+        guard emitsSamplesAndSummaries, timebase != nil else { return [] }
+        return [
+            MotionSample(secondsSinceSegmentStart: 0.1,
+                         gx: 0.01, gy: 0, gz: 0, ax: 0.1, ay: 0, az: 0),
+            MotionSample(secondsSinceSegmentStart: 0.2,
+                         gx: 0.01, gy: 0, gz: 0, ax: 0.1, ay: 0, az: 0),
+        ]
+    }
+    func latestTimestamp() -> TimeInterval? {
+        emitsSamplesAndSummaries ? 0.2 : nil
+    }
 }
 
 @MainActor
@@ -254,3 +326,55 @@ private final class FakeStationHealth: StationHealthChecking {
 }
 
 private enum FakeError: Error { case capture }
+
+private func frameFixture(request: StationCaptureRequest) -> FrameRecord {
+    FrameRecord(
+        frameIndex: 1,
+        filename: "frame.dng",
+        sensor: request.sensor.rawValue,
+        requested: FrameRecord.Exposure(
+            shutterSeconds: request.specs[0].shutterSeconds,
+            iso: request.specs[0].iso,
+            whiteBalanceGains: request.whiteBalance.set),
+        deviceAchieved: nil,
+        photoAchieved: nil,
+        dng: FrameRecord.DNGWitness(
+            exposureTimeSeconds: nil, iso: nil, asShotNeutral: nil,
+            blackLevel: nil, whiteLevel: nil, cfaPattern: nil, activeArea: nil,
+            uniqueCameraModel: nil, localizedCameraModel: nil,
+            noiseReductionAppliedCoerced: nil, noiseReductionApplied: nil,
+            noiseProfile: nil, dateTimeOriginal: nil, subsecTimeOriginal: nil,
+            storedImageWidth: nil, imageWidth: nil, imageHeight: nil),
+        focus: request.focus,
+        zoomFactor: 1,
+        capturedAtSegmentStartSeconds: request.timebase.secondsSinceOrigin(
+            request.timebase.originUptime + 2.5),
+        capturedAt: Date(timeIntervalSince1970: 10),
+        photoTimestampSeconds: nil,
+        gapFromPreviousSeconds: nil,
+        clipping: nil,
+        motion: nil,
+        motionNeighbourhood: nil,
+        deliveredAtSegmentStartSeconds: 2.6,
+        latestMotionAtSegmentStartSeconds: 2.55)
+}
+
+private func motionSummaryFixture(
+    windowStart: TimeInterval,
+    windowEnd: TimeInterval
+) -> MotionSummary {
+    MotionSummary(
+        windowStart: windowStart,
+        windowEnd: windowEnd,
+        sampleCount: 10,
+        effectiveHz: 100,
+        worstGapSeconds: 0.01,
+        gyroP50: 0.01,
+        gyroP90: 0.01,
+        gyroP99: 0.01,
+        gyroMax: 0.01,
+        accelP50: 0.1,
+        accelP90: 0.1,
+        accelP99: 0.1,
+        accelMax: 0.1)
+}

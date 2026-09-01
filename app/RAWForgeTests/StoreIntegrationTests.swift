@@ -35,7 +35,9 @@ final class StoreIntegrationTests: XCTestCase {
     private func writeStation(_ session: String, index: Int) throws {
         try SessionStore.writeStation(StationRecord(
             stationIndex: index, sessionId: session, openedAt: Date(), closedAt: Date(),
-            brackets: [], sensorSwaps: []))
+            brackets: [],
+            captureTimebase: CaptureTimebase(segmentID: "test-segment", originUptime: 0),
+            sensorSwaps: []))
     }
 
     private func writeMotion(_ session: String, station: Int) throws {

@@ -31,6 +31,7 @@ struct StationCaptureRequest {
     let firing: ExecutionMode
     let focus: FrameRecord.Focus?
     let minimumGap: TimeInterval
+    let timebase: CaptureTimebase
 }
 
 protocol StationPersisting: AnyObject {
@@ -44,7 +45,7 @@ protocol StationPersisting: AnyObject {
 
 protocol StationMotionRecording: AnyObject {
     var requestedHz: Double { get }
-    func start()
+    func start(timebase: CaptureTimebase)
     func stop()
     func summary(from start: TimeInterval, to end: TimeInterval) -> MotionSummary?
     func snapshot() -> [MotionSample]
@@ -165,6 +166,7 @@ final class StationController: ObservableObject {
     private var stationOpenedAt: Date?
     private var pendingSwaps: [StationRecord.SwapRecord] = []
     private var focusContinuity = FocusContinuity()
+    private var captureTimebase: CaptureTimebase?
 
     private let capture: StationCapturing
     private let persistence: StationPersisting
@@ -235,6 +237,7 @@ final class StationController: ObservableObject {
         guard let report, report.canCapture else { return }
         do {
             let opened = try persistence.open(capability: report)
+            _ = beginCaptureSegment()
             session = opened
             stationIndex = 0
             status = "session \(opened.sessionId) open"
@@ -262,7 +265,7 @@ final class StationController: ObservableObject {
     }
 
     func declareStation() {
-        guard canDeclareStation else { return }
+        guard canDeclareStation, let captureTimebase else { return }
         health.refresh()
         if let fault = health.faultIfUnhealthy() {
             status = "not starting a station — \(fault.operatorNote)"
@@ -281,13 +284,14 @@ final class StationController: ObservableObject {
         stationEstimateSeconds = SessionEstimate.forShotList(
             shotList.entries, minimumGap: minimumGap,
             bracketCeiling: bracketCeiling).typicalSeconds
-        motion.start()
+        motion.start(timebase: captureTimebase)
         set(.stationOpen)
     }
 
     func beginNextSet() async {
         guard canBeginSet, let entry = shotList.current,
-              let session, let capability = capability(entry.sensor) else { return }
+              let session, let captureTimebase,
+              let capability = capability(entry.sensor) else { return }
 
         logInfo(.flow, "set \(shotList.cursor + 1)/\(shotList.entries.count) — "
                 + "\(entry.label), \(entry.frameCount) frame(s), "
@@ -318,14 +322,16 @@ final class StationController: ObservableObject {
                 fromSensor: pendingSwaps.last?.toSensor,
                 toSensor: entry.sensor.rawValue,
                 durationSeconds: swapEnd - swapStart,
-                motion: motion.summary(from: swapStart, to: swapEnd)))
+                motion: motion.summary(from: swapStart, to: swapEnd)?.offsettingWindow(
+                    by: -captureTimebase.originUptime)))
 
             set(.stilling)
             let stillStart = clock.uptime()
             let settled = await waitForStillness()
             let stillWait = clock.uptime() - stillStart
             let now = clock.uptime()
-            let motionAtFire = motion.summary(from: now - 0.4, to: now)
+            let motionAtFire = motion.summary(from: now - 0.4, to: now)?.offsettingWindow(
+                by: -captureTimebase.originUptime)
             stillnessLive = ""
 
             set(.settling)
@@ -361,7 +367,8 @@ final class StationController: ObservableObject {
                 stationIndex: stationIndex,
                 bracketIndex: pendingBrackets.count + 1,
                 firing: entry.captureSet.firing, focus: focus,
-                minimumGap: minimumGap)
+                minimumGap: minimumGap,
+                timebase: captureTimebase)
             let shot = try await capture.capture(request) { [weak self] message in
                 self?.progress = message
             }
@@ -398,7 +405,7 @@ final class StationController: ObservableObject {
     }
 
     func closeStation() {
-        guard canCloseStation, let session else { return }
+        guard canCloseStation, let session, let captureTimebase else { return }
         motion.stop()
         let samples = motion.snapshot()
         let streamFile = samples.isEmpty ? nil
@@ -410,6 +417,7 @@ final class StationController: ObservableObject {
             openedAt: stationOpenedAt ?? clock.date(),
             closedAt: clock.date(),
             brackets: pendingBrackets,
+            captureTimebase: captureTimebase,
             sensorSwaps: pendingSwaps,
             motion: samples.isEmpty ? nil : MotionSummary.over(
                 samples, from: samples.first!.t, to: samples.last!.t),
@@ -460,6 +468,7 @@ final class StationController: ObservableObject {
     func closeSession() {
         guard phase == .sessionOpen else { return }
         session = nil
+        captureTimebase = nil
         shotList.cursor = 0
         resetFocusForNextPose()
         set(.noSession)
@@ -533,6 +542,14 @@ final class StationController: ObservableObject {
     private func resetFocusForNextPose() {
         focusPlan = FocusPlan()
         focusContinuity.reset()
+    }
+
+    private func beginCaptureSegment() -> CaptureTimebase {
+        let created = CaptureTimebase(
+            segmentID: UUID().uuidString,
+            originUptime: clock.uptime())
+        captureTimebase = created
+        return created
     }
 
     private func set(_ newPhase: StationPhase) {

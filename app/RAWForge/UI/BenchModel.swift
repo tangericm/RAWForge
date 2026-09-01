@@ -43,7 +43,8 @@ final class BenchModel: ObservableObject {
                            _ session: SessionRecord,
                            _ station: Int,
                            _ bracketIndex: Int,
-                           _ firing: ExecutionMode) async throws -> SetShot
+                           _ firing: ExecutionMode,
+                           _ timebase: CaptureTimebase) async throws -> SetShot
 
     private let rig: CaptureRig
     private let motionRecorder: MotionRecorder
@@ -93,6 +94,9 @@ final class BenchModel: ObservableObject {
 
         running = true
         defer { running = false; darkProgress = "" }
+        let captureTimebase = CaptureTimebase(
+            segmentID: UUID().uuidString,
+            originUptime: ProcessInfo.processInfo.systemUptime)
 
         let plannedFrames = request.sensors.count * request.set.specs.count * request.repeats
         logInfo(.probe, "dark calibration starting — \(request.sensors.count) sensor(s) × "
@@ -178,11 +182,14 @@ final class BenchModel: ObservableObject {
                             // managed", which is true, rather than reporting a
                             // lens position that means nothing here.
                             dng: witness, focus: nil, zoomFactor: rig.currentZoomFactor,
-                            capturedAtUptime: ProcessInfo.processInfo.systemUptime,
+                            capturedAtSegmentStartSeconds: captureTimebase.secondsSinceOrigin(
+                                ProcessInfo.processInfo.systemUptime),
                             capturedAt: Date(), photoTimestampSeconds:
                                 photo.timestamp.isValid ? photo.timestamp.seconds : nil,
                             gapFromPreviousSeconds: nil, clipping: clip, motion: nil,
-                            motionNeighbourhood: nil, uptimeAtDelivery: nil, latestMotionTimestamp: nil))
+                            motionNeighbourhood: nil,
+                            deliveredAtSegmentStartSeconds: nil,
+                            latestMotionAtSegmentStartSeconds: nil))
                     }
                 } catch {
                     aborted = true
@@ -248,6 +255,9 @@ final class BenchModel: ObservableObject {
         defer { running = false }
 
         let openedAt = Date()
+        let captureTimebase = CaptureTimebase(
+            segmentID: UUID().uuidString,
+            originUptime: ProcessInfo.processInfo.systemUptime)
         let checked = request.set.validated(against: request.capability)
         guard !checked.kept.isEmpty else {
             return Outcome(status: "every rung is outside the rails")
@@ -258,7 +268,7 @@ final class BenchModel: ObservableObject {
             ("cool r1 g1 b3", 1, 1, 3),
         ]
         var brackets: [BracketRecord] = []
-        motionRecorder.start()
+        motionRecorder.start(timebase: captureTimebase)
         do {
             try await rig.configure(request.sensor)
             await rig.startSessionAndWait()
@@ -266,7 +276,8 @@ final class BenchModel: ObservableObject {
                 darkProgress = "WB probe — \(arm.0)"
                 let wb = try await rig.lockWhiteBalanceGains(r: arm.1, g: arm.2, b: arm.3)
                 let shot = try await request.run(checked.kept, request.sensor, wb, request.session,
-                                                 request.stationIndex, i + 1, request.set.firing)
+                                                 request.stationIndex, i + 1, request.set.firing,
+                                                 captureTimebase)
                 brackets.append(BracketRecord(
                     bracketIndex: i + 1, sensor: request.sensor.rawValue,
                     sensorUniqueID: request.capability.uniqueID,
@@ -283,6 +294,7 @@ final class BenchModel: ObservableObject {
             let record = StationRecord(
                 stationIndex: request.stationIndex, sessionId: request.session.sessionId,
                 openedAt: openedAt, closedAt: Date(), brackets: brackets,
+                captureTimebase: captureTimebase,
                 motionRequestedHz: motionRecorder.requestedHz,
                 poseIntent: request.poseIntent.isEmpty
                     ? "item3 white-balance pixel path" : request.poseIntent)
