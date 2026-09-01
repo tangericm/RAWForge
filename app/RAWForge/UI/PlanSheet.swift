@@ -16,15 +16,21 @@ import SwiftUI
 /// record described something other than what was shot.
 struct PlanSheet: View {
     @ObservedObject var model: CaptureModel
+    @ObservedObject var station: StationController
     @Environment(\.dismiss) private var dismiss
     @State private var creatingProtocol = false
 
-    private var isEditable: Bool { model.phase == .sessionOpen || model.phase == .noSession }
+    init(model: CaptureModel) {
+        self.model = model
+        self.station = model.station
+    }
+
+    private var isEditable: Bool { station.phase == .sessionOpen || station.phase == .noSession }
 
     private var estimate: SessionEstimate {
-        SessionEstimate.forShotList(model.shotList.entries,
-                                    minimumGap: model.minimumGap,
-                                    bracketCeiling: model.bracketCeiling)
+        SessionEstimate.forShotList(station.shotList.entries,
+                                    minimumGap: station.minimumGap,
+                                    bracketCeiling: station.bracketCeiling)
     }
 
     var body: some View {
@@ -32,14 +38,14 @@ struct PlanSheet: View {
             List {
                 if !isEditable { lockedNotice }
                 shotListSection
-                if !model.shotList.entries.isEmpty { summarySection }
+                if !station.shotList.entries.isEmpty { summarySection }
                 settingsSection
             }
             .navigationTitle("Plan")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    if isEditable && !model.shotList.entries.isEmpty { EditButton() }
+                    if isEditable && !station.shotList.entries.isEmpty { EditButton() }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }.bold()
@@ -62,11 +68,11 @@ struct PlanSheet: View {
 
     private var shotListSection: some View {
         Section {
-            if model.shotList.entries.isEmpty {
+            if station.shotList.entries.isEmpty {
                 Text("Nothing planned. A station with nothing to shoot is not a station.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            ForEach(Array(model.shotList.entries.enumerated()), id: \.element.id) { i, e in
+            ForEach(Array(station.shotList.entries.enumerated()), id: \.element.id) { i, e in
                 HStack(spacing: 10) {
                     ZStack {
                         Circle().fill(pipColour(i)).frame(width: 22, height: 22)
@@ -79,21 +85,21 @@ struct PlanSheet: View {
                             .font(.caption2).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    if i < model.shotList.cursor {
+                    if i < station.shotList.cursor {
                         Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                     }
                 }
             }
-            .onDelete { if isEditable { model.removeFromShotList(at: $0) } }
-            .onMove { s, d in if isEditable { model.moveInShotList(from: s, to: d) } }
+            .onDelete { if isEditable { station.removeFromShotList(at: $0) } }
+            .onMove { s, d in if isEditable { station.moveInShotList(from: s, to: d) } }
 
             if isEditable { addControl }
         } header: {
             HStack {
                 Text("Shot list")
                 Spacer()
-                if !model.shotList.entries.isEmpty {
-                    Text("\(model.shotList.totalFrames) frames").font(.caption2)
+                if !station.shotList.entries.isEmpty {
+                    Text("\(station.shotList.totalFrames) frames").font(.caption2)
                 }
             }
         }
@@ -115,13 +121,13 @@ struct PlanSheet: View {
                 ForEach(model.savedProtocols, id: \.name) { p in
                     if sensors.count <= 1, let only = sensors.first {
                         Button("\(p.name) · \(p.specs.count) frames") {
-                            model.addToShotList(p, sensor: only.sensor)
+                            station.addToShotList(p, sensor: only.sensor)
                         }
                     } else {
                         Menu("\(p.name) · \(p.specs.count) frames") {
                             ForEach(sensors) { cap in
                                 Button(cap.sensor.rawValue) {
-                                    model.addToShotList(p, sensor: cap.sensor)
+                                    station.addToShotList(p, sensor: cap.sensor)
                                 }
                             }
                         }
@@ -143,26 +149,26 @@ struct PlanSheet: View {
     /// invite a visit it does not need.
     private var advancedSummary: String {
         var bits: [String] = []
-        if model.dwell > 0 { bits.append(String(format: "%.2f s dwell", model.dwell)) }
-        if model.minimumGap > 0 && hasSequentialSet {
-            bits.append(String(format: "%.2f s gap", model.minimumGap))
+        if station.dwell > 0 { bits.append(String(format: "%.2f s dwell", station.dwell)) }
+        if station.minimumGap > 0 && hasSequentialSet {
+            bits.append(String(format: "%.2f s gap", station.minimumGap))
         }
         return bits.isEmpty ? "defaults" : bits.joined(separator: " · ")
     }
 
     private var hasSequentialSet: Bool {
-        model.shotList.entries.contains { $0.captureSet.firing == .sequential }
+        station.shotList.entries.contains { $0.captureSet.firing == .sequential }
     }
 
     /// The sensors this station will actually use, in the order they appear.
     private var plannedSensors: [SensorCapability.Sensor] {
         var seen: [SensorCapability.Sensor] = []
-        for e in model.shotList.entries where !seen.contains(e.sensor) { seen.append(e.sensor) }
+        for e in station.shotList.entries where !seen.contains(e.sensor) { seen.append(e.sensor) }
         return seen
     }
 
     private func pipColour(_ i: Int) -> Color {
-        i < model.shotList.cursor ? .green : i == model.shotList.cursor ? .accentColor : .secondary
+        i < station.shotList.cursor ? .green : i == station.shotList.cursor ? .accentColor : .secondary
     }
 
     // MARK: - What it will cost
@@ -215,11 +221,11 @@ struct PlanSheet: View {
     private var settingsSection: some View {
         Section {
             NavigationLink {
-                PoseIntentView(model: model)
+                PoseIntentView(station: station)
             } label: {
                 LabeledContent("Pose") {
-                    Text(model.poseIntent.isEmpty ? "unset" : model.poseIntent)
-                        .foregroundStyle(model.poseIntent.isEmpty ? .orange : .secondary)
+                    Text(station.poseIntent.isEmpty ? "unset" : station.poseIntent)
+                        .foregroundStyle(station.poseIntent.isEmpty ? .orange : .secondary)
                 }
             }
             // Focus sits beside Pose because it is the same kind of thing: a
@@ -230,7 +236,7 @@ struct PlanSheet: View {
                 FocusPreflightView(model: model)
             } label: {
                 LabeledContent("Focus") {
-                    Text(model.focusPlan.summary(for: plannedSensors))
+                    Text(station.focusPlan.summary(for: plannedSensors))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -238,7 +244,7 @@ struct PlanSheet: View {
             // no longer a switch here. It is chosen when the protocol is
             // written, and shown on every row of the shot list.
             NavigationLink {
-                AdvancedView(model: model)
+                AdvancedView(station: station)
             } label: {
                 LabeledContent("Advanced") {
                     Text(advancedSummary).foregroundStyle(.secondary)
@@ -251,10 +257,10 @@ struct PlanSheet: View {
                     Text("\(model.savedProtocols.count) saved").foregroundStyle(.secondary)
                 }
             }
-            if isEditable && !model.shotList.entries.isEmpty {
-                Toggle("Group by sensor", isOn: $model.groupShotListBySensor)
-                    .onChange(of: model.groupShotListBySensor) { model.regroupShotList() }
-                Button("Clear shot list", role: .destructive) { model.clearShotList() }
+            if isEditable && !station.shotList.entries.isEmpty {
+                Toggle("Group by sensor", isOn: $station.groupShotListBySensor)
+                    .onChange(of: station.groupShotListBySensor) { station.regroupShotList() }
+                Button("Clear shot list", role: .destructive) { station.clearShotList() }
             }
         }
     }
@@ -278,19 +284,19 @@ private struct StationTimelineView: View {
 /// typo, one left blank — so the presets make the ordinary case one tap without
 /// constraining what a station can be.
 private struct PoseIntentView: View {
-    @ObservedObject var model: CaptureModel
+    @ObservedObject var station: StationController
 
     var body: some View {
         List {
             Section {
                 ForEach(CaptureModel.poseIntentPresets, id: \.self) { preset in
                     Button {
-                        model.poseIntent = preset
+                        station.poseIntent = preset
                     } label: {
                         HStack {
                             Text(preset)
                             Spacer()
-                            if model.poseIntent == preset {
+                            if station.poseIntent == preset {
                                 Image(systemName: "checkmark").foregroundStyle(.tint)
                             }
                         }
@@ -299,9 +305,9 @@ private struct PoseIntentView: View {
                 }
             }
             Section("Or describe it") {
-                TextField("how the phone is held", text: $model.poseIntent)
+                TextField("how the phone is held", text: $station.poseIntent)
             }
-            if model.poseIntent.isEmpty {
+            if station.poseIntent.isEmpty {
                 Section {
                     Label("An unlabelled station cannot be told apart later from one held "
                           + "differently.", systemImage: "exclamationmark.triangle.fill")
@@ -320,10 +326,10 @@ private struct PoseIntentView: View {
 /// they are here rather than in the plan proper — but neither is cut, because
 /// each is the only lever for a case the app cannot rule out.
 private struct AdvancedView: View {
-    @ObservedObject var model: CaptureModel
+    @ObservedObject var station: StationController
 
     private var hasSequentialSet: Bool {
-        model.shotList.entries.contains { $0.captureSet.firing == .sequential }
+        station.shotList.entries.contains { $0.captureSet.firing == .sequential }
     }
 
     var body: some View {
@@ -333,19 +339,19 @@ private struct AdvancedView: View {
                 // is one hardware request with nowhere to insert a wait, so the
                 // control would silently do nothing.
                 if hasSequentialSet {
-                    Stepper(value: $model.minimumGap, in: 0...5, step: 0.25) {
+                    Stepper(value: $station.minimumGap, in: 0...5, step: 0.25) {
                         LabeledContent("Min gap between frames",
-                                       value: model.minimumGap == 0 ? "none"
-                                              : String(format: "%.2f s", model.minimumGap))
+                                       value: station.minimumGap == 0 ? "none"
+                                              : String(format: "%.2f s", station.minimumGap))
                     }
                     Text("Sequential only. Spaces frames deliberately — to pace a long run "
                          + "rather than let it heat the sensor.")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
-                Stepper(value: $model.dwell, in: 0...5, step: 0.25) {
+                Stepper(value: $station.dwell, in: 0...5, step: 0.25) {
                     LabeledContent("Extra dwell before first frame",
-                                   value: model.dwell == 0 ? "none"
-                                          : String(format: "%.2f s", model.dwell))
+                                   value: station.dwell == 0 ? "none"
+                                          : String(format: "%.2f s", station.dwell))
                 }
                 Text("The flow already waits 0.4 s for the tap transient to decay — the measured "
                      + "time a finger-lift takes. Add dwell only for a mount that rings longer.")

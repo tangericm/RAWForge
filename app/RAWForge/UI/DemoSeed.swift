@@ -72,12 +72,12 @@ enum DemoSeed {
     /// makes the cross-sensor mapping offer appear on the other sensor.
     @MainActor static func applyFocus(to model: CaptureModel) {
         switch value {
-        case "focus":       model.focusPlan[.wide] = .manual(lensPosition: 0.42)
+        case "focus":       model.station.focusPlan[.wide] = .manual(lensPosition: 0.42)
         // Seeded on the *telephoto* so the screen opens on the wide with the
         // mapping on offer — the offer only appears on a sensor still set to
         // automatic, so seeding the wide would have hidden the thing this
         // demo exists to show.
-        case "focus-point": model.focusPlan[.telephoto] = .point(x: 0.35, y: 0.42)
+        case "focus-point": model.station.focusPlan[.telephoto] = .point(x: 0.35, y: 0.42)
         default:            break
         }
     }
@@ -100,14 +100,14 @@ enum DemoSeed {
             CaptureSpec(shutterSeconds: 1.0 / 250, iso: 100), count: 16, name: "repeat-16")
         repeated.executionMode = .sequential
 
-        model.shotList = ShotList(entries: wantsSingleSensor
+        model.station.shotList = ShotList(entries: wantsSingleSensor
             ? [ShotListEntry(index: 0, sensor: .wide, captureSet: sweep),
                ShotListEntry(index: 1, sensor: .wide, captureSet: repeated)]
             : [ShotListEntry(index: 0, sensor: .wide, captureSet: sweep),
                ShotListEntry(index: 1, sensor: .telephoto, captureSet: repeated)],
             cursor: 0)
-        model.poseIntent = "tripod-rigid"
-        model.phase = .sessionOpen
+        model.station.poseIntent = "tripod-rigid"
+        model.station.phase = .sessionOpen
         applyFocus(to: model)
     }
 }

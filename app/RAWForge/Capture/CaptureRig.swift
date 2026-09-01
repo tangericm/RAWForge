@@ -414,29 +414,6 @@ final class CaptureRig: @unchecked Sendable {
 
     // MARK: - Focus (#18)
 
-    /// A focus decision with everything already worked out: the point mapped
-    /// into *this* sensor's frame, and any exact position carried over from an
-    /// earlier lock on this same sensor.
-    ///
-    /// The rig deliberately does no resolving of its own. Which sensor a point
-    /// came from and whether a stored position is still applicable are facts
-    /// about the station, and a rig that guessed at them would be inventing
-    /// context it does not have.
-    struct FocusResolution {
-        var intent: FocusPlan.Intent = .automatic
-
-        /// Already in `AVCaptureDevice` coordinates, already mapped.
-        var point: CGPoint?
-        var mappedFrom: String?
-
-        /// A lens position measured earlier **on this sensor**, to be
-        /// re-commanded exactly rather than re-hunted. Only ever set by a
-        /// caller that knows the sensor has not changed.
-        var restore: Float?
-
-        var note: String?
-    }
-
     /// How long autofocus is given before the app stops waiting and records
     /// that it did. Generous rather than tight: a focus sweep in low light runs
     /// past a second, and the failure mode this guards against is a station

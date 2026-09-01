@@ -135,6 +135,12 @@ private struct CameraDeniedView: View {
 /// the answer needs checking.
 struct BenchView: View {
     @ObservedObject var model: CaptureModel
+    @ObservedObject var stationController: StationController
+
+    init(model: CaptureModel) {
+        self.model = model
+        self.stationController = model.station
+    }
 
     var body: some View {
         List {
@@ -217,7 +223,7 @@ struct BenchView: View {
                        state: model.bench.zoomProbe == nil ? "not run this launch" : "run this launch")
             }
             #endif
-            if let station = model.lastStation {
+            if let station = stationController.lastStation {
                 NavigationLink {
                     LastStationView(station: station)
                 } label: {

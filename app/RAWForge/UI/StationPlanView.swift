@@ -9,18 +9,24 @@ import SwiftUI
 /// worst case it is labelled as one.
 struct StationPlanView: View {
     @ObservedObject var model: CaptureModel
+    @ObservedObject var station: StationController
     @State private var calibration: EstimateCalibration = .identity
 
+    init(model: CaptureModel) {
+        self.model = model
+        self.station = model.station
+    }
+
     private var estimate: SessionEstimate {
-        SessionEstimate.forShotList(model.shotList.entries,
-                                    minimumGap: model.minimumGap,
-                                    bracketCeiling: model.bracketCeiling)
+        SessionEstimate.forShotList(station.shotList.entries,
+                                    minimumGap: station.minimumGap,
+                                    bracketCeiling: station.bracketCeiling)
     }
 
     var body: some View {
         let e = estimate
         return Group {
-            if model.shotList.entries.isEmpty {
+            if station.shotList.entries.isEmpty {
                 Section { Text("Nothing planned yet.").font(.caption).foregroundStyle(.secondary) }
             } else {
                 Section("Where the time goes") {
@@ -36,11 +42,11 @@ struct StationPlanView: View {
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 Section("Timeline") {
-                    StationTimeline(entries: model.shotList.entries,
-                                    cursor: model.shotList.cursor,
+                    StationTimeline(entries: station.shotList.entries,
+                                    cursor: station.shotList.cursor,
                                     estimate: e,
-                                    minimumGap: model.minimumGap,
-                                    bracketCeiling: model.bracketCeiling)
+                                    minimumGap: station.minimumGap,
+                                    bracketCeiling: station.bracketCeiling)
                         .padding(.vertical, 4)
                 }
                 Section("Totals") { budget(e) }

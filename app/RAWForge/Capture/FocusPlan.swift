@@ -75,6 +75,23 @@ struct FocusPlan: Codable, Equatable {
     }
 }
 
+/// A focus decision with everything already resolved for one sensor.
+///
+/// This belongs to the capture domain rather than to `CaptureRig`: both the
+/// station controller and the live camera adapter exchange it, and neither
+/// should have to name the other's concrete type.
+struct FocusResolution {
+    var intent: FocusPlan.Intent = .automatic
+
+    /// Already in capture-device coordinates, already mapped.
+    var point: CGPoint?
+    var mappedFrom: String?
+
+    /// A lens position measured earlier on this same sensor.
+    var restore: Float?
+    var note: String?
+}
+
 /// What focus carries across a sensor swap, and what cannot.
 ///
 /// A station is one pose, and every set in it should be focused the same way.
@@ -105,9 +122,9 @@ struct FocusContinuity {
 
     /// What to ask the rig for, bringing this sensor up.
     func resolution(for sensor: SensorCapability.Sensor,
-                    plan: FocusPlan) -> CaptureRig.FocusResolution {
+                    plan: FocusPlan) -> FocusResolution {
         let intent = plan[sensor]
-        var r = CaptureRig.FocusResolution(intent: intent)
+        var r = FocusResolution(intent: intent)
 
         switch intent {
         case .manual:
