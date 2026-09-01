@@ -16,6 +16,7 @@ import SwiftUI
 /// difference between an instrument and a frozen screen.
 struct CaptureFlowView: View {
     @ObservedObject var model: CaptureModel
+    @ObservedObject var station: StationController
     /// Jumps to the console. A fault is the moment the log is worth reading,
     /// and making the operator find the tab is making them find it later.
     var showConsole: () -> Void = {}
@@ -28,6 +29,12 @@ struct CaptureFlowView: View {
     }()
     @State private var showingFault = true
     @State private var confirmingAbandon = false
+
+    init(model: CaptureModel, showConsole: @escaping () -> Void = {}) {
+        self.model = model
+        self.station = model.station
+        self.showConsole = showConsole
+    }
 
     var body: some View {
         ZStack {
@@ -53,16 +60,16 @@ struct CaptureFlowView: View {
         .sheet(isPresented: $showingPlan) { PlanSheet(model: model) }
         .confirmationDialog("Abandon this station?", isPresented: $confirmingAbandon,
                             titleVisibility: .visible) {
-            Button("Abandon station \(model.stationIndex)", role: .destructive) {
-                model.abortStation(.abandoned)
+            Button("Abandon station \(station.stationIndex)", role: .destructive) {
+                station.abortStation(.abandoned)
             }
             Button("Keep shooting", role: .cancel) {}
         } message: {
-            Text("Its \(model.pendingBrackets.reduce(0) { $0 + $1.frames.count }) frame(s) so far "
+            Text("Its \(station.pendingBrackets.reduce(0) { $0 + $1.frames.count }) frame(s) so far "
                  + "will be deleted. Stations already banked are untouched.")
         }
-        .onAppear { model.startFlow() }
-        .onChange(of: model.lastFault) { showingFault = model.lastFault != nil }
+        .onAppear { station.startFlow() }
+        .onChange(of: station.lastFault) { showingFault = station.lastFault != nil }
     }
 
     // MARK: - Header
@@ -71,11 +78,11 @@ struct CaptureFlowView: View {
     private var header: some View {
         HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                if let s = model.session {
+                if let s = station.session {
                     Text(s.sessionId).font(.caption2).monospaced().foregroundStyle(.secondary)
-                    if model.phase.isInStation {
-                        Text("Station \(model.stationIndex)"
-                             + (model.poseIntent.isEmpty ? "" : " · \(model.poseIntent)"))
+                    if station.phase.isInStation {
+                        Text("Station \(station.stationIndex)"
+                             + (station.poseIntent.isEmpty ? "" : " · \(station.poseIntent)"))
                             .font(.caption).bold()
                     }
                 } else {
@@ -111,14 +118,14 @@ struct CaptureFlowView: View {
     /// One pip per set, so how far through the station it is can be read
     /// without counting.
     @ViewBuilder private var setProgress: some View {
-        if model.phase.isInStation && model.shotList.entries.count > 1 {
+        if station.phase.isInStation && station.shotList.entries.count > 1 {
             HStack(spacing: 5) {
-                ForEach(Array(model.shotList.entries.enumerated()), id: \.element.id) { i, _ in
+                ForEach(Array(station.shotList.entries.enumerated()), id: \.element.id) { i, _ in
                     Capsule()
-                        .fill(i < model.shotList.cursor ? Color.accentColor
-                              : i == model.shotList.cursor ? Color.accentColor.opacity(0.5)
+                        .fill(i < station.shotList.cursor ? Color.accentColor
+                              : i == station.shotList.cursor ? Color.accentColor.opacity(0.5)
                               : Color.white.opacity(0.25))
-                        .frame(width: i == model.shotList.cursor ? 18 : 8, height: 4)
+                        .frame(width: i == station.shotList.cursor ? 18 : 8, height: 4)
                 }
             }
             .padding(.vertical, 6).padding(.horizontal, 10)
@@ -131,9 +138,9 @@ struct CaptureFlowView: View {
 
     private var deck: some View {
         VStack(spacing: 12) {
-            if let f = model.lastFault, showingFault { faultBanner(f) }
+            if let f = station.lastFault, showingFault { faultBanner(f) }
             // The set just shot, while the light and the pose are still there.
-            if let last = model.pendingBrackets.last, !last.frames.isEmpty, !model.busy {
+            if let last = station.pendingBrackets.last, !last.frames.isEmpty, !station.busy {
                 SetClippingSummary(frames: last.frames)
             }
             phaseLine
@@ -150,13 +157,13 @@ struct CaptureFlowView: View {
     private var phaseLine: some View {
         VStack(spacing: 3) {
             HStack(spacing: 6) {
-                if model.busy {
+                if station.busy {
                     ProgressView().controlSize(.small)
                 }
-                Text(model.phase.title)
+                Text(station.phase.title)
                     .font(.subheadline).bold()
                 Spacer()
-                if model.phase.isInStation, let e = model.stationEstimateSeconds {
+                if station.phase.isInStation, let e = station.stationEstimateSeconds {
                     Text("~\(SessionEstimate.formatDuration(e)) planned")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
@@ -173,15 +180,15 @@ struct CaptureFlowView: View {
     }
 
     private var detail: String {
-        if !model.progress.isEmpty { return model.progress }
-        if !model.stillnessLive.isEmpty { return model.stillnessLive }
-        return model.phase.note
+        if !station.progress.isEmpty { return station.progress }
+        if !station.stillnessLive.isEmpty { return station.stillnessLive }
+        return station.phase.note
     }
 
     private var primaryButton: some View {
-        let action = model.primaryAction
+        let action = station.primaryAction
         return Button {
-            model.performPrimaryAction()
+            station.performPrimaryAction()
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: action.systemImage)
@@ -192,7 +199,7 @@ struct CaptureFlowView: View {
         }
         .buttonStyle(.borderedProminent)
         .tint(action.isTerminal ? .green : .accentColor)
-        .disabled(!action.isEnabled || model.busy)
+        .disabled(!action.isEnabled || station.busy)
         .animation(.easeInOut(duration: 0.15), value: action)
     }
 
@@ -207,11 +214,11 @@ struct CaptureFlowView: View {
 
             Spacer()
 
-            if model.phase == .sessionOpen {
-                Button("Close session") { model.closeSession() }
+            if station.phase == .sessionOpen {
+                Button("Close session") { station.closeSession() }
                     .font(.caption).buttonStyle(.bordered)
             }
-            if model.phase.isInStation && !model.shotList.canClose {
+            if station.phase.isInStation && !station.shotList.canClose {
                 // Present at every point a station is in flight, because the
                 // reason to stop is usually that the pose is already lost.
                 Button(role: .destructive) {
@@ -225,9 +232,9 @@ struct CaptureFlowView: View {
     }
 
     private var planLabel: String {
-        let n = model.shotList.entries.count
+        let n = station.shotList.entries.count
         if n == 0 { return "Build shot list" }
-        return "\(n) set\(n == 1 ? "" : "s") · \(model.shotList.totalFrames) frames"
+        return "\(n) set\(n == 1 ? "" : "s") · \(station.shotList.totalFrames) frames"
     }
 
     private func faultBanner(_ f: StationFault) -> some View {
