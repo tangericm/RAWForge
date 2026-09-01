@@ -159,10 +159,32 @@ final class StationControllerTests: XCTestCase {
 
         let station = try XCTUnwrap(persistence.writtenStation)
         let frame = try XCTUnwrap(station.brackets.first?.frames.first)
-        XCTAssertLessThan(frame.capturedAtSegmentStartSeconds, 10)
-        XCTAssertLessThan(station.motion?.windowEnd ?? 100, 10)
-        XCTAssertLessThan(station.sensorSwaps.first?.motion?.windowEnd ?? 100, 10)
-        XCTAssertLessThan(station.brackets.first?.motionAtFire?.windowEnd ?? 100, 10)
+        let delivered = try XCTUnwrap(frame.deliveredAtSegmentStartSeconds)
+        let latestMotion = try XCTUnwrap(frame.latestMotionAtSegmentStartSeconds)
+        let stationMotion = try XCTUnwrap(station.motion)
+        let swapMotion = try XCTUnwrap(station.sensorSwaps.first?.motion)
+        let motionAtFire = try XCTUnwrap(station.brackets.first?.motionAtFire)
+
+        XCTAssertEqual(frame.capturedAtSegmentStartSeconds, 2.5, accuracy: 0.000_001)
+        XCTAssertEqual(delivered, 2.6, accuracy: 0.000_001)
+        XCTAssertEqual(latestMotion, 2.55, accuracy: 0.000_001)
+        XCTAssertEqual(stationMotion.windowStart, 0.1, accuracy: 0.000_001)
+        XCTAssertEqual(stationMotion.windowEnd, 0.2, accuracy: 0.000_001)
+        XCTAssertEqual(swapMotion.windowStart, 0.05, accuracy: 0.000_001)
+        XCTAssertEqual(swapMotion.windowEnd, 0.1, accuracy: 0.000_001)
+        XCTAssertEqual(motionAtFire.windowStart, 0, accuracy: 0.000_001)
+        XCTAssertEqual(motionAtFire.windowEnd, 0.4, accuracy: 0.000_001)
+
+        let persistedOffsets = [
+            frame.capturedAtSegmentStartSeconds, delivered, latestMotion,
+            stationMotion.windowStart, stationMotion.windowEnd,
+            swapMotion.windowStart, swapMotion.windowEnd,
+            motionAtFire.windowStart, motionAtFire.windowEnd,
+        ]
+        for offset in persistedOffsets {
+            XCTAssertGreaterThanOrEqual(offset, 0,
+                                        "persisted segment offsets must never be negative")
+        }
         XCTAssertEqual(station.captureSegmentID, capture.requests.first?.timebase.segmentID)
         XCTAssertEqual(station.monotonicTimebase, CaptureTimebase.persistedName)
     }
