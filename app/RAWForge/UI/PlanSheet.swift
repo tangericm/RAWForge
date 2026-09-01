@@ -37,7 +37,12 @@ struct PlanSheet: View {
         NavigationStack {
             List {
                 if !isEditable { lockedNotice }
-                shotListSection
+                if isEditable && station.shotList.entries.isEmpty
+                    && model.savedProtocols.isEmpty {
+                    StarterCaptureChoices(model: model) { creatingProtocol = true }
+                } else {
+                    shotListSection
+                }
                 if !station.shotList.entries.isEmpty { summarySection }
                 settingsSection
             }

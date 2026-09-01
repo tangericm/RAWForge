@@ -50,6 +50,34 @@ enum ProtocolLibrary {
         all().first { $0.name == name }
     }
 
+    /// Turns a starter template into an ordinary stored protocol without ever
+    /// treating a suggestion as permission to edit somebody's recipe.
+    ///
+    /// An identical recipe is reused so tapping the same starter twice does
+    /// not manufacture a fake new version. If the suggested name already
+    /// belongs to a different recipe, a numbered sibling is created instead.
+    static func materializeStarter(_ suggested: CaptureSet) throws -> CaptureSet {
+        let stored = all()
+        let root = suggested.name
+        var candidate = root
+        var suffix = 2
+
+        while let collision = stored.first(where: { $0.name == candidate }) {
+            if sameRecipe(collision, suggested) { return collision }
+            candidate = "\(root) \(suffix)"
+            suffix += 1
+        }
+
+        return try save(suggested, as: candidate)
+    }
+
+    private static func sameRecipe(_ lhs: CaptureSet, _ rhs: CaptureSet) -> Bool {
+        lhs.specs == rhs.specs
+            && lhs.generator == rhs.generator
+            && lhs.perSensorEVOffsetStops == rhs.perSensorEVOffsetStops
+            && lhs.firing == rhs.firing
+    }
+
     /// Saves under `name`, bumping the version past whatever is already stored.
     ///
     /// The bump is unconditional rather than change-detecting: a version that

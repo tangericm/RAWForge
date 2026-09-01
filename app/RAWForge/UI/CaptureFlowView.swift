@@ -22,7 +22,7 @@ struct CaptureFlowView: View {
     var showConsole: () -> Void = {}
     @State private var showingPlan = {
         #if DEBUG
-        return DemoSeed.value == "1"
+        return DemoSeed.value == "1" || DemoSeed.wantsStarter
         #else
         return false
         #endif
