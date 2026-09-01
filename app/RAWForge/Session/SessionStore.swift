@@ -75,7 +75,6 @@ enum SessionStore {
         let record = SessionRecord(
             sessionId: makeSessionId(now),
             openedAt: now,
-            openedAtUptime: ProcessInfo.processInfo.systemUptime,
             capability: capability,
             availableCapacityBytes: availableCapacityBytes(),
             sessionType: sessionType,

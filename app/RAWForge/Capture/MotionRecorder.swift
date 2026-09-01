@@ -3,15 +3,14 @@ import Foundation
 
 /// One device-motion sample, in the units CoreMotion reports them.
 ///
-/// `t` is `CMDeviceMotion.timestamp`, which lives in the `systemUptime` domain
-/// — the same monotonic clock the session header anchors to (#9). Whether it
-/// shares a timebase with `AVCapturePhoto.timestamp` is #14 item 20, and is
-/// answerable from these numbers rather than assumed.
+/// The Core Motion timestamp is converted immediately to the current capture
+/// segment's relative domain. Raw boot-time values never enter durable samples.
 struct MotionSample: Codable, Equatable {
-    let t: TimeInterval
+    let secondsSinceSegmentStart: TimeInterval
     let gx: Double, gy: Double, gz: Double
     let ax: Double, ay: Double, az: Double
 
+    var t: TimeInterval { secondsSinceSegmentStart }
     var gyroMagnitude: Double { (gx*gx + gy*gy + gz*gz).squareRoot() }
     var accelMagnitude: Double { (ax*ax + ay*ay + az*az).squareRoot() }
 }
@@ -103,6 +102,7 @@ final class MotionRecorder {
     private let queue = OperationQueue()
     private let lock = NSLock()
     private var samples: [MotionSample] = []
+    private var timebase: CaptureTimebase?
 
     let requestedHz: Double
 
@@ -122,9 +122,12 @@ final class MotionRecorder {
 
     var isAvailable: Bool { motion.isDeviceMotionAvailable }
 
-    func start() {
+    func start(timebase: CaptureTimebase) {
+        lock.lock()
+        samples.removeAll()
+        self.timebase = timebase
+        lock.unlock()
         guard motion.isDeviceMotionAvailable, !motion.isDeviceMotionActive else { return }
-        lock.lock(); samples.removeAll(); lock.unlock()
         motion.deviceMotionUpdateInterval = 1 / requestedHz
         // A dedicated serial queue, not `.main`: the capture path spends long
         // stretches awaiting on the main actor, and sampling must not be
@@ -133,7 +136,7 @@ final class MotionRecorder {
         motion.startDeviceMotionUpdates(to: queue) { [weak self] m, _ in
             guard let self, let m else { return }
             let s = MotionSample(
-                t: m.timestamp,
+                secondsSinceSegmentStart: timebase.secondsSinceOrigin(m.timestamp),
                 gx: m.rotationRate.x, gy: m.rotationRate.y, gz: m.rotationRate.z,
                 ax: m.userAcceleration.x, ay: m.userAcceleration.y, az: m.userAcceleration.z)
             self.lock.lock(); self.samples.append(s); self.lock.unlock()
@@ -148,7 +151,14 @@ final class MotionRecorder {
     /// would otherwise re-copy tens of thousands of samples per frame.
     func summary(from start: TimeInterval, to end: TimeInterval) -> MotionSummary? {
         lock.lock(); defer { lock.unlock() }
-        return MotionSummary.over(samples, from: start, to: end)
+        guard let timebase else { return nil }
+        let relative = MotionSummary.over(
+            samples,
+            from: timebase.secondsSinceOrigin(start),
+            to: timebase.secondsSinceOrigin(end))
+        // The protocol's summary window follows its raw monotonic input. Every
+        // durable caller explicitly shifts that window back to segment time.
+        return relative?.offsettingWindow(by: timebase.originUptime)
     }
 
     func snapshot() -> [MotionSample] {

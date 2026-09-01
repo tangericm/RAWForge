@@ -39,9 +39,9 @@ struct FrameRecord: Codable, Equatable {
     /// full-sensor Bayer, and a claim the file cannot otherwise substantiate.
     let zoomFactor: Double?
 
-    /// `systemUptime` at capture. Monotonic, so inter-frame gaps survive an NTP
-    /// step or a timezone change mid-session (#9).
-    let capturedAtUptime: TimeInterval
+    /// Monotonic capture time relative to this Run's capture segment. The raw
+    /// boot-time clock is converted at the live boundary and is never durable.
+    let capturedAtSegmentStartSeconds: TimeInterval
     let capturedAt: Date
 
     /// `AVCapturePhoto.timestamp`, the capture pipeline's own clock. More
@@ -75,11 +75,10 @@ struct FrameRecord: Codable, Equatable {
     /// mistaken for each other.
     let motionNeighbourhood: MotionSummary?
 
-    /// `systemUptime` read immediately after the photo arrived, paired with the
-    /// pipeline's own `photoTimestampSeconds` and the motion stream's clock so
-    /// the offset between the three is visible rather than assumed (#14 item 20).
-    let uptimeAtDelivery: TimeInterval?
-    let latestMotionTimestamp: TimeInterval?
+    /// Delivery and latest-motion observations in the same capture-segment
+    /// domain as `capturedAtSegmentStartSeconds` (#14 item 20).
+    let deliveredAtSegmentStartSeconds: TimeInterval?
+    let latestMotionAtSegmentStartSeconds: TimeInterval?
 
     struct Exposure: Codable, Equatable {
         let shutterSeconds: Double
@@ -273,6 +272,8 @@ struct StationRecord: Codable, Equatable {
 
     let stationIndex: Int
     let sessionId: String
+    let captureSegmentID: String?
+    let monotonicTimebase: String?
     let openedAt: Date
     let closedAt: Date
     let brackets: [BracketRecord]
@@ -324,10 +325,11 @@ struct StationRecord: Codable, Equatable {
     }
 
     static let currentFormat = "rawforge.station"
-    static let currentSchemaVersion = 2
+    static let currentSchemaVersion = 3
 
     init(stationIndex: Int, sessionId: String, openedAt: Date, closedAt: Date,
-         brackets: [BracketRecord], sensorSwaps: [SwapRecord] = [],
+         brackets: [BracketRecord], captureTimebase: CaptureTimebase,
+         sensorSwaps: [SwapRecord] = [],
          motion: MotionSummary? = nil, motionStreamFile: String? = nil,
          motionRequestedHz: Double? = nil, poseIntent: String? = nil,
          estimatedSeconds: Double? = nil) {
@@ -341,8 +343,43 @@ struct StationRecord: Codable, Equatable {
         self.schemaVersion = Self.currentSchemaVersion
         self.stationIndex = stationIndex
         self.sessionId = sessionId
+        self.captureSegmentID = captureTimebase.segmentID
+        self.monotonicTimebase = CaptureTimebase.persistedName
         self.openedAt = openedAt
         self.closedAt = closedAt
         self.brackets = brackets
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case format, schemaVersion, stationIndex, sessionId
+        case captureSegmentID, monotonicTimebase, openedAt, closedAt, brackets
+        case poseIntent, estimatedSeconds, sensorSwaps, motion, motionStreamFile
+        case motionRequestedHz
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        format = try container.decode(String.self, forKey: .format)
+        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        guard format == Self.currentFormat, schemaVersion == Self.currentSchemaVersion else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .schemaVersion,
+                in: container,
+                debugDescription: "unsupported station format \(format) schema \(schemaVersion)")
+        }
+        stationIndex = try container.decode(Int.self, forKey: .stationIndex)
+        sessionId = try container.decode(String.self, forKey: .sessionId)
+        captureSegmentID = try container.decodeIfPresent(String.self, forKey: .captureSegmentID)
+        monotonicTimebase = try container.decodeIfPresent(String.self, forKey: .monotonicTimebase)
+        openedAt = try container.decode(Date.self, forKey: .openedAt)
+        closedAt = try container.decode(Date.self, forKey: .closedAt)
+        brackets = try container.decode([BracketRecord].self, forKey: .brackets)
+        poseIntent = try container.decodeIfPresent(String.self, forKey: .poseIntent)
+        estimatedSeconds = try container.decodeIfPresent(Double.self, forKey: .estimatedSeconds)
+        sensorSwaps = try container.decode([SwapRecord].self, forKey: .sensorSwaps)
+        motion = try container.decodeIfPresent(MotionSummary.self, forKey: .motion)
+        motionStreamFile = try container.decodeIfPresent(String.self, forKey: .motionStreamFile)
+        motionRequestedHz = try container.decodeIfPresent(
+            Double.self, forKey: .motionRequestedHz)
     }
 }

@@ -161,7 +161,7 @@ final class CaptureModel: ObservableObject {
             set: set,
             stationIndex: stationIndex,
             poseIntent: station.poseIntent,
-            run: { specs, sensor, wb, session, station, bracketIndex, firing in
+            run: { specs, sensor, wb, session, station, bracketIndex, firing, timebase in
                 try await self.liveStationCapture.capture(StationCaptureRequest(
                     specs: specs,
                     sensor: sensor,
@@ -171,7 +171,8 @@ final class CaptureModel: ObservableObject {
                     bracketIndex: bracketIndex,
                     firing: firing,
                     focus: nil,
-                    minimumGap: 0), progress: { _ in })
+                    minimumGap: 0,
+                    timebase: timebase), progress: { _ in })
             }))
         if let record = outcome.station { station.lastStation = record }
         status = outcome.status

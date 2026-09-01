@@ -92,7 +92,8 @@ final class LiveStationCapture: StationCapturing {
             }
 
             let stamp = photo.timestamp.isValid ? photo.timestamp.seconds : nil
-            let uptimeNow = ProcessInfo.processInfo.systemUptime
+            let rawCapturedUptime = ProcessInfo.processInfo.systemUptime
+            let rawDeliveryUptime = ProcessInfo.processInfo.systemUptime
             let exposureWindow = stamp.map { ($0, $0 + spec.shutterSeconds) }
             let neighbourhood = stamp.map { ($0 - 0.1, $0 + spec.shutterSeconds + 0.1) }
             frames.append(FrameRecord(
@@ -108,17 +109,20 @@ final class LiveStationCapture: StationCapturing {
                 dng: witness,
                 focus: request.focus,
                 zoomFactor: rig.currentZoomFactor,
-                capturedAtUptime: ProcessInfo.processInfo.systemUptime,
+                capturedAtSegmentStartSeconds: request.timebase.secondsSinceOrigin(
+                    rawCapturedUptime),
                 capturedAt: Date(),
                 photoTimestampSeconds: stamp,
                 gapFromPreviousSeconds: pair(stamp, previousTimestamp).map { $0 - $1 },
                 clipping: clip,
-                motion: exposureWindow.flatMap { motion.summary(from: $0.0, to: $0.1) },
+                motion: exposureWindow.flatMap { motion.summary(from: $0.0, to: $0.1) }
+                    .map { $0.offsettingWindow(by: -request.timebase.originUptime) },
                 motionNeighbourhood: neighbourhood.flatMap {
                     motion.summary(from: $0.0, to: $0.1)
-                },
-                uptimeAtDelivery: uptimeNow,
-                latestMotionTimestamp: motion.latestTimestamp()))
+                }.map { $0.offsettingWindow(by: -request.timebase.originUptime) },
+                deliveredAtSegmentStartSeconds: request.timebase.secondsSinceOrigin(
+                    rawDeliveryUptime),
+                latestMotionAtSegmentStartSeconds: motion.latestTimestamp()))
             previousTimestamp = stamp ?? previousTimestamp
         }
 

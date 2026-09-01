@@ -375,6 +375,11 @@ final class DeviceCaptureTests: XCTestCase {
         let session = try SessionStore.open(capability: report)
         defer { try? SessionStore.deleteSession(session.sessionId) }
 
+        let header = try Data(contentsOf: SessionStore.directory(for: session.sessionId)
+            .appendingPathComponent("session.json"))
+        XCTAssertFalse(String(decoding: header, as: UTF8.self).contains("openedAtUptime"),
+                       "the live store must not persist the phone's boot-time clock")
+
         let name = SessionStore.frameFilename(
             sessionId: session.sessionId, station: 1, bracket: 1, frame: 1,
             sensor: firstSensor.sensor.rawValue)
