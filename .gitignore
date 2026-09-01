@@ -62,6 +62,7 @@ Thumbs.db
 .research/
 scratch/
 app/build/
+.worktrees/
 
 # Derived knowledge graph — rebuild with `graphify update .`
 graphify-out/
