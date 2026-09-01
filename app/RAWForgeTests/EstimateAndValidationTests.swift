@@ -373,15 +373,15 @@ final class TimelineTests: XCTestCase {
         XCTAssertEqual(steps.filter { $0.kind == .set }.count, 3)
     }
 
-    /// Only the label distinguishes them — a swap and a re-arm are not the same
-    /// event, even though the app pays for them the same way.
-    func testASetupIsCalledASwapOnlyWhenTheSensorActuallyChanges() {
+    /// Preparation, graph reuse and a real sensor swap are different events;
+    /// the plan must name them honestly instead of calling the first one a swap.
+    func testASetupDistinguishesPreparationReuseAndASensorSwap() {
         let steps = StationTimeline.steps(
             entries: [entry(.wide, frames: 4), entry(.wide, frames: 4),
                       entry(.telephoto, frames: 4)],
             minimumGap: 0, bracketCeiling: 8)
         let titles = steps.filter { $0.kind == .swap }.map(\.title)
-        XCTAssertEqual(titles, ["Swap to 1x", "Configure 1x", "Swap to tele"])
+        XCTAssertEqual(titles, ["Prepare 1x", "Reuse 1x", "Swap to tele"])
     }
 
     func testASetStepCarriesItsLadderShape() {

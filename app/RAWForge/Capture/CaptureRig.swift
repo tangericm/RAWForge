@@ -71,6 +71,29 @@ final class CaptureRig: @unchecked Sendable {
 
     private func configureOnQueue(_ sensor: SensorCapability.Sensor) throws {
         let began = ProcessInfo.processInfo.systemUptime
+
+        // Framing prepares the next set's sensor before the operator presses
+        // capture. `beginNextSet` asks for that sensor again because it cannot
+        // assume the asynchronous preview preparation has finished; once both
+        // calls serialize here, however, rebuilding the same live graph is
+        // pure waste and costs hundreds of milliseconds on real hardware.
+        //
+        // Check the graph as well as our label. If another owner ever removes
+        // an input or output, the label alone must not turn a broken session
+        // into a successful no-op.
+        if self.sensor == sensor,
+           let device,
+           bayerFormat != 0,
+           session.inputs.contains(where: {
+               ($0 as? AVCaptureDeviceInput)?.device.uniqueID == device.uniqueID
+           }),
+           session.outputs.contains(where: { $0 === output }) {
+            logTrace(.rig, String(format: "%@ already configured — reused in %.1f ms",
+                                  sensor.rawValue,
+                                  (ProcessInfo.processInfo.systemUptime - began) * 1_000))
+            return
+        }
+
         logInfo(.rig, "configuring \(sensor.rawValue)")
         let discovery = AVCaptureDevice.DiscoverySession(
             deviceTypes: [sensor.deviceType], mediaType: .video, position: .back)

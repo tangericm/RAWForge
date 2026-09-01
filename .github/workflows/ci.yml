@@ -45,7 +45,7 @@ jobs:
         working-directory: app
         run: xcodegen generate
 
-      # Debug, on a simulator. The 13 device-only tests skip here by design;
+      # Debug, on a simulator. The device-only tests skip here by design;
       # the gate below is what stops a skip being mistaken for a pass.
       - name: Simulator suite
         working-directory: app

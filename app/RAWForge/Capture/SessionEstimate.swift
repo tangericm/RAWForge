@@ -115,17 +115,18 @@ struct SessionEstimate {
         var previousSensor: SensorCapability.Sensor?
 
         for entry in entries {
-            // Counted for the "across N sensor(s)" figure and for nothing else:
-            // the *cost* below is paid per set regardless.
-            if entry.sensor != previousSensor { swaps += 1 }
-            previousSensor = entry.sensor
+            let sensorChanged = entry.sensor != previousSensor
+            if sensorChanged { swaps += 1 }
 
-            // Every set brings the sensor up and waits for stillness, whether
-            // or not the sensor changed. Measured on a sensor *change*, so for
-            // an unchanged sensor this is an upper bound — reconfiguring the
-            // device already open has never been timed separately.
-            overhead += profile.sensorSwap.value
-            parts.setup += profile.sensorSwap.value
+            // The first set prepares a graph and a changed sensor rebuilds it;
+            // only a consecutive set on the same sensor takes the measured
+            // idempotent reuse path.
+            let setup = sensorChanged
+                ? profile.sensorSwap.value
+                : profile.sameSensorSetupCost.value
+            overhead += setup
+            parts.setup += setup
+            previousSensor = entry.sensor
 
             let specs = entry.captureSet.rendered(for: entry.sensor)
             frames += specs.count

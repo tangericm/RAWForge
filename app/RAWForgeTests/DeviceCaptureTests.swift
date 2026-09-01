@@ -41,6 +41,71 @@ final class DeviceCaptureTests: XCTestCase {
         }
     }
 
+    /// Re-arming a set on the sensor already feeding the preview must not tear
+    /// down and rebuild the capture graph. Input identity is the observable
+    /// boundary: rebuilding produces a different `AVCaptureDeviceInput`, while
+    /// an idempotent configure leaves the live graph alone.
+    func testConfiguringTheCurrentSensorPreservesTheLiveInput() async throws {
+        try await rig.configure(firstSensor.sensor)
+        await rig.startSessionAndWait()
+        let original = try XCTUnwrap(rig.session.inputs.first)
+
+        try await rig.configure(firstSensor.sensor)
+        await rig.startSessionAndWait()
+
+        XCTAssertTrue(original === rig.session.inputs.first,
+                      "same-sensor configure rebuilt the live capture graph")
+        XCTAssertTrue(rig.session.isRunning)
+    }
+
+    #if !DEBUG
+    /// Keeps the cost visible on real optimized hardware. The identity
+    /// assertion is the correctness contract; the broad 10 ms p90 ceiling
+    /// catches an implementation that technically reuses the input but puts
+    /// expensive synchronous work in the no-op path.
+    func testReleaseSameSensorReuseCost() async throws {
+        try await rig.configure(firstSensor.sensor)
+        await rig.startSessionAndWait()
+        let original = try XCTUnwrap(rig.session.inputs.first)
+        var elapsed: [TimeInterval] = []
+
+        for _ in 0..<7 {
+            let began = ProcessInfo.processInfo.systemUptime
+            try await rig.configure(firstSensor.sensor)
+            await rig.startSessionAndWait()
+            elapsed.append(ProcessInfo.processInfo.systemUptime - began)
+        }
+
+        let sorted = elapsed.sorted()
+        let median = sorted[sorted.count / 2]
+        let p90 = sorted[Int(ceil(Double(sorted.count) * 0.90)) - 1]
+        let result = String(format:
+            "RAWFORGE_SAME_SENSOR_BENCHMARK samples_ms=%@ median_ms=%.3f p90_ms=%.3f",
+            sorted.map { String(format: "%.3f", $0 * 1_000) }.joined(separator: ","),
+            median * 1_000, p90 * 1_000)
+        print(result)
+        add(XCTAttachment(string: result))
+
+        XCTAssertTrue(original === rig.session.inputs.first,
+                      "same-sensor configure rebuilt the live capture graph")
+        XCTAssertLessThan(p90, 0.010,
+                          "reusing an active sensor should take less than 10 ms")
+    }
+
+    /// Exercises the production Bench path rather than only the primitive it
+    /// calls. This proves a real characterisation publishes the new reading
+    /// that estimates and the timeline consume.
+    func testReleaseCharacterisationPublishesSameSensorSetup() async throws {
+        let profile = try await DeviceCharacterisation.run(rig: rig, report: report)
+        let reading = try XCTUnwrap(profile.sameSensorSetup)
+
+        XCTAssertTrue(reading.isMeasured)
+        XCTAssertEqual(reading.sampleCount, 7)
+        XCTAssertLessThan(reading.value, 0.010,
+                          "characterisation did not use the cheap same-sensor path")
+    }
+    #endif
+
     /// A Bayer capture at any zoom factor other than 1.0 terminates the process
     /// rather than returning an error, so this is the invariant the whole
     /// capture path rests on. If configuring ever leaves zoom elsewhere, every

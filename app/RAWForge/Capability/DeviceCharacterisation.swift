@@ -23,6 +23,7 @@ enum DeviceCharacterisation {
     /// A run nobody waits for is a run nobody performs, and a borrowed figure
     /// is what that leaves behind.
     private static let sequentialSamples = 5
+    private static let sameSensorSamples = 7
     private static let swapSamples = 3
 
     struct Step {
@@ -65,7 +66,7 @@ enum DeviceCharacterisation {
         let began = ProcessInfo.processInfo.systemUptime
         logInfo(.probe, "characterisation starting on \(identity.modelIdentifier)")
 
-        var total = 3                                   // frame period, seam, sequential
+        var total = 4                       // frame period, seam, sequential, reuse
         if sensors.count > 1 { total += 1 }             // swap
 
         var frameSizes: [Int] = []
@@ -139,11 +140,27 @@ enum DeviceCharacterisation {
                                    sequential.value * 1000, perFrame.count))
         }
 
-        // 4 — Swap: reconfiguring for a different sensor, which on a
+        // 4 — Same-sensor setup: the graph is already live, so this measures
+        // the cheap idempotent path rather than borrowing the cost of a swap.
+        onStep(Step(label: "Same-sensor setup", index: 4, total: total))
+        var sameSensorDurations: [Double] = []
+        for _ in 0..<sameSensorSamples {
+            let t0 = ProcessInfo.processInfo.systemUptime
+            try await rig.configure(first.sensor)
+            await rig.startSessionAndWait()
+            sameSensorDurations.append(ProcessInfo.processInfo.systemUptime - t0)
+        }
+        let sameSensorSetup = Reading.measured(
+            median(sameSensorDurations), samples: sameSensorDurations.count,
+            spread: spread(sameSensorDurations))
+        logInfo(.probe, String(format: "same-sensor setup %.3f ms over %d",
+                               sameSensorSetup.value * 1000, sameSensorDurations.count))
+
+        // 5 — Swap: reconfiguring for a different sensor, which on a
         // single-sensor phone simply never happens.
         var swap = reference.sensorSwap
         if sensors.count > 1 {
-            onStep(Step(label: "Sensor swap", index: 4, total: total))
+            onStep(Step(label: "Sensor swap", index: 5, total: total))
             var durations: [Double] = []
             for i in 0..<swapSamples {
                 let target = sensors[(i + 1) % sensors.count].sensor
@@ -181,6 +198,7 @@ enum DeviceCharacterisation {
             sensorFramePeriod: framePeriod,
             sequentialOverheadPerFrame: sequential,
             sensorSwap: swap,
+            sameSensorSetup: sameSensorSetup,
             bracketSeam: seam,
             averageFrameBytes: averageBytes,
             worstCaseFrameBytes: worstBytes,

@@ -59,6 +59,10 @@ struct DeviceProfile: Codable, Equatable {
     let sensorFramePeriod: Reading
     let sequentialOverheadPerFrame: Reading
     let sensorSwap: Reading
+    /// Cost of asking the rig for the sensor whose capture graph is already
+    /// live. Optional so profiles written before this measurement existed keep
+    /// decoding; `sameSensorSetupCost` supplies their conservative fallback.
+    let sameSensorSetup: Reading?
     let bracketSeam: Reading
     let averageFrameBytes: Reading
     /// The only field that changes outside a characterisation run — see
@@ -82,6 +86,7 @@ struct DeviceProfile: Codable, Equatable {
             sensorFramePeriod: .borrowed(0.0334, from: referenceDevice),
             sequentialOverheadPerFrame: .borrowed(0.233, from: referenceDevice),
             sensorSwap: .borrowed(0.40, from: referenceDevice),
+            sameSensorSetup: nil,
             bracketSeam: .borrowed(0.567, from: referenceDevice),
             averageFrameBytes: .borrowed(10_000_000, from: referenceDevice),
             worstCaseFrameBytes: .borrowed(30_700_000, from: referenceDevice),
@@ -90,10 +95,18 @@ struct DeviceProfile: Codable, Equatable {
 
     // MARK: - Honesty
 
+    /// Old profiles did not contain a reuse measurement. Treating that as zero
+    /// would make their plans silently optimistic, so they inherit the swap
+    /// duration while keeping borrowed provenance until measured again.
+    var sameSensorSetupCost: Reading {
+        sameSensorSetup ?? .borrowed(sensorSwap.value, from: modelIdentifier)
+    }
+
     var readings: [(name: String, reading: Reading)] {
         [("Frame period", sensorFramePeriod),
          ("Sequential overhead", sequentialOverheadPerFrame),
          ("Sensor swap", sensorSwap),
+         ("Same-sensor setup", sameSensorSetupCost),
          ("Bracket seam", bracketSeam),
          ("Average frame size", averageFrameBytes),
          ("Largest frame seen", worstCaseFrameBytes),
@@ -108,6 +121,7 @@ struct DeviceProfile: Codable, Equatable {
     /// definition requiring it could never be satisfied.
     var isCharacterised: Bool {
         measuredAt != nil && sensorFramePeriod.isMeasured && sensorSwap.isMeasured
+            && sameSensorSetupCost.isMeasured
     }
 
     /// Why one figure is permanently borrowed.

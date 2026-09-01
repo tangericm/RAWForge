@@ -30,8 +30,10 @@ overhead, not this codebase.
 
 ### Simulator suite
 
-148 tests. 13 of them skip — those are the device-only ones, and **a skip reads
-as green**, which is the entire reason the hardware gate below exists.
+The simulator runs the whole suite. Tests that require a real Bayer sensor skip
+there, and **a skip reads as green**, which is the entire reason the hardware
+gate below exists. Avoid copying the test count into this document: it is
+reported by each run and changes whenever coverage grows.
 
 ### Release build and the developer-code check
 
@@ -53,7 +55,7 @@ run as a broken check (`BLIND`) rather than passing as a clean result.
 
 ## The hardware gate
 
-13 tests need a real sensor. The rule:
+A subset of the suite needs a real sensor. The rule:
 
 > **A commit is "hardware verified" if the device suite passed on it, or on an
 > ancestor of it with no changes under `app/` since.**
@@ -105,9 +107,10 @@ something nobody asked for.
 
 ## Current status
 
-**Nothing has ever been hardware verified.** #17 and #18 are both merged to
-`main` with device runs outstanding, and until this ticket nothing in the
-repository recorded that. `preflight-release.sh` refuses today, correctly.
+[`hardware-verification.json`](hardware-verification.json) is the source of
+truth. Run `bash app/tools/require-hardware-verification.sh --warn` for the
+current answer; keeping a prose copy here only creates a second status that can
+go stale.
 
 ## Setting up the runner
 
