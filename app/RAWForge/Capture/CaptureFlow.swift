@@ -14,11 +14,11 @@ struct ShotListEntry: Codable, Equatable, Identifiable {
     var label: String { "\(sensor.rawValue) · \(captureSet.name) v\(captureSet.version)" }
 }
 
-/// The station flow, as settled in `prototypes/station-flow.prototype.html`
-/// for [#10](https://github.com/tangericm/RAWForge/issues/10).
+/// The station flow, as settled in
+/// [#10](https://github.com/tangericm/RAWForge/issues/10).
 ///
 /// The phases are not cosmetic. Each one exists because something must finish
-/// before the next thing may start, and the prototype's notes are design
+/// before the next thing may start, and the accepted flow notes are design
 /// decisions rather than captions:
 ///
 /// - **stilling** — *"a wait, not a prompt; there is no override."*
@@ -50,7 +50,7 @@ enum StationPhase: String, Codable, CaseIterable {
         }
     }
 
-    /// Verbatim from the prototype — these are the sentences that explain why
+    /// From the accepted flow — these are the sentences that explain why
     /// the operator is being made to wait.
     var note: String {
         switch self {

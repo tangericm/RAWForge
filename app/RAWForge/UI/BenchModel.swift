@@ -61,7 +61,9 @@ final class BenchModel: ObservableObject {
 
     @Published var darkRepeats: Int = 8
     @Published private(set) var darkProgress: String = ""
+    #if DEBUG
     @Published private(set) var zoomProbe: ZoomProbeResult?
+    #endif
     @Published private(set) var running = false
 
     /// What a run leaves behind for the caller to apply.

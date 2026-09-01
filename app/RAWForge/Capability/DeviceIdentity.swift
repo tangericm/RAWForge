@@ -1,5 +1,4 @@
 import Foundation
-import UIKit
 
 /// Device model, OS and app version — the session header's provenance line (#6).
 ///
@@ -41,10 +40,12 @@ struct DeviceIdentity: Codable, Equatable {
     static func current() -> DeviceIdentity {
         let info = Bundle.main.infoDictionary
         let simulated = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"]
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        let patch = os.patchVersion == 0 ? "" : ".\(os.patchVersion)"
         return DeviceIdentity(
             modelIdentifier: simulated ?? hardwareIdentifier(),
-            systemName: UIDevice.current.systemName,
-            systemVersion: UIDevice.current.systemVersion,
+            systemName: "iOS",
+            systemVersion: "\(os.majorVersion).\(os.minorVersion)\(patch)",
             appVersion: info?["CFBundleShortVersionString"] as? String ?? "?",
             appBuild: info?["CFBundleVersion"] as? String ?? "?",
             appCommit: info?["RAWForgeCommit"] as? String,

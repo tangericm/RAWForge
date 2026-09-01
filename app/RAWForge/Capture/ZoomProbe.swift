@@ -1,3 +1,4 @@
+#if DEBUG
 import AVFoundation
 import Foundation
 
@@ -115,3 +116,4 @@ extension CaptureRig {
             verdict: verdict)
     }
 }
+#endif

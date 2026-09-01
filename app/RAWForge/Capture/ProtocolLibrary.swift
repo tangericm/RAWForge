@@ -61,7 +61,8 @@ enum ProtocolLibrary {
         let nextVersion = (load(named: name)?.version ?? 0) + 1
         let stored = CaptureSet(
             name: name, version: nextVersion, specs: set.specs,
-            generator: set.generator, perSensorEVOffsetStops: set.perSensorEVOffsetStops)
+            generator: set.generator, perSensorEVOffsetStops: set.perSensorEVOffsetStops,
+            executionMode: set.executionMode)
         let safe = name.replacingOccurrences(of: "/", with: "_")
         try encoder.encode(stored).write(to: directory.appendingPathComponent("\(safe).json"))
         return stored
