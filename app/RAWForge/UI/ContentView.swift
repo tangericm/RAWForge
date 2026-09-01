@@ -6,6 +6,7 @@ import SwiftUI
 /// rather than how it is used, and the console is how a failure in either is
 /// read at the pose instead of on a laptop an hour later.
 struct ContentView: View {
+    @ObservedObject var launchNoticeStore: LaunchNoticeStore
     @StateObject private var model = CaptureModel()
     @State private var booted = false
 
@@ -65,6 +66,16 @@ struct ContentView: View {
                 model.status = "swept \(orphans) orphaned frame(s) from an unclosed station"
             }
             booted = true
+        }
+        .alert(
+            "Privacy update",
+            isPresented: Binding(
+                get: { launchNoticeStore.message != nil },
+                set: { _ in })
+        ) {
+            Button("OK") { launchNoticeStore.acknowledge() }
+        } message: {
+            Text(launchNoticeStore.message ?? "")
         }
     }
 
