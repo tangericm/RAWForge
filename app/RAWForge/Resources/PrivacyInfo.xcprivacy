@@ -27,6 +27,17 @@
 				<string>E174.1</string>
 			</array>
 		</dict>
+		<dict>
+			<!-- Capture and diagnostic clocks read systemUptime only to derive
+			     segment-relative elapsed values. Raw boot time is never stored
+			     or exported. -->
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategorySystemBootTime</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>35F9.1</string>
+			</array>
+		</dict>
 	</array>
 </dict>
 </plist>

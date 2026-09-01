@@ -46,7 +46,12 @@ targets:
   RAWForgeTests:
     type: bundle.unit-test
     platform: iOS
-    sources: [RAWForgeTests]
+    sources:
+      - path: RAWForgeTests
+      - path: ../docs/app-store/privacy-policy.md
+        buildPhase: resources
+      - path: ../docs/privacy/index.md
+        buildPhase: resources
     dependencies:
       - target: RAWForge
     settings:
@@ -121,7 +126,7 @@ targets:
         # Camera and nothing else (#11 — no photo library, no cloud). The
         # file-sharing pair is what lets a session directory be dragged out
         # of Files or off a cable.
-        NSCameraUsageDescription: "RAWForge captures Bayer RAW frames to a protocol."
-        NSMotionUsageDescription: "RAWForge records device motion alongside each frame."
+        NSCameraUsageDescription: "RAWForge uses the camera to preview your scene and save the RAW captures you choose to make."
+        NSMotionUsageDescription: "RAWForge records device motion during a capture so each RAW frame includes evidence of how steadily the phone was held."
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
