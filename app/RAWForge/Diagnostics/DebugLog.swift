@@ -78,6 +78,15 @@ final class DebugLog: @unchecked Sendable {
                    clock, elapsedSinceLaunch, level.label as NSString,
                    category.rawValue as NSString, message)
         }
+
+        /// The durable/exported form deliberately omits wall clock. Diagnostic
+        /// files carry only launch-relative time so they cannot disclose when
+        /// the operator used the app.
+        var persistedLine: String {
+            String(format: "+%.3fs %-5@ %-7@ %@",
+                   elapsedSinceLaunch, level.label as NSString,
+                   category.rawValue as NSString, message)
+        }
     }
 
     // MARK: - Storage
@@ -240,7 +249,7 @@ final class DebugLog: @unchecked Sendable {
         case .error: osLog.error("\(category.rawValue, privacy: .public) \(text, privacy: .public)")
         }
 
-        let line = entry.line + "\n"
+        let line = entry.persistedLine + "\n"
         io.async { [weak self] in
             guard let data = line.data(using: .utf8) else { return }
             try? self?.handle?.write(contentsOf: data)

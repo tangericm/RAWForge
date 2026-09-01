@@ -94,9 +94,6 @@ final class BenchModel: ObservableObject {
 
         running = true
         defer { running = false; darkProgress = "" }
-        let captureTimebase = CaptureTimebase(
-            segmentID: UUID().uuidString,
-            originUptime: ProcessInfo.processInfo.systemUptime)
 
         let plannedFrames = request.sensors.count * request.set.specs.count * request.repeats
         logInfo(.probe, "dark calibration starting — \(request.sensors.count) sensor(s) × "
@@ -112,6 +109,9 @@ final class BenchModel: ObservableObject {
         } catch {
             return Outcome(status: "could not open a calibration session — \(error)")
         }
+        let captureTimebase = CaptureTimebase(
+            segmentID: UUID().uuidString,
+            originUptime: ProcessInfo.processInfo.systemUptime)
         let thermalAtOpen = SessionRecord.thermalLabel()
 
         var settingIndex = 0
