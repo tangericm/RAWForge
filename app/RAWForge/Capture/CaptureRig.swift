@@ -24,6 +24,7 @@ final class CaptureRig: @unchecked Sendable {
         case notConfigured
         case unsupported(String)
         case captureFailed(String)
+        case captureTimedOut(String, TimeInterval)
 
         var description: String {
             switch self {
@@ -32,12 +33,14 @@ final class CaptureRig: @unchecked Sendable {
             case .notConfigured:        return "rig not configured — call configure() first"
             case .unsupported(let s):   return "unsupported: \(s)"
             case .captureFailed(let s): return "capture failed: \(s)"
+            case .captureTimedOut(let operation, let seconds):
+                return String(format: "%@ stopped responding for %.0f seconds", operation, seconds)
             }
         }
     }
 
     let session = AVCaptureSession()
-    let output = AVCapturePhotoOutput()
+    private(set) var output = AVCapturePhotoOutput()
 
     /// Every mutation of the session happens here, serially.
     ///
@@ -56,6 +59,74 @@ final class CaptureRig: @unchecked Sendable {
     private(set) var device: AVCaptureDevice?
     private(set) var bayerFormat: OSType = 0
     private var activeCollector: PhotoCaptureCollector?
+    private var sessionObservers: [NSObjectProtocol] = []
+
+    private enum CaptureResourceShape: Hashable {
+        case singleRaw
+        case bracket(Int)
+    }
+    private var preparedResourceShapes: Set<CaptureResourceShape> = []
+
+    init() {
+        installSessionObservers()
+    }
+
+    deinit {
+        for observer in sessionObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    /// Session failures are asynchronous and often richer than the error sent
+    /// to the photo delegate. #33 demonstrated both halves: `-11803` reached
+    /// the caller while the invalid XPC channel only appeared in system logs.
+    /// Mirror all lifecycle evidence into the exportable flight log.
+    private func installSessionObservers() {
+        let center = NotificationCenter.default
+        let names: [Notification.Name] = [
+            AVCaptureSession.runtimeErrorNotification,
+            AVCaptureSession.wasInterruptedNotification,
+            AVCaptureSession.interruptionEndedNotification,
+            AVCaptureSession.didStartRunningNotification,
+            AVCaptureSession.didStopRunningNotification
+        ]
+        sessionObservers = names.map { name in
+            center.addObserver(forName: name, object: session, queue: nil) { [weak self] note in
+                guard let self else { return }
+                self.sessionQueue.async { [weak self] in self?.logSessionNotification(note) }
+            }
+        }
+    }
+
+    private func logSessionNotification(_ note: Notification) {
+        let state = "running=\(session.isRunning) interrupted=\(session.isInterrupted) · "
+            + CaptureSessionDiagnostics.pressureSummary(device)
+            + " · " + DeviceHealth.snapshotSummary()
+        switch note.name {
+        case AVCaptureSession.runtimeErrorNotification:
+            if let error = note.userInfo?[AVCaptureSessionErrorKey] as? Error {
+                logError(.rig, "session runtime error · "
+                         + CaptureSessionDiagnostics.describe(error: error) + " · " + state)
+            } else {
+                logError(.rig, "session runtime error with no NSError · \(state)")
+            }
+        case AVCaptureSession.wasInterruptedNotification:
+            let raw = (note.userInfo?[AVCaptureSessionInterruptionReasonKey] as? NSNumber)?.intValue
+            let reason = raw.map(CaptureSessionDiagnostics.interruptionReasonName) ?? "reason unavailable"
+            logWarn(.rig, "session interrupted — \(reason) · \(state)")
+        case AVCaptureSession.interruptionEndedNotification:
+            logInfo(.rig, "session interruption ended · \(state)")
+        case AVCaptureSession.didStartRunningNotification:
+            logTrace(.rig, "session did start · \(state)")
+        case AVCaptureSession.didStopRunningNotification:
+            // Stopping between Bench runs and on app resign is ordinary. A
+            // stop that matters arrives with an interruption or runtime error
+            // too, and those events carry the reason at warning/error level.
+            logTrace(.rig, "session did stop · \(state)")
+        default:
+            break
+        }
+    }
 
     /// Brings up the given sensor. Reconfiguring for a different sensor means a
     /// new session input, not a property flip — Bayer requires a single-camera
@@ -119,6 +190,12 @@ final class CaptureRig: @unchecked Sendable {
         if output.isAppleProRAWSupported { output.isAppleProRAWEnabled = false }
         session.commitConfiguration()
 
+        // Prepared RAW buffers describe the old input. Apple says prepared
+        // settings survive configuration commits; that persistence is useful
+        // for one sensor and unsafe to assume across physical sensors, so the
+        // next capture replaces them with settings for the new graph.
+        preparedResourceShapes.removeAll()
+
         guard let bayer = output.availableRawPhotoPixelFormatTypes
             .first(where: AVCapturePhotoOutput.isBayerRAWPixelFormat) else {
             logError(.rig, "\(sensor.rawValue) offers no Bayer RAW format — available: "
@@ -163,8 +240,38 @@ final class CaptureRig: @unchecked Sendable {
                 if !self.session.isRunning {
                     let t = ProcessInfo.processInfo.systemUptime
                     self.session.startRunning()
-                    logInfo(.rig, String(format: "session running after %.0f ms (awaited)",
-                                         (ProcessInfo.processInfo.systemUptime - t) * 1000))
+                    let elapsed = (ProcessInfo.processInfo.systemUptime - t) * 1000
+                    if self.session.isRunning && !self.session.isInterrupted {
+                        logInfo(.rig, String(format: "session running after %.0f ms (awaited)", elapsed))
+                    } else {
+                        logWarn(.rig, String(format: "startRunning returned after %.0f ms but the "
+                                + "session is unavailable · running=%@ interrupted=%@",
+                                elapsed, self.session.isRunning ? "true" : "false",
+                                self.session.isInterrupted ? "true" : "false"))
+                    }
+                }
+                cont.resume()
+            }
+        }
+    }
+
+    /// Verifies that a blocking `startRunning` call actually produced a usable
+    /// capture session. Startup failures are delivered asynchronously by
+    /// AVFoundation, so returning from `startRunning` is not enough evidence on
+    /// its own. Bench timing calls this after every setup: otherwise a failed
+    /// final sensor swap could be recorded as an implausibly fast success.
+    func requireSessionAvailable(_ operation: String) async throws {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            sessionQueue.async {
+                let running = self.session.isRunning
+                let interrupted = self.session.isInterrupted
+                guard !CaptureReliability.sessionUnavailable(
+                    isRunning: running, isInterrupted: interrupted) else {
+                    cont.resume(throwing: RigError.captureFailed(
+                        "\(operation) requires an available camera session "
+                        + "(running=\(running), interrupted=\(interrupted)); "
+                        + "return RAWForge to the foreground"))
+                    return
                 }
                 cont.resume()
             }
@@ -531,8 +638,14 @@ final class CaptureRig: @unchecked Sendable {
 
     func captureSingle() async throws -> AVCapturePhoto {
         try assertZoomInvariant()
+        let exposure = max(0, device?.exposureDuration.seconds ?? 0)
+        try await prepareCaptureResources([.singleRaw],
+                                          representative: CaptureSpec(
+                                            shutterSeconds: exposure,
+                                            iso: device?.iso ?? 100))
         let settings = AVCapturePhotoSettings(rawPixelFormatType: bayerFormat)
-        guard let photo = try await run(settings).first else {
+        let timeout = CaptureReliability.requestTimeout(exposureSeconds: [exposure])
+        guard let photo = try await run(settings, timeout: timeout).first else {
             throw RigError.captureFailed("the capture returned no photo")
         }
         return photo
@@ -621,6 +734,9 @@ final class CaptureRig: @unchecked Sendable {
                     + chunks.map { "\($0.count)" }.joined(separator: "+"))
         }
 
+        let shapes = Set(chunks.map { CaptureResourceShape.bracket($0.count) })
+        try await prepareCaptureResources(shapes, representative: specs[0])
+
         for (i, chunk) in chunks.enumerated() {
             if i > 0 {
                 try await Task.sleep(nanoseconds: UInt64(Self.interRequestSettle * 1_000_000_000))
@@ -634,7 +750,9 @@ final class CaptureRig: @unchecked Sendable {
                 rawPixelFormatType: bayerFormat,
                 processedFormat: nil,
                 bracketedSettings: bracket)
-            let delivered = try await run(settings)
+            let timeout = CaptureReliability.requestTimeout(
+                exposureSeconds: chunk.map(\.shutterSeconds))
+            let delivered = try await run(settings, timeout: timeout)
             guard delivered.count == chunk.count else {
                 throw RigError.captureFailed(
                     "request \(i + 1) of \(chunks.count) returned \(delivered.count) "
@@ -646,7 +764,124 @@ final class CaptureRig: @unchecked Sendable {
         return chunks.map(\.count)
     }
 
-    private func run(_ settings: AVCapturePhotoSettings) async throws -> [AVCapturePhoto] {
+    /// Asks AVFoundation to allocate the RAW/bracket buffers before the moment
+    /// of capture. Apple calls this optional for correctness but recommends it
+    /// specifically for RAW and bracketed capture; #33 is the cost of leaving
+    /// that allocation to happen lazily under repeated maximum-size requests.
+    ///
+    /// Each call to the API replaces its prepared array, so the rig prepares
+    /// the union of every shape used on this sensor rather than alternating
+    /// between single and bracket resources and forcing churn.
+    private func prepareCaptureResources(_ requested: Set<CaptureResourceShape>,
+                                         representative: CaptureSpec) async throws {
+        try await requireSessionAvailable("RAW resource preparation")
+        let wanted = preparedResourceShapes.union(requested)
+        guard wanted != preparedResourceShapes else { return }
+
+        let settings = wanted.sorted(by: Self.resourceShapeOrder).map {
+            resourceSettings(for: $0, representative: representative)
+        }
+        let began = ProcessInfo.processInfo.systemUptime
+        let timeout = CaptureReliability.resourcePreparationTimeout
+        let prepared = try await withCheckedThrowingContinuation {
+            (cont: CheckedContinuation<Bool, Error>) in
+            let gate = LockedResultGate<Bool> { cont.resume(with: $0) }
+            let deadline = DispatchWorkItem {
+                gate.resolve(.failure(RigError.captureTimedOut(
+                    "RAW resource preparation", timeout)))
+            }
+            output.setPreparedPhotoSettingsArray(settings) { ready, error in
+                if let error { gate.resolve(.failure(error)) }
+                else { gate.resolve(.success(ready)) }
+            }
+            DispatchQueue.global(qos: .userInitiated)
+                .asyncAfter(deadline: .now() + timeout, execute: deadline)
+        }
+        guard prepared else {
+            throw RigError.captureFailed("AVFoundation declined to prepare RAW capture resources")
+        }
+        preparedResourceShapes = wanted
+        logInfo(.capture, String(format: "prepared RAW resources for %@ in %.0f ms",
+                                 wanted.map(Self.resourceShapeName).sorted().joined(separator: ", "),
+                                 (ProcessInfo.processInfo.systemUptime - began) * 1000))
+    }
+
+    private static func resourceShapeOrder(_ a: CaptureResourceShape,
+                                           _ b: CaptureResourceShape) -> Bool {
+        resourceShapeName(a) < resourceShapeName(b)
+    }
+
+    private static func resourceShapeName(_ shape: CaptureResourceShape) -> String {
+        switch shape {
+        case .singleRaw: return "single"
+        case .bracket(let count): return "bracket-\(count)"
+        }
+    }
+
+    private func resourceSettings(for shape: CaptureResourceShape,
+                                  representative: CaptureSpec) -> AVCapturePhotoSettings {
+        switch shape {
+        case .singleRaw:
+            return AVCapturePhotoSettings(rawPixelFormatType: bayerFormat)
+        case .bracket(let count):
+            let rungs = (0..<count).map { _ in
+                AVCaptureManualExposureBracketedStillImageSettings.manualExposureSettings(
+                    exposureDuration: CMTime(seconds: representative.shutterSeconds,
+                                             preferredTimescale: 1_000_000_000),
+                    iso: representative.iso)
+            }
+            return AVCapturePhotoBracketSettings(rawPixelFormatType: bayerFormat,
+                                                 processedFormat: nil,
+                                                 bracketedSettings: rungs)
+        }
+    }
+
+    /// Discards the local capture graph after a failed Bench request and
+    /// creates a new input and photo output. The session object stays stable so
+    /// the preview layer remains attached. This is intentionally exposed only
+    /// as a primitive: the Bench owns the exactly-once retry policy; stations
+    /// never silently repeat scientific frames.
+    func rebuildAfterCaptureFailure(_ error: Error) async throws {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            sessionQueue.async {
+                guard let target = self.sensor else {
+                    cont.resume(throwing: RigError.notConfigured)
+                    return
+                }
+                let began = ProcessInfo.processInfo.systemUptime
+                logWarn(.rig, "rebuilding camera graph after capture failure · "
+                        + CaptureSessionDiagnostics.describe(error: error))
+                if self.session.isRunning { self.session.stopRunning() }
+                self.session.beginConfiguration()
+                for input in self.session.inputs { self.session.removeInput(input) }
+                for output in self.session.outputs { self.session.removeOutput(output) }
+                self.session.commitConfiguration()
+
+                self.output = AVCapturePhotoOutput()
+                self.sensor = nil
+                self.device = nil
+                self.bayerFormat = 0
+                self.preparedResourceShapes.removeAll()
+                self.activeCollector = nil
+                do {
+                    try self.configureOnQueue(target)
+                    self.session.startRunning()
+                    guard self.session.isRunning else {
+                        throw RigError.captureFailed("camera graph rebuilt but the session did not start")
+                    }
+                    logInfo(.rig, String(format: "camera graph rebuilt and running in %.0f ms",
+                                         (ProcessInfo.processInfo.systemUptime - began) * 1000))
+                    cont.resume()
+                } catch {
+                    logFailure(.rig, "camera graph rebuild", error)
+                    cont.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    private func run(_ settings: AVCapturePhotoSettings,
+                     timeout: TimeInterval) async throws -> [AVCapturePhoto] {
         let began = ProcessInfo.processInfo.systemUptime
         return try await withCheckedThrowingContinuation { cont in
             let collector = PhotoCaptureCollector { [weak self] result in
@@ -663,6 +898,7 @@ final class CaptureRig: @unchecked Sendable {
                 cont.resume(with: result)
             }
             activeCollector = collector
+            collector.armTimeout(after: timeout)
             output.capturePhoto(with: settings, delegate: collector)
         }
     }
@@ -674,17 +910,34 @@ final class CaptureRig: @unchecked Sendable {
 /// the per-photo one repeatedly. Resuming a continuation twice is a hard crash,
 /// so the result is delivered only from `didFinishCaptureFor`.
 private final class PhotoCaptureCollector: NSObject, AVCapturePhotoCaptureDelegate {
+    private let lock = NSLock()
     private var photos: [AVCapturePhoto] = []
     private var firstError: Error?
     private var finished = false
+    private var timeoutWorkItem: DispatchWorkItem?
     private let done: (Result<[AVCapturePhoto], Error>) -> Void
 
     init(done: @escaping (Result<[AVCapturePhoto], Error>) -> Void) { self.done = done }
+
+    func armTimeout(after seconds: TimeInterval) {
+        let work = DispatchWorkItem { [weak self] in
+            self?.finish(.failure(CaptureRig.RigError.captureTimedOut(
+                "photo request", seconds)))
+        }
+        lock.lock()
+        timeoutWorkItem = work
+        lock.unlock()
+        DispatchQueue.global(qos: .userInitiated)
+            .asyncAfter(deadline: .now() + seconds, execute: work)
+    }
 
     func photoOutput(_ output: AVCapturePhotoOutput,
                      didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
         // Recorded, not thrown: the rest of a bracket still arrives, and how
         // many frames landed is itself the result.
+        lock.lock()
+        defer { lock.unlock() }
+        guard !finished else { return }
         if let error {
             logError(.capture, "photo \(photos.count + 1) of this request failed — \(error)")
             if firstError == nil { firstError = error }
@@ -695,8 +948,24 @@ private final class PhotoCaptureCollector: NSObject, AVCapturePhotoCaptureDelega
 
     func photoOutput(_ output: AVCapturePhotoOutput,
                      didFinishCaptureFor resolvedSettings: AVCaptureResolvedPhotoSettings, error: Error?) {
-        guard !finished else { return }
+        lock.lock()
+        let result: Result<[AVCapturePhoto], Error>
+        if let e = error ?? firstError { result = .failure(e) }
+        else { result = .success(photos) }
+        lock.unlock()
+        finish(result)
+    }
+
+    /// Resolves the continuation once even if AVFoundation calls back after
+    /// the XPC deadline has already fired.
+    private func finish(_ result: Result<[AVCapturePhoto], Error>) {
+        lock.lock()
+        guard !finished else { lock.unlock(); return }
         finished = true
-        if let e = error ?? firstError { done(.failure(e)) } else { done(.success(photos)) }
+        let timeout = timeoutWorkItem
+        timeoutWorkItem = nil
+        lock.unlock()
+        timeout?.cancel()
+        done(result)
     }
 }
