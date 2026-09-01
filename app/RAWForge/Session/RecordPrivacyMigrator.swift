@@ -1,4 +1,5 @@
 import Combine
+import CryptoKit
 import Foundation
 
 /// Upgrades the one shipped metadata generation that persisted raw system uptime.
@@ -11,6 +12,27 @@ enum RecordPrivacyMigrator {
 
     typealias Exchange = (_ source: URL, _ replacement: URL) throws -> Void
 
+    struct FileOperations {
+        var exchange: Exchange
+        var copyItem: (_ source: URL, _ destination: URL) throws -> Void
+        var moveItem: (_ source: URL, _ destination: URL) throws -> Void
+        var removeItem: (_ url: URL) throws -> Void
+        var writeAtomically: (_ data: Data, _ url: URL) throws -> Void
+        var isDirectory: (_ url: URL) throws -> Bool
+
+        static var live: FileOperations {
+            FileOperations(
+                exchange: RecordPrivacyMigrator.atomicExchange,
+                copyItem: { try FileManager.default.copyItem(at: $0, to: $1) },
+                moveItem: { try FileManager.default.moveItem(at: $0, to: $1) },
+                removeItem: { try FileManager.default.removeItem(at: $0) },
+                writeAtomically: { try $0.write(to: $1, options: .atomic) },
+                isDirectory: {
+                    try $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true
+                })
+        }
+    }
+
     struct Report: Equatable {
         var migratedSessions = 0
         var removedLogs = 0
@@ -22,8 +44,11 @@ enum RecordPrivacyMigrator {
         sessionsRoot: URL,
         logsRoot: URL,
         markerURL: URL,
-        exchange: @escaping Exchange = atomicExchange
+        exchange: Exchange? = nil,
+        operations: FileOperations = .live
     ) -> Report {
+        var operations = operations
+        if let exchange { operations.exchange = exchange }
         var report = Report()
         let marker: PrivacyMigrationMarker
         do {
@@ -36,7 +61,7 @@ enum RecordPrivacyMigrator {
 
         let directories: [URL]
         do {
-            directories = try sessionDirectories(at: sessionsRoot)
+            directories = try sessionDirectories(at: sessionsRoot, operations: operations)
         } catch {
             directories = []
             report.failures.append("sessions discovery: \(error)")
@@ -47,7 +72,7 @@ enum RecordPrivacyMigrator {
                 if try migrateSession(
                     in: directory,
                     unknownRecords: &sessionUnknownRecords,
-                    exchange: exchange
+                    operations: operations
                 ) {
                     report.migratedSessions += 1
                 }
@@ -57,15 +82,24 @@ enum RecordPrivacyMigrator {
             report.untouchedUnknownRecords += sessionUnknownRecords
         }
 
+        var quarantinedLogs: LogCleanupPlan?
         if updatedMarker.logsClearedMigrationVersion != migrationVersion {
-            let cleanup = removeLegacyLogs(at: logsRoot)
-            report.removedLogs = cleanup.removed
-            report.failures.append(contentsOf: cleanup.failures)
-            if cleanup.failures.isEmpty {
+            do {
+                let cleanup = try quarantineLegacyLogs(at: logsRoot, operations: operations)
+                quarantinedLogs = cleanup
                 updatedMarker.logsClearedMigrationVersion = migrationVersion
-                if cleanup.removed > 0, updatedMarker.noticeState == .none {
+                if (cleanup?.entryCount ?? 0) > 0, updatedMarker.noticeState == .none {
                     updatedMarker.noticeState = .pending
                 }
+            } catch {
+                report.failures.append("legacy logs quarantine: \(error)")
+            }
+        } else {
+            do {
+                report.removedLogs = try finishCommittedLogCleanup(
+                    at: logsRoot, operations: operations)
+            } catch {
+                report.failures.append("legacy logs cleanup: \(error)")
             }
         }
 
@@ -76,14 +110,26 @@ enum RecordPrivacyMigrator {
         }
 
         do {
-            try PrivacyMigrationMarkerStore.save(updatedMarker, to: markerURL)
+            try PrivacyMigrationMarkerStore.save(
+                updatedMarker,
+                to: markerURL,
+                writeAtomically: operations.writeAtomically)
         } catch {
             report.failures.append("privacy migration marker: \(error)")
+            return report
+        }
+        if let quarantinedLogs {
+            do {
+                try operations.removeItem(quarantinedLogs.quarantineURL)
+                report.removedLogs = quarantinedLogs.entryCount
+            } catch {
+                report.failures.append("legacy logs cleanup: \(error)")
+            }
         }
         return report
     }
 
-    private enum MetadataKind: Equatable {
+    private enum MetadataKind: String, Codable, Equatable {
         case session
         case station
         case darkSetting
@@ -97,15 +143,63 @@ enum RecordPrivacyMigrator {
 
         var staged: URL { source.appendingPathExtension("privacy-migration") }
         var backup: URL { source.appendingPathExtension("privacy-backup") }
+        var backupCreating: URL { source.appendingPathExtension("privacy-backup-creating") }
         var restore: URL { source.appendingPathExtension("privacy-restore") }
     }
+
+    private struct MetadataTransactionManifest: Codable {
+        enum State: String, Codable {
+            case preparing
+            case preCommit
+            case committed
+        }
+
+        struct Entry: Codable {
+            let sourceName: String
+            let kind: MetadataKind
+            let originalByteCount: Int
+            let originalSHA256: String
+            let currentByteCount: Int
+            let currentSHA256: String
+        }
+
+        var format = "rawforge.privacy-metadata-transaction"
+        var schemaVersion = 1
+        var migrationVersion = RecordPrivacyMigrator.migrationVersion
+        var state: State
+        let entries: [Entry]
+    }
+
+    private static let metadataTransactionManifestName =
+        ".privacy-metadata-transaction-v1.json"
+
+    private struct LogCleanupManifest: Codable {
+        struct Entry: Codable {
+            let name: String
+            let byteCount: Int
+            let sha256: String
+        }
+
+        var format = "rawforge.privacy-log-cleanup"
+        var schemaVersion = 1
+        var migrationVersion = RecordPrivacyMigrator.migrationVersion
+        let entries: [Entry]
+    }
+
+    private struct LogCleanupPlan {
+        let quarantineURL: URL
+        let entryCount: Int
+    }
+
+    private static let logQuarantineName = ".privacy-log-cleanup-v1"
+    private static let logCleanupManifestName = "manifest.json"
 
     private static func migrateSession(
         in directory: URL,
         unknownRecords: inout Int,
-        exchange: @escaping Exchange
+        operations: FileOperations
     ) throws -> Bool {
-        try recoverInterruptedTransaction(in: directory, exchange: exchange)
+        try recoverInterruptedTransaction(in: directory, operations: operations)
 
         let files = try FileManager.default.contentsOfDirectory(
             at: directory,
@@ -211,7 +305,9 @@ enum RecordPrivacyMigrator {
             return false
         }
 
-        try transact(replacements.sorted { pathOrder($0.source, $1.source) }, exchange: exchange)
+        try transact(
+            replacements.sorted { pathOrder($0.source, $1.source) },
+            operations: operations)
         return true
     }
 
@@ -219,14 +315,14 @@ enum RecordPrivacyMigrator {
 
     private static func transact(
         _ replacements: [Replacement],
-        exchange: @escaping Exchange
+        operations: FileOperations
     ) throws {
         let fm = FileManager.default
         var staged: [Replacement] = []
         do {
             for replacement in replacements {
-                try removeIfPresent(replacement.staged)
-                try replacement.data.write(to: replacement.staged, options: .atomic)
+                try removeIfPresent(replacement.staged, operations: operations)
+                try operations.writeAtomically(replacement.data, replacement.staged)
                 let stagedData = try Data(contentsOf: replacement.staged)
                 guard stagedData == replacement.data else {
                     throw MigrationError.stagedBytesChanged(replacement.source.lastPathComponent)
@@ -244,28 +340,60 @@ enum RecordPrivacyMigrator {
             throw error
         }
 
-        var originals: [URL: Data] = [:]
-        var backedUp: [Replacement] = []
+        let originals: [URL: Data]
         do {
+            originals = try Dictionary(uniqueKeysWithValues: replacements.map {
+                ($0.source, try Data(contentsOf: $0.source))
+            })
+        } catch {
+            for replacement in replacements { try? operations.removeItem(replacement.staged) }
+            throw error
+        }
+        let manifestURL = replacements[0].source.deletingLastPathComponent()
+            .appendingPathComponent(metadataTransactionManifestName)
+        let entries = replacements.map { replacement in
+            let original = originals[replacement.source] ?? Data()
+            return MetadataTransactionManifest.Entry(
+                sourceName: replacement.source.lastPathComponent,
+                kind: replacement.kind,
+                originalByteCount: original.count,
+                originalSHA256: sha256(original),
+                currentByteCount: replacement.data.count,
+                currentSHA256: sha256(replacement.data))
+        }
+        var manifest = MetadataTransactionManifest(state: .preparing, entries: entries)
+        do {
+            try saveMetadataManifest(manifest, to: manifestURL, operations: operations)
             for replacement in replacements {
-                try removeIfPresent(replacement.backup)
-                let original = try Data(contentsOf: replacement.source)
-                originals[replacement.source] = original
-                try fm.copyItem(at: replacement.source, to: replacement.backup)
+                guard !fm.fileExists(atPath: replacement.backup.path),
+                      !fm.fileExists(atPath: replacement.backupCreating.path) else {
+                    throw MigrationError.transactionArtifactAlreadyExists(
+                        replacement.source.lastPathComponent)
+                }
+                let original = try requiredOriginal(
+                    for: replacement.source, in: originals)
+                try operations.copyItem(replacement.source, replacement.backupCreating)
+                guard try Data(contentsOf: replacement.backupCreating) == original else {
+                    throw MigrationError.backupBytesChanged(replacement.source.lastPathComponent)
+                }
+                try operations.moveItem(replacement.backupCreating, replacement.backup)
                 guard try Data(contentsOf: replacement.backup) == original else {
                     throw MigrationError.backupBytesChanged(replacement.source.lastPathComponent)
                 }
-                backedUp.append(replacement)
             }
+            try validateCompleteBackupSet(
+                entries, in: manifestURL.deletingLastPathComponent())
+            manifest.state = .preCommit
+            try saveMetadataManifest(manifest, to: manifestURL, operations: operations)
         } catch {
-            for replacement in replacements { try? fm.removeItem(at: replacement.staged) }
-            for replacement in backedUp { try? fm.removeItem(at: replacement.backup) }
+            bestEffortCleanupBeforeCommit(
+                replacements, manifestURL: manifestURL, operations: operations)
             throw error
         }
 
         do {
             for replacement in replacements {
-                try exchange(replacement.source, replacement.staged)
+                try operations.exchange(replacement.source, replacement.staged)
                 let installed = try Data(contentsOf: replacement.source)
                 guard installed == replacement.data else {
                     throw MigrationError.exchangedBytesChanged(
@@ -276,13 +404,18 @@ enum RecordPrivacyMigrator {
             for replacement in replacements {
                 try validateCurrent(Data(contentsOf: replacement.source), as: replacement.kind)
             }
+            manifest.state = .committed
+            try saveMetadataManifest(manifest, to: manifestURL, operations: operations)
         } catch {
             do {
                 try restore(
                     replacements,
                     expectedBytes: originals,
-                    exchange: exchange,
-                    removeBackupsAfterValidation: true)
+                    operations: operations)
+                manifest.state = .preparing
+                try saveMetadataManifest(manifest, to: manifestURL, operations: operations)
+                try cleanupTransactionArtifacts(
+                    replacements, manifestURL: manifestURL, operations: operations)
             } catch let rollbackError {
                 throw MigrationError.rollbackFailed(
                     exchangeError: String(describing: error),
@@ -292,75 +425,255 @@ enum RecordPrivacyMigrator {
         }
 
         do {
-            // The session header owns the offset anchor, so its backup is the last
-            // one removed. An interruption during cleanup can therefore always
-            // restore that anchor before retrying any remaining child backup.
-            let cleanupOrder = replacements.sorted {
-                if $0.kind == .session { return false }
-                if $1.kind == .session { return true }
-                return pathOrder($0.source, $1.source)
-            }
-            for replacement in cleanupOrder { try fm.removeItem(at: replacement.backup) }
+            try cleanupTransactionArtifacts(
+                replacements, manifestURL: manifestURL, operations: operations)
         } catch {
-            // Current files are valid, and the retained backups let the next launch
-            // restore and retry the directory before any normal store reads it.
             throw MigrationError.backupCleanupFailed(String(describing: error))
         }
     }
 
     private static func recoverInterruptedTransaction(
         in directory: URL,
-        exchange: @escaping Exchange
+        operations: FileOperations
     ) throws {
         let fm = FileManager.default
-        let files = try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-        let backups = files.filter { $0.lastPathComponent.hasSuffix(".privacy-backup") }
-            .sorted(by: pathOrder)
-
-        if !backups.isEmpty {
-            let replacements = try backups.map { backup -> Replacement in
-                let sourceName = String(
-                    backup.lastPathComponent.dropLast(".privacy-backup".count))
-                let source = directory.appendingPathComponent(sourceName)
-                return Replacement(
-                    source: source,
-                    data: try Data(contentsOf: backup),
-                    kind: try metadataKind(for: source))
+        let manifestURL = directory.appendingPathComponent(metadataTransactionManifestName)
+        if fm.fileExists(atPath: manifestURL.path) {
+            var manifest = try loadMetadataManifest(from: manifestURL)
+            let replacements = try replacements(for: manifest.entries, in: directory)
+            try validateOwnedTransactionArtifacts(manifest.entries, in: directory)
+            switch manifest.state {
+            case .preparing:
+                for (entry, replacement) in zip(manifest.entries, replacements) {
+                    try validateFingerprint(
+                        Data(contentsOf: replacement.source),
+                        byteCount: entry.originalByteCount,
+                        sha256: entry.originalSHA256,
+                        error: .sourceChangedBeforeCommit(entry.sourceName))
+                }
+                try cleanupTransactionArtifacts(
+                    replacements, manifestURL: manifestURL, operations: operations)
+            case .preCommit:
+                try validateCompleteBackupSet(manifest.entries, in: directory)
+                let originals = try Dictionary(uniqueKeysWithValues: zip(
+                    replacements, manifest.entries).map { replacement, entry in
+                        let data = try Data(contentsOf: replacement.backup)
+                        try validateFingerprint(
+                            data,
+                            byteCount: entry.originalByteCount,
+                            sha256: entry.originalSHA256,
+                            error: .backupBytesChanged(entry.sourceName))
+                        return (replacement.source, data)
+                    })
+                try restore(
+                    replacements,
+                    expectedBytes: originals,
+                    operations: operations)
+                manifest.state = .preparing
+                try saveMetadataManifest(manifest, to: manifestURL, operations: operations)
+                try cleanupTransactionArtifacts(
+                    replacements, manifestURL: manifestURL, operations: operations)
+            case .committed:
+                for (entry, replacement) in zip(manifest.entries, replacements) {
+                    let installed = try Data(contentsOf: replacement.source)
+                    try validateFingerprint(
+                        installed,
+                        byteCount: entry.currentByteCount,
+                        sha256: entry.currentSHA256,
+                        error: .committedSourceChanged(entry.sourceName))
+                    try validateCurrent(installed, as: entry.kind)
+                }
+                try cleanupTransactionArtifacts(
+                    replacements, manifestURL: manifestURL, operations: operations)
             }
-            try restore(
-                replacements,
-                expectedBytes: Dictionary(uniqueKeysWithValues: replacements.map {
-                    ($0.source, $0.data)
-                }),
-                exchange: exchange,
-                removeBackupsAfterValidation: true)
+            return
         }
 
-        let leftovers = (try? fm.contentsOfDirectory(
-            at: directory, includingPropertiesForKeys: nil)) ?? []
-        for url in leftovers where url.lastPathComponent.hasSuffix(".privacy-migration")
-                || url.lastPathComponent.hasSuffix(".privacy-restore") {
-            try fm.removeItem(at: url)
+        let files = try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        if let backup = files.first(where: {
+            $0.lastPathComponent.hasSuffix(".privacy-backup")
+        }) {
+            throw MigrationError.unownedBackup(backup.lastPathComponent)
         }
+        for url in files where url.lastPathComponent.hasSuffix(".privacy-migration")
+                || url.lastPathComponent.hasSuffix(".privacy-backup-creating")
+                || url.lastPathComponent.hasSuffix(".privacy-restore") {
+            try operations.removeItem(url)
+        }
+    }
+
+    private static func saveMetadataManifest(
+        _ manifest: MetadataTransactionManifest,
+        to url: URL,
+        operations: FileOperations
+    ) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try operations.writeAtomically(encoder.encode(manifest), url)
+    }
+
+    private static func loadMetadataManifest(
+        from url: URL
+    ) throws -> MetadataTransactionManifest {
+        let manifest = try JSONDecoder().decode(
+            MetadataTransactionManifest.self, from: Data(contentsOf: url))
+        guard manifest.format == "rawforge.privacy-metadata-transaction",
+              manifest.schemaVersion == 1,
+              manifest.migrationVersion == migrationVersion,
+              !manifest.entries.isEmpty else {
+            throw MigrationError.invalidTransactionManifest
+        }
+        _ = try replacements(for: manifest.entries, in: url.deletingLastPathComponent())
+        return manifest
+    }
+
+    private static func replacements(
+        for entries: [MetadataTransactionManifest.Entry],
+        in directory: URL
+    ) throws -> [Replacement] {
+        var sourceNames = Set<String>()
+        var replacements: [Replacement] = []
+        for entry in entries {
+            guard entry.sourceName == URL(fileURLWithPath: entry.sourceName).lastPathComponent,
+                  entry.sourceName != ".", entry.sourceName != "..",
+                  sourceNames.insert(entry.sourceName).inserted else {
+                throw MigrationError.invalidTransactionManifest
+            }
+            let source = directory.appendingPathComponent(entry.sourceName)
+            guard try metadataKind(for: source) == entry.kind else {
+                throw MigrationError.invalidTransactionManifest
+            }
+            replacements.append(Replacement(source: source, data: Data(), kind: entry.kind))
+        }
+        guard replacements.contains(where: { $0.kind == .session }) else {
+            throw MigrationError.invalidTransactionManifest
+        }
+        return replacements
+    }
+
+    private static func validateCompleteBackupSet(
+        _ entries: [MetadataTransactionManifest.Entry],
+        in directory: URL
+    ) throws {
+        let expectedNames = Set(entries.map { "\($0.sourceName).privacy-backup" })
+        let actualNames = try Set(FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil)
+            .map(\.lastPathComponent)
+            .filter { $0.hasSuffix(".privacy-backup") })
+        guard actualNames == expectedNames else {
+            throw MigrationError.incompleteBackupSet(
+                expectedNames.subtracting(actualNames).sorted().first
+                    ?? actualNames.subtracting(expectedNames).sorted().first
+                    ?? "unknown")
+        }
+        for (entry, replacement) in zip(entries, try replacements(for: entries, in: directory)) {
+            guard FileManager.default.fileExists(atPath: replacement.backup.path) else {
+                throw MigrationError.incompleteBackupSet(entry.sourceName)
+            }
+            try validateFingerprint(
+                Data(contentsOf: replacement.backup),
+                byteCount: entry.originalByteCount,
+                sha256: entry.originalSHA256,
+                error: .backupBytesChanged(entry.sourceName))
+        }
+    }
+
+    private static func validateOwnedTransactionArtifacts(
+        _ entries: [MetadataTransactionManifest.Entry],
+        in directory: URL
+    ) throws {
+        let suffixes = [
+            ".privacy-migration",
+            ".privacy-backup-creating",
+            ".privacy-backup",
+            ".privacy-restore",
+        ]
+        let expected = Set(entries.flatMap { entry in
+            suffixes.map { entry.sourceName + $0 }
+        })
+        let actual = try Set(FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil)
+            .map(\.lastPathComponent)
+            .filter { name in suffixes.contains(where: { name.hasSuffix($0) }) })
+        guard actual.isSubset(of: expected) else {
+            throw MigrationError.invalidTransactionManifest
+        }
+    }
+
+    private static func validateFingerprint(
+        _ data: Data,
+        byteCount: Int,
+        sha256 expectedSHA256: String,
+        error: MigrationError
+    ) throws {
+        guard data.count == byteCount, sha256(data) == expectedSHA256 else { throw error }
+    }
+
+    private static func requiredOriginal(
+        for source: URL,
+        in originals: [URL: Data]
+    ) throws -> Data {
+        guard let original = originals[source] else {
+            throw MigrationError.invalidTransactionManifest
+        }
+        return original
+    }
+
+    private static func cleanupTransactionArtifacts(
+        _ replacements: [Replacement],
+        manifestURL: URL,
+        operations: FileOperations
+    ) throws {
+        for replacement in replacements {
+            try removeIfPresent(replacement.staged, operations: operations)
+            try removeIfPresent(replacement.backupCreating, operations: operations)
+            try removeIfPresent(replacement.backup, operations: operations)
+            try removeIfPresent(replacement.restore, operations: operations)
+        }
+        try operations.removeItem(manifestURL)
+    }
+
+    private static func bestEffortCleanupBeforeCommit(
+        _ replacements: [Replacement],
+        manifestURL: URL,
+        operations: FileOperations
+    ) {
+        for replacement in replacements {
+            try? operations.removeItem(replacement.staged)
+            try? operations.removeItem(replacement.backupCreating)
+            try? operations.removeItem(replacement.backup)
+            try? operations.removeItem(replacement.restore)
+        }
+        let fm = FileManager.default
+        let artifactsRemain = replacements.contains { replacement in
+            fm.fileExists(atPath: replacement.staged.path)
+                || fm.fileExists(atPath: replacement.backupCreating.path)
+                || fm.fileExists(atPath: replacement.backup.path)
+                || fm.fileExists(atPath: replacement.restore.path)
+        }
+        if !artifactsRemain { try? operations.removeItem(manifestURL) }
+    }
+
+    private static func sha256(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     private static func restore(
         _ replacements: [Replacement],
         expectedBytes: [URL: Data],
-        exchange: @escaping Exchange,
-        removeBackupsAfterValidation: Bool
+        operations: FileOperations
     ) throws {
         let fm = FileManager.default
         var errors: [String] = []
 
         for replacement in replacements {
             do {
-                try removeIfPresent(replacement.restore)
-                try fm.copyItem(at: replacement.backup, to: replacement.restore)
+                try removeIfPresent(replacement.restore, operations: operations)
+                try operations.copyItem(replacement.backup, replacement.restore)
                 if fm.fileExists(atPath: replacement.source.path) {
-                    try exchange(replacement.source, replacement.restore)
+                    try operations.exchange(replacement.source, replacement.restore)
                 } else {
-                    try fm.moveItem(at: replacement.restore, to: replacement.source)
+                    try operations.moveItem(replacement.restore, replacement.source)
                 }
                 guard let expected = expectedBytes[replacement.source],
                       try Data(contentsOf: replacement.source) == expected else {
@@ -374,13 +687,6 @@ enum RecordPrivacyMigrator {
 
         guard errors.isEmpty else {
             throw MigrationError.restoreFailures(errors)
-        }
-        if removeBackupsAfterValidation {
-            for replacement in replacements {
-                try fm.removeItem(at: replacement.backup)
-                try? fm.removeItem(at: replacement.staged)
-                try? fm.removeItem(at: replacement.restore)
-            }
         }
     }
 
@@ -586,40 +892,121 @@ enum RecordPrivacyMigrator {
 
     // MARK: - Files and logs
 
-    private static func sessionDirectories(at root: URL) throws -> [URL] {
+    private static func sessionDirectories(
+        at root: URL,
+        operations: FileOperations
+    ) throws -> [URL] {
         guard FileManager.default.fileExists(atPath: root.path) else { return [] }
         let urls = try FileManager.default.contentsOfDirectory(
             at: root,
             includingPropertiesForKeys: [.isDirectoryKey],
             options: [.skipsHiddenFiles])
-        return urls.filter {
-            (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
-        }.sorted(by: pathOrder)
+        var directories: [URL] = []
+        for url in urls {
+            if try operations.isDirectory(url) { directories.append(url) }
+        }
+        return directories.sorted(by: pathOrder)
     }
 
-    private static func removeLegacyLogs(at root: URL) -> (removed: Int, failures: [String]) {
-        guard FileManager.default.fileExists(atPath: root.path) else { return (0, []) }
-        let urls: [URL]
-        do {
-            urls = try FileManager.default.contentsOfDirectory(
+    private static func quarantineLegacyLogs(
+        at root: URL,
+        operations: FileOperations
+    ) throws -> LogCleanupPlan? {
+        let fm = FileManager.default
+        let quarantineURL = root.appendingPathComponent(logQuarantineName, isDirectory: true)
+        let manifestURL = quarantineURL.appendingPathComponent(logCleanupManifestName)
+        guard fm.fileExists(atPath: root.path) else { return nil }
+
+        let manifest: LogCleanupManifest
+        if fm.fileExists(atPath: manifestURL.path) {
+            manifest = try loadLogCleanupManifest(from: manifestURL)
+        } else if fm.fileExists(atPath: quarantineURL.path) {
+            let entries = try fm.contentsOfDirectory(
+                at: quarantineURL, includingPropertiesForKeys: nil)
+            guard entries.isEmpty else { throw MigrationError.invalidLogCleanupManifest }
+            try operations.removeItem(quarantineURL)
+            return try quarantineLegacyLogs(at: root, operations: operations)
+        } else {
+            let urls = try fm.contentsOfDirectory(
                 at: root, includingPropertiesForKeys: [.isRegularFileKey])
-        } catch {
-            return (0, ["legacy logs discovery: \(error)"])
+            let legacyURLs = try urls.filter { url in
+                guard url.pathExtension == "log" else { return false }
+                return try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true
+            }.sorted(by: pathOrder)
+            guard !legacyURLs.isEmpty else { return nil }
+            let entries = try legacyURLs.map { url -> LogCleanupManifest.Entry in
+                let data = try Data(contentsOf: url)
+                return LogCleanupManifest.Entry(
+                    name: url.lastPathComponent,
+                    byteCount: data.count,
+                    sha256: sha256(data))
+            }
+            manifest = LogCleanupManifest(entries: entries)
+            try fm.createDirectory(at: quarantineURL, withIntermediateDirectories: false)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try operations.writeAtomically(encoder.encode(manifest), manifestURL)
         }
-        var removed = 0
-        var failures: [String] = []
-        for url in urls.filter({ $0.pathExtension == "log" }).sorted(by: pathOrder) {
-            do {
-                guard try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
-                    continue
-                }
-                try FileManager.default.removeItem(at: url)
-                removed += 1
-            } catch {
-                failures.append("legacy log \(url.lastPathComponent): \(error)")
+
+        for entry in manifest.entries {
+            let source = root.appendingPathComponent(entry.name)
+            let quarantined = quarantineURL.appendingPathComponent(entry.name)
+            if fm.fileExists(atPath: quarantined.path) {
+                try validateFingerprint(
+                    Data(contentsOf: quarantined),
+                    byteCount: entry.byteCount,
+                    sha256: entry.sha256,
+                    error: .quarantinedLogChanged(entry.name))
+                continue
+            }
+            guard fm.fileExists(atPath: source.path) else {
+                throw MigrationError.missingQuarantinedLog(entry.name)
+            }
+            try validateFingerprint(
+                Data(contentsOf: source),
+                byteCount: entry.byteCount,
+                sha256: entry.sha256,
+                error: .legacyLogChanged(entry.name))
+            try operations.moveItem(source, quarantined)
+            try validateFingerprint(
+                Data(contentsOf: quarantined),
+                byteCount: entry.byteCount,
+                sha256: entry.sha256,
+                error: .quarantinedLogChanged(entry.name))
+        }
+        return LogCleanupPlan(quarantineURL: quarantineURL, entryCount: manifest.entries.count)
+    }
+
+    private static func finishCommittedLogCleanup(
+        at root: URL,
+        operations: FileOperations
+    ) throws -> Int {
+        let quarantineURL = root.appendingPathComponent(logQuarantineName, isDirectory: true)
+        guard FileManager.default.fileExists(atPath: quarantineURL.path) else { return 0 }
+        let manifest = try loadLogCleanupManifest(
+            from: quarantineURL.appendingPathComponent(logCleanupManifestName))
+        try operations.removeItem(quarantineURL)
+        return manifest.entries.count
+    }
+
+    private static func loadLogCleanupManifest(from url: URL) throws -> LogCleanupManifest {
+        let manifest = try JSONDecoder().decode(
+            LogCleanupManifest.self, from: Data(contentsOf: url))
+        guard manifest.format == "rawforge.privacy-log-cleanup",
+              manifest.schemaVersion == 1,
+              manifest.migrationVersion == migrationVersion else {
+            throw MigrationError.invalidLogCleanupManifest
+        }
+        var names = Set<String>()
+        for entry in manifest.entries {
+            guard entry.name == URL(fileURLWithPath: entry.name).lastPathComponent,
+                  entry.name != ".", entry.name != "..",
+                  entry.name.hasSuffix(".log"),
+                  names.insert(entry.name).inserted else {
+                throw MigrationError.invalidLogCleanupManifest
             }
         }
-        return (removed, failures)
+        return manifest
     }
 
     private static func atomicExchange(_ source: URL, _ replacement: URL) throws {
@@ -633,6 +1020,15 @@ enum RecordPrivacyMigrator {
     private static func removeIfPresent(_ url: URL) throws {
         if FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
+        }
+    }
+
+    private static func removeIfPresent(
+        _ url: URL,
+        operations: FileOperations
+    ) throws {
+        if FileManager.default.fileExists(atPath: url.path) {
+            try operations.removeItem(url)
         }
     }
 
@@ -668,6 +1064,17 @@ enum RecordPrivacyMigrator {
         case restoreFailures([String])
         case backupCleanupFailed(String)
         case unknownBackup(String)
+        case transactionArtifactAlreadyExists(String)
+        case sourceChangedBeforeCommit(String)
+        case incompleteBackupSet(String)
+        case invalidTransactionManifest
+        case invalidTransactionState(String)
+        case unownedBackup(String)
+        case committedSourceChanged(String)
+        case invalidLogCleanupManifest
+        case missingQuarantinedLog(String)
+        case legacyLogChanged(String)
+        case quarantinedLogChanged(String)
 
         var description: String {
             switch self {
@@ -697,6 +1104,28 @@ enum RecordPrivacyMigrator {
                 return "valid replacements installed but backup cleanup failed: \(error)"
             case .unknownBackup(let name):
                 return "unrecognized privacy backup \(name)"
+            case .transactionArtifactAlreadyExists(let name):
+                return "privacy transaction artifact already exists for \(name)"
+            case .sourceChangedBeforeCommit(let name):
+                return "source changed before privacy transaction commit for \(name)"
+            case .incompleteBackupSet(let name):
+                return "privacy transaction backup set is incomplete at \(name)"
+            case .invalidTransactionManifest:
+                return "invalid privacy transaction manifest"
+            case .invalidTransactionState(let state):
+                return "unsupported privacy transaction state \(state)"
+            case .unownedBackup(let name):
+                return "privacy backup has no complete transaction manifest: \(name)"
+            case .committedSourceChanged(let name):
+                return "committed privacy migration source changed for \(name)"
+            case .invalidLogCleanupManifest:
+                return "invalid privacy log cleanup manifest"
+            case .missingQuarantinedLog(let name):
+                return "legacy log is missing during quarantine: \(name)"
+            case .legacyLogChanged(let name):
+                return "legacy log changed during quarantine: \(name)"
+            case .quarantinedLogChanged(let name):
+                return "quarantined legacy log changed: \(name)"
             }
         }
     }
@@ -844,12 +1273,18 @@ private enum PrivacyMigrationMarkerStore {
         return try JSONDecoder().decode(PrivacyMigrationMarker.self, from: data)
     }
 
-    static func save(_ marker: PrivacyMigrationMarker, to url: URL) throws {
+    static func save(
+        _ marker: PrivacyMigrationMarker,
+        to url: URL,
+        writeAtomically: (_ data: Data, _ url: URL) throws -> Void = {
+            try $0.write(to: $1, options: .atomic)
+        }
+    ) throws {
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(marker).write(to: url, options: .atomic)
+        try writeAtomically(encoder.encode(marker), url)
     }
 
     private enum MarkerError: Error, CustomStringConvertible {

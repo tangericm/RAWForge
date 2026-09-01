@@ -152,6 +152,168 @@ final class RecordPrivacyMigratorTests: XCTestCase {
         XCTAssertNil(try fixture.markerObject()["completedMigrationVersion"])
     }
 
+    func testInterruptedBackupCreationCannotPublishPartialBackup() throws {
+        let fixture = try MigrationFixture.legacyV4(origin: 500)
+        defer { fixture.remove() }
+        let before = try fixture.allMetadataBytes()
+        var operations = RecordPrivacyMigrator.FileOperations.live
+        let copyItem = operations.copyItem
+        let writeAtomically = operations.writeAtomically
+        var copyCount = 0
+        var interruptedBackupURL: URL?
+        var preparingManifestData: Data?
+        operations.writeAtomically = { data, url in
+            if url.lastPathComponent == ".privacy-metadata-transaction-v1.json" {
+                preparingManifestData = data
+            }
+            try writeAtomically(data, url)
+        }
+        operations.copyItem = { source, destination in
+            copyCount += 1
+            if copyCount == 2 {
+                interruptedBackupURL = destination
+                try Data("partial backup".utf8).write(to: destination)
+                throw InjectedFailure.backupCreation
+            }
+            try copyItem(source, destination)
+        }
+
+        let report = RecordPrivacyMigrator.migrate(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL,
+            operations: operations)
+
+        XCTAssertEqual(report.migratedSessions, 0)
+        XCTAssertEqual(report.failures.count, 1)
+        XCTAssertEqual(copyCount, 2)
+        XCTAssertEqual(try fixture.allMetadataBytes(), before)
+        XCTAssertTrue(try fixture.privacyArtifacts().isEmpty)
+        XCTAssertNil(try fixture.markerObject()["completedMigrationVersion"])
+
+        let manifestURL = fixture.sessionDirectory.appendingPathComponent(
+            ".privacy-metadata-transaction-v1.json")
+        try XCTUnwrap(preparingManifestData).write(to: manifestURL, options: .atomic)
+        let partialURL = try XCTUnwrap(interruptedBackupURL)
+        try Data("crash-truncated backup".utf8).write(to: partialURL)
+        XCTAssertEqual(try fixture.allMetadataBytes(), before)
+        XCTAssertEqual(
+            try fixture.privacyArtifacts(),
+            [".privacy-metadata-transaction-v1.json", partialURL.lastPathComponent].sorted())
+        XCTAssertEqual(try fixture.transactionState(), "preparing")
+
+        let recovered = RecordPrivacyMigrator.migrate(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+
+        XCTAssertEqual(recovered.migratedSessions, 1)
+        XCTAssertTrue(recovered.failures.isEmpty)
+        XCTAssertEqual(try fixture.currentSession().schemaVersion, 5)
+        XCTAssertEqual(try fixture.currentStation().schemaVersion, 3)
+        XCTAssertTrue(try fixture.privacyArtifacts().isEmpty)
+        XCTAssertEqual(try fixture.markerObject()["completedMigrationVersion"] as? Int, 1)
+    }
+
+    func testCommittedTransactionWithPartialBackupCleanupKeepsEveryCurrentSource() throws {
+        let fixture = try MigrationFixture.legacyV4(origin: 500)
+        defer { fixture.remove() }
+        let originalBytes = try fixture.allMetadataBytes()
+        var operations = RecordPrivacyMigrator.FileOperations.live
+        let removeItem = operations.removeItem
+        var backupRemovalCount = 0
+        operations.removeItem = { url in
+            if url.lastPathComponent.hasSuffix(".privacy-backup") {
+                backupRemovalCount += 1
+                if backupRemovalCount == 2 { throw InjectedFailure.backupCleanup }
+            }
+            try removeItem(url)
+        }
+
+        let interrupted = RecordPrivacyMigrator.migrate(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL,
+            operations: operations)
+
+        XCTAssertEqual(interrupted.migratedSessions, 0)
+        XCTAssertEqual(interrupted.failures.count, 1)
+        XCTAssertEqual(backupRemovalCount, 2)
+        let installedBytes = try fixture.allMetadataBytes()
+        XCTAssertNotEqual(installedBytes, originalBytes)
+        XCTAssertEqual(try fixture.currentSession().schemaVersion, 5)
+        XCTAssertEqual(try fixture.currentStation().schemaVersion, 3)
+        let interruptedArtifacts = try fixture.privacyArtifacts()
+        XCTAssertTrue(interruptedArtifacts.contains(".privacy-metadata-transaction-v1.json"))
+        XCTAssertEqual(
+            interruptedArtifacts.filter { $0.hasSuffix(".privacy-backup") }.count,
+            3)
+        XCTAssertEqual(try fixture.transactionState(), "committed")
+        XCTAssertNil(try fixture.markerObject()["completedMigrationVersion"])
+
+        let recovered = RecordPrivacyMigrator.migrate(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+
+        XCTAssertEqual(recovered.migratedSessions, 0)
+        XCTAssertTrue(recovered.failures.isEmpty)
+        XCTAssertEqual(try fixture.allMetadataBytes(), installedBytes)
+        XCTAssertNotEqual(try fixture.allMetadataBytes(), originalBytes)
+        XCTAssertTrue(try fixture.privacyArtifacts().isEmpty)
+        XCTAssertEqual(try fixture.markerObject()["completedMigrationVersion"] as? Int, 1)
+    }
+
+    func testMarkerSaveFailureAfterLogQuarantinePreservesNewRelativeLogOnRetry() throws {
+        let fixture = try MigrationFixture.legacyV4(origin: 500)
+        defer { fixture.remove() }
+        let oldABytes = try Data(contentsOf: fixture.logsRoot.appendingPathComponent("old-a.log"))
+        let oldBBytes = try Data(contentsOf: fixture.logsRoot.appendingPathComponent("old-b.log"))
+        var operations = RecordPrivacyMigrator.FileOperations.live
+        let writeAtomically = operations.writeAtomically
+        var markerWriteCount = 0
+        operations.writeAtomically = { data, url in
+            if url.standardizedFileURL == fixture.markerURL.standardizedFileURL {
+                markerWriteCount += 1
+                throw InjectedFailure.markerSave
+            }
+            try writeAtomically(data, url)
+        }
+
+        let interrupted = RecordPrivacyMigrator.migrate(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL,
+            operations: operations)
+
+        XCTAssertEqual(interrupted.migratedSessions, 1)
+        XCTAssertEqual(interrupted.removedLogs, 0)
+        XCTAssertEqual(interrupted.failures.count, 1)
+        XCTAssertEqual(markerWriteCount, 1)
+        XCTAssertNil(try fixture.markerObject()["completedMigrationVersion"])
+        XCTAssertEqual(try fixture.logPrivacyArtifacts(), [".privacy-log-cleanup-v1"])
+        XCTAssertEqual(try Data(contentsOf: fixture.quarantinedLog("old-a.log")), oldABytes)
+        XCTAssertEqual(try Data(contentsOf: fixture.quarantinedLog("old-b.log")), oldBBytes)
+        let currentLog = fixture.logsRoot.appendingPathComponent("rawforge-current.log")
+        let currentLogBytes = Data("+0.100s INFO app current".utf8)
+        try currentLogBytes.write(to: currentLog)
+
+        let recovered = RecordPrivacyMigrator.migrate(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+
+        XCTAssertEqual(recovered.migratedSessions, 0)
+        XCTAssertEqual(recovered.removedLogs, 2)
+        XCTAssertTrue(recovered.failures.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: currentLog), currentLogBytes)
+        XCTAssertTrue(try fixture.logPrivacyArtifacts().isEmpty)
+        let marker = try fixture.markerObject()
+        XCTAssertEqual(marker["completedMigrationVersion"] as? Int, 1)
+        XCTAssertEqual(marker["logsClearedMigrationVersion"] as? Int, 1)
+        XCTAssertEqual(marker["noticeState"] as? String, "pending")
+    }
+
     func testUnknownStationBlocksItsLegacySessionAndRemainsByteIdentical() throws {
         let fixture = try MigrationFixture.legacyV4(origin: 500)
         defer { fixture.remove() }
@@ -228,6 +390,38 @@ final class RecordPrivacyMigratorTests: XCTestCase {
         XCTAssertNil(marker["completedMigrationVersion"])
     }
 
+    func testSessionClassificationFailureIsReportedAndCannotBeMarkedComplete() throws {
+        let fixture = try MigrationFixture.legacyV4(origin: 500)
+        defer { fixture.remove() }
+        let before = try fixture.allMetadataBytes()
+        var operations = RecordPrivacyMigrator.FileOperations.live
+        let isDirectory = operations.isDirectory
+        var classificationCount = 0
+        operations.isDirectory = { url in
+            if url.standardizedFileURL == fixture.sessionDirectory.standardizedFileURL {
+                classificationCount += 1
+                throw InjectedFailure.sessionClassification
+            }
+            return try isDirectory(url)
+        }
+
+        let report = RecordPrivacyMigrator.migrate(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL,
+            operations: operations)
+
+        XCTAssertEqual(report.migratedSessions, 0)
+        XCTAssertEqual(report.untouchedUnknownRecords, 0)
+        XCTAssertEqual(report.failures.count, 1)
+        XCTAssertEqual(classificationCount, 1)
+        XCTAssertEqual(try fixture.allMetadataBytes(), before)
+        XCTAssertTrue(try fixture.privacyArtifacts().isEmpty)
+        let marker = try fixture.markerObject()
+        XCTAssertNil(marker["completedMigrationVersion"])
+        XCTAssertEqual(marker["logsClearedMigrationVersion"] as? Int, 1)
+    }
+
     @MainActor
     func testNoticeUsesExactCopyAndOneOKAcknowledgement() throws {
         let fixture = try MigrationFixture.legacyV4(origin: 500)
@@ -266,6 +460,10 @@ final class RecordPrivacyMigratorTests: XCTestCase {
 
 private enum InjectedFailure: Error {
     case exchange
+    case backupCreation
+    case backupCleanup
+    case markerSave
+    case sessionClassification
 }
 
 private final class MigrationFixture {
@@ -361,7 +559,10 @@ private final class MigrationFixture {
     func allMetadataBytes() throws -> [String: Data] {
         let urls = try fm.contentsOfDirectory(at: sessionDirectory,
                                              includingPropertiesForKeys: nil)
-            .filter { $0.pathExtension == "json" || $0.pathExtension == "jsonl" }
+            .filter {
+                ($0.pathExtension == "json" || $0.pathExtension == "jsonl")
+                    && !$0.lastPathComponent.contains(".privacy-")
+            }
         return try Dictionary(uniqueKeysWithValues: urls.map {
             ($0.lastPathComponent, try Data(contentsOf: $0))
         })
@@ -372,6 +573,27 @@ private final class MigrationFixture {
             .map(\.lastPathComponent)
             .filter { $0.contains(".privacy-") }
             .sorted()
+    }
+
+    func transactionState() throws -> String? {
+        let url = sessionDirectory.appendingPathComponent(
+            ".privacy-metadata-transaction-v1.json")
+        guard fm.fileExists(atPath: url.path) else { return nil }
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        return object["state"] as? String
+    }
+
+    func logPrivacyArtifacts() throws -> [String] {
+        try fm.contentsOfDirectory(at: logsRoot, includingPropertiesForKeys: nil)
+            .map(\.lastPathComponent)
+            .filter { $0.contains(".privacy-") }
+            .sorted()
+    }
+
+    func quarantinedLog(_ name: String) -> URL {
+        logsRoot.appendingPathComponent(".privacy-log-cleanup-v1", isDirectory: true)
+            .appendingPathComponent(name)
     }
 
     func corruptStationJSON() throws {
