@@ -23,6 +23,11 @@ enum DemoSeed {
     /// `RAWFORGE_DEMO=single` fakes a phone with one rear camera — an SE — so
     /// the parts of the interface that should collapse can be seen collapsing.
     static var wantsSingleSensor: Bool { value == "single" }
+    /// Opens a genuinely empty first-use Plan sheet, but with simulated camera
+    /// capabilities so every starter can be reviewed without a phone.
+    static var wantsStarter: Bool { value == "starter" || wantsStarterReview }
+    /// Opens the first starter's real review screen directly for visual QA.
+    static var wantsStarterReview: Bool { value == "starter-review" }
     /// `RAWFORGE_DEMO=focus` opens the focus pre-flight, which is otherwise
     /// three taps deep behind a shot list a simulator cannot build. The preview
     /// is black without a camera, but the layout, the mode picker and the
@@ -99,6 +104,13 @@ enum DemoSeed {
         var repeated = CaptureSet.repeated(
             CaptureSpec(shutterSeconds: 1.0 / 250, iso: 100), count: 16, name: "repeat-16")
         repeated.executionMode = .sequential
+
+        if wantsStarter {
+            model.savedProtocols = []
+            model.station.shotList = ShotList()
+            model.station.phase = .sessionOpen
+            return
+        }
 
         model.station.shotList = ShotList(entries: wantsSingleSensor
             ? [ShotListEntry(index: 0, sensor: .wide, captureSet: sweep),
