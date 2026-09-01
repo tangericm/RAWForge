@@ -191,8 +191,8 @@ enum ExecutionMode: String, Codable, CaseIterable, Identifiable {
     var explanation: String {
         switch self {
         case .hardwareBracket:
-            return "All frames in one request, as fast as the sensor allows. "
-                + "The camera cannot report what it did per frame."
+            return "Frames fire in hardware-sized bursts, as fast as the sensor allows. "
+                + "Long sets split into multiple bursts; the camera cannot report what it did per frame."
         case .sequential:
             return "One frame at a time, re-setting the camera between each. "
                 + "Slower, and the only mode that records the camera's own read-back."
