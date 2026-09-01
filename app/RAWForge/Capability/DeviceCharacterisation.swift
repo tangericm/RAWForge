@@ -35,6 +35,7 @@ enum DeviceCharacterisation {
     enum Failure: Error, CustomStringConvertible {
         case noUsableSensor
         case notEnoughFrames(String)
+        case cameraDidNotRecover(String)
 
         var description: String {
             switch self {
@@ -42,6 +43,10 @@ enum DeviceCharacterisation {
                 return "no sensor on this device delivers Bayer RAW, so there is nothing to measure"
             case .notEnoughFrames(let what):
                 return "not enough frames came back to measure \(what)"
+            case .cameraDidNotRecover(let detail):
+                return "the camera did not recover after one automatic reset — \(detail). "
+                    + "Close other camera apps; if the preview remains black, restart the iPhone. "
+                    + "The Console log contains the session diagnostics."
             }
         }
     }
@@ -55,6 +60,27 @@ enum DeviceCharacterisation {
     static func run(rig: CaptureRig,
                     report: CapabilityReport,
                     onStep: @escaping (Step) -> Void = { _ in }) async throws -> DeviceProfile {
+        do {
+            return try await runOnce(rig: rig, report: report, onStep: onStep)
+        } catch {
+            guard CaptureReliability.shouldRecoverBench(after: error, recoveryCount: 0) else {
+                throw error
+            }
+            logWarn(.probe, "characterisation capture failed — attempting one camera-graph reset")
+            do {
+                try await rig.rebuildAfterCaptureFailure(error)
+                return try await runOnce(rig: rig, report: report, onStep: onStep)
+            } catch {
+                logFailure(.probe, "characterisation retry after camera-graph reset", error)
+                throw Failure.cameraDidNotRecover(
+                    CaptureSessionDiagnostics.describe(error: error))
+            }
+        }
+    }
+
+    private static func runOnce(rig: CaptureRig,
+                                report: CapabilityReport,
+                                onStep: @escaping (Step) -> Void) async throws -> DeviceProfile {
 
         let sensors = report.usableSensors
         guard let first = sensors.first else { throw Failure.noUsableSensor }
@@ -75,15 +101,17 @@ enum DeviceCharacterisation {
         onStep(Step(label: "Frame period", index: 1, total: total))
         try await rig.configure(first.sensor)
         await rig.startSessionAndWait()
+        try await rig.requireSessionAvailable("Device Characterisation")
         _ = try await rig.lockWhiteBalance()
 
         let ceiling = rig.maxBracketCount
         var framePeriod = reference.sensorFramePeriod
         var seam = reference.bracketSeam
 
-        if ceiling >= 3 {
+        let periodSamples = framePeriodSampleCount(bracketCeiling: ceiling)
+        if periodSamples >= 3 {
             var stamps: [Double] = []
-            _ = try await rig.captureBracket(specs(count: ceiling, shutter: shutter, iso: iso)) { photo, _ in
+            _ = try await rig.captureBracket(specs(count: periodSamples, shutter: shutter, iso: iso)) { photo, _ in
                 stamps.append(photo.timestamp.seconds)
                 if let d = photo.fileDataRepresentation() { frameSizes.append(d.count) }
             }
@@ -148,6 +176,7 @@ enum DeviceCharacterisation {
             let t0 = ProcessInfo.processInfo.systemUptime
             try await rig.configure(first.sensor)
             await rig.startSessionAndWait()
+            try await rig.requireSessionAvailable("same-sensor timing")
             sameSensorDurations.append(ProcessInfo.processInfo.systemUptime - t0)
         }
         let sameSensorSetup = Reading.measured(
@@ -167,6 +196,7 @@ enum DeviceCharacterisation {
                 let t0 = ProcessInfo.processInfo.systemUptime
                 try await rig.configure(target)
                 await rig.startSessionAndWait()
+                try await rig.requireSessionAvailable("sensor-swap timing")
                 durations.append(ProcessInfo.processInfo.systemUptime - t0)
             }
             swap = .measured(median(durations), samples: durations.count, spread: spread(durations))
@@ -213,6 +243,14 @@ enum DeviceCharacterisation {
     }
 
     // MARK: - Arithmetic
+
+    /// Four frames produce three gaps: enough for a median to reject one
+    /// delayed frame without allocating the maximum RAW bracket merely to
+    /// estimate an in-request period. The separate seam step still exercises
+    /// the true hardware ceiling, after resources have been prepared.
+    nonisolated static func framePeriodSampleCount(bracketCeiling: Int) -> Int {
+        bracketCeiling >= 3 ? min(4, bracketCeiling) : 0
+    }
 
     private static func specs(count: Int, shutter: Double, iso: Float) -> [CaptureSpec] {
         (0..<count).map { _ in CaptureSpec(shutterSeconds: shutter, iso: iso) }
