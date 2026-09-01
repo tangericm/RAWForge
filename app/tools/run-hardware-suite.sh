@@ -2,7 +2,7 @@
 #
 # Runs the device-only tests on a tethered phone and records that it happened.
 #
-# The 13 tests this exists for are the ones a simulator cannot answer: whether
+# The tests this exists for are the ones a simulator cannot answer: whether
 # a Bayer format is actually offered, whether an exposure lock lands where it
 # was asked, whether a bracket past the ceiling splits at the seam. Everywhere
 # else they skip, and a skip reads as green.

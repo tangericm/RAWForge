@@ -50,6 +50,34 @@ final class DeviceProfileTests: XCTestCase {
                        "the settle is not a property of the phone and must stay borrowed")
     }
 
+    /// Profiles already on disk predate the reuse measurement. They must keep
+    /// decoding, and the estimate must fall back conservatively to the measured
+    /// swap rather than inventing a zero-cost operation.
+    func testALegacyProfileBorrowsItsSameSensorCostFromTheSwap() throws {
+        let legacy = DeviceProfile.reference
+        let round = try JSONDecoder.rawforge.decode(
+            DeviceProfile.self, from: JSONEncoder.rawforge.encode(legacy))
+        let reuse = try XCTUnwrap(round.readings.first { $0.name == "Same-sensor setup" }?.reading)
+
+        XCTAssertFalse(reuse.isMeasured)
+        XCTAssertEqual(reuse.value, round.sensorSwap.value, accuracy: 1e-9)
+        XCTAssertFalse(round.isCharacterised,
+                       "a legacy profile must invite one re-measurement for the new timing")
+    }
+
+    /// A measured value cannot be merely accepted by the decoder and then
+    /// dropped. `readings` is what the Bench and provenance count consume, so
+    /// finding it there proves the value survives into the app's public model.
+    func testAMeasuredSameSensorCostSurvivesDecoding() throws {
+        let measured = Reading.measured(0.007, samples: 7, spread: 0.001)
+        let profile = try Self.profileWithSameSensorSetup(measured)
+        let reuse = try XCTUnwrap(profile.readings.first {
+            $0.name == "Same-sensor setup"
+        }?.reading)
+
+        XCTAssertEqual(reuse, measured)
+    }
+
     /// The failure this guard exists for: a backup restored onto different
     /// hardware would otherwise apply one phone's timings to another silently.
     func testAProfileFromAnotherDeviceIsDiscardedRatherThanApplied() throws {
@@ -96,6 +124,20 @@ final class DeviceProfileTests: XCTestCase {
                                            minimumGap: 0, profile: .reference)
         XCTAssertFalse(e.profile.isCharacterised,
                        "the plan screen decides whether to warn from this")
+    }
+
+    /// The first set may need a real setup. Consecutive sets on its already-live
+    /// sensor pay the separately measured reuse cost, not another sensor swap.
+    func testConsecutiveSetsUseTheMeasuredReuseCost() throws {
+        let profile = try Self.profileWithSameSensorSetup(
+            .measured(0.007, samples: 7, spread: 0.001))
+        let entries = [Self.entry(frames: 1), Self.entry(frames: 1), Self.entry(frames: 1)]
+        let estimate = SessionEstimate.forShotList(
+            entries, minimumGap: 0, includeStillness: false,
+            bracketCeiling: 8, profile: profile)
+
+        XCTAssertEqual(estimate.breakdown.setup, 0.40 + 0.007 + 0.007,
+                       accuracy: 1e-9)
     }
 
     // MARK: - Learning the worst case from real work
@@ -171,7 +213,8 @@ final class DeviceProfileTests: XCTestCase {
                       appVersion: p.appVersion, measuredAt: p.measuredAt,
                       sensorFramePeriod: framePeriod,
                       sequentialOverheadPerFrame: p.sequentialOverheadPerFrame,
-                      sensorSwap: p.sensorSwap, bracketSeam: p.bracketSeam,
+                      sensorSwap: p.sensorSwap, sameSensorSetup: p.sameSensorSetup,
+                      bracketSeam: p.bracketSeam,
                       averageFrameBytes: p.averageFrameBytes,
                       worstCaseFrameBytes: p.worstCaseFrameBytes,
                       stillnessTimeout: p.stillnessTimeout)
@@ -184,9 +227,23 @@ final class DeviceProfileTests: XCTestCase {
             sensorFramePeriod: .measured(0.0334, samples: 7, spread: 0.002),
             sequentialOverheadPerFrame: .measured(0.233, samples: 5, spread: 0.05),
             sensorSwap: .measured(0.40, samples: 3, spread: 0.06),
+            sameSensorSetup: .measured(0.007, samples: 7, spread: 0.001),
             bracketSeam: .measured(0.567, samples: 1, spread: 0),
             averageFrameBytes: .measured(10_000_000, samples: 20, spread: 2_000_000),
             worstCaseFrameBytes: .measured(12_000_000, samples: 20, spread: 0),
             stillnessTimeout: DeviceProfile.reference.stillnessTimeout)
+    }
+
+    /// Injects the new field at the serialized boundary. This keeps the tests
+    /// compileable before the model grows the field, so RED is a behavioral
+    /// failure rather than a missing-member compiler error.
+    private static func profileWithSameSensorSetup(_ reading: Reading) throws -> DeviceProfile {
+        let encoded = try JSONEncoder.rawforge.encode(DeviceProfile.reference)
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object["sameSensorSetup"] = try JSONSerialization.jsonObject(
+            with: JSONEncoder.rawforge.encode(reading))
+        return try JSONDecoder.rawforge.decode(
+            DeviceProfile.self, from: JSONSerialization.data(withJSONObject: object))
     }
 }

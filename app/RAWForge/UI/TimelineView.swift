@@ -151,19 +151,32 @@ struct StationTimeline: View {
         let profile = DeviceProfile.active
 
         for (i, entry) in entries.enumerated() {
-            // Every set brings the sensor up and settles, whether or not the
-            // sensor changed — so both steps appear per set. The label is the
-            // only thing that differs, because a swap and a re-arm are not the
-            // same event even though the app pays for them the same way.
-            let changed = entry.sensor != previousSensor
+            // Every set has a setup step, but only a changed sensor rebuilds
+            // the graph. A consecutive set reuses the live graph and carries
+            // its own measured cost.
+            let first = previousSensor == nil
+            let changed = !first && entry.sensor != previousSensor
+            let title: String
+            let setupDetail: String
+            let seconds: TimeInterval
+            if first {
+                title = "Prepare \(entry.sensor.rawValue)"
+                setupDetail = "bring this sensor's capture graph online"
+                seconds = profile.sensorSwap.value
+            } else if changed {
+                title = "Swap to \(entry.sensor.rawValue)"
+                setupDetail = "the pose is held and nothing is shot"
+                seconds = profile.sensorSwap.value
+            } else {
+                title = "Reuse \(entry.sensor.rawValue)"
+                setupDetail = "capture graph is already live"
+                seconds = profile.sameSensorSetupCost.value
+            }
             out.append(Step(
                 kind: .swap,
-                title: changed ? "Swap to \(entry.sensor.rawValue)"
-                               : "Configure \(entry.sensor.rawValue)",
-                detail: changed ? "the pose is held and nothing is shot"
-                                : "brought up again for this set — cost measured on a swap, "
-                                  + "so an upper bound here",
-                seconds: profile.sensorSwap.value))
+                title: title,
+                detail: setupDetail,
+                seconds: seconds))
             out.append(Step(kind: .settle, title: "Settle",
                             detail: "measured decay of the tap transient",
                             seconds: profile.stillnessTimeout.value))
