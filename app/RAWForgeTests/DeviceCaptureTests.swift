@@ -169,6 +169,69 @@ final class DeviceCaptureTests: XCTestCase {
         }
     }
 
+    #if !DEBUG
+    /// Measures the exact synchronous work performed by `CaptureModel.bank`.
+    ///
+    /// File serialization and DNG parsing happen before the stopwatch because
+    /// this ticket asks one narrow question: whether the full-pixel histogram
+    /// itself is cheap enough to keep between photo delivery and the next
+    /// hardware request. Eight real bracket buffers make this the same memory
+    /// shape as production, not a synthetic allocation with friendlier caches.
+    ///
+    /// The 100 ms p90 budget is deliberately generous but consequential: at
+    /// that boundary clipping alone adds 6.4 seconds to a 64-frame set. Above
+    /// it the computation must leave the synchronous capture path; below it the
+    /// printed and attached result lets future device runs expose regressions.
+    func testReleaseClippingStatisticsStayInsideCapturePathBudget() async throws {
+        try await rig.configure(firstSensor.sensor)
+        await rig.startSessionAndWait()
+
+        let frameCount = min(8, rig.maxBracketCount)
+        try XCTSkipUnless(frameCount >= 3, "needs at least three bracket buffers")
+        let shutter = 1.0 / 125.0
+        let iso = max(firstSensor.minISO ?? 100, 100)
+        let specs = Array(repeating: CaptureSpec(shutterSeconds: shutter, iso: iso),
+                          count: frameCount)
+        var elapsed: [TimeInterval] = []
+
+        let requestSizes = try await rig.captureBracket(specs) { photo, _ in
+            let data = try XCTUnwrap(photo.fileDataRepresentation())
+            let witness = DNGMetadata.read(data)
+
+            let began = ProcessInfo.processInfo.systemUptime
+            let stats = ClippingStats.compute(
+                from: photo, bayerFormat: rig.bayerFormat,
+                activeArea: witness.activeArea,
+                blackLevel: witness.blackLevel?.first,
+                whiteLevel: witness.whiteLevel?.first)
+            elapsed.append(ProcessInfo.processInfo.systemUptime - began)
+
+            XCTAssertNil(stats.unavailableReason)
+            XCTAssertEqual(stats.channels.count, 4)
+        }
+
+        XCTAssertEqual(requestSizes, [frameCount])
+        XCTAssertEqual(elapsed.count, frameCount)
+
+        let sorted = elapsed.sorted()
+        let middle = sorted.count / 2
+        let median = sorted.count.isMultiple(of: 2)
+            ? (sorted[middle - 1] + sorted[middle]) / 2
+            : sorted[middle]
+        let p90 = sorted[Int(ceil(Double(sorted.count) * 0.90)) - 1]
+        let milliseconds = sorted.map { $0 * 1_000 }
+        let result = String(format:
+            "RAWFORGE_CLIPPING_BENCHMARK samples_ms=%@ median_ms=%.3f p90_ms=%.3f max_ms=%.3f",
+            milliseconds.map { String(format: "%.3f", $0) }.joined(separator: ","),
+            median * 1_000, p90 * 1_000, (sorted.last ?? 0) * 1_000)
+        print(result)
+        add(XCTAttachment(string: result))
+
+        XCTAssertLessThan(p90, 0.100,
+                          "clipping p90 exceeds 100 ms/frame; move it off the capture path")
+    }
+    #endif
+
     func testAHardwareBracketReturnsOnePhotoPerRung() async throws {
         try await rig.configure(firstSensor.sensor)
         await rig.startSessionAndWait()
