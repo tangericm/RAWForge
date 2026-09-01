@@ -68,10 +68,49 @@ final class BuildIdentityTests: XCTestCase {
                        "the app collects nothing, and the manifest must say so")
 
         let apis = try XCTUnwrap(plist["NSPrivacyAccessedAPITypes"] as? [[String: Any]])
-        XCTAssertEqual(apis.count, 1, "only the disk-space check qualifies")
-        XCTAssertEqual(apis[0]["NSPrivacyAccessedAPIType"] as? String,
-                       "NSPrivacyAccessedAPICategoryDiskSpace")
-        XCTAssertEqual(apis[0]["NSPrivacyAccessedAPITypeReasons"] as? [String], ["E174.1"])
+        let declared = Dictionary(uniqueKeysWithValues: apis.map {
+            ($0["NSPrivacyAccessedAPIType"] as! String,
+             $0["NSPrivacyAccessedAPITypeReasons"] as! [String])
+        })
+        XCTAssertEqual(declared, [
+            "NSPrivacyAccessedAPICategoryDiskSpace": ["E174.1"],
+            "NSPrivacyAccessedAPICategorySystemBootTime": ["35F9.1"]
+        ])
+    }
+
+    func testTheBuiltAppUsesTheApprovedPermissionDescriptions() {
+        XCTAssertEqual(
+            Bundle.main.infoDictionary?["NSCameraUsageDescription"] as? String,
+            "RAWForge uses the camera to preview your scene and save the RAW captures you choose to make."
+        )
+        XCTAssertEqual(
+            Bundle.main.infoDictionary?["NSMotionUsageDescription"] as? String,
+            "RAWForge records device motion during a capture so each RAW frame includes evidence of how steadily the phone was held."
+        )
+    }
+
+    func testThePrivacyPolicyIsBundledWithTheApp() throws {
+        XCTAssertNotNil(
+            Bundle.main.url(forResource: "privacy-policy", withExtension: "md"),
+            "privacy-policy.md must be available offline from Privacy & Data"
+        )
+    }
+
+    func testTheBundledAppStoreAndHostedPrivacyPoliciesAreByteIdentical() throws {
+        let bundled = try XCTUnwrap(
+            Bundle.main.url(forResource: "privacy-policy", withExtension: "md")
+        )
+        let testBundle = Bundle(for: BuildIdentityTests.self)
+        let appStore = try XCTUnwrap(
+            testBundle.url(forResource: "privacy-policy", withExtension: "md")
+        )
+        let hosted = try XCTUnwrap(
+            testBundle.url(forResource: "index", withExtension: "md")
+        )
+
+        let expected = try Data(contentsOf: bundled)
+        XCTAssertEqual(try Data(contentsOf: appStore), expected)
+        XCTAssertEqual(try Data(contentsOf: hosted), expected)
     }
 
     /// Without this, every submission stops to ask the same question.
