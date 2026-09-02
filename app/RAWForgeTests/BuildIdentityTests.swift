@@ -113,6 +113,21 @@ final class BuildIdentityTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: hosted), expected)
     }
 
+    func testDynamicTypeAuditSourcesExistOnlyInTheTestBundle() throws {
+        let testBundle = Bundle(for: BuildIdentityTests.self)
+
+        for resource in ["DeviceProfileView", "LogConsoleView"] {
+            XCTAssertNotNil(
+                testBundle.url(forResource: resource, withExtension: "swift.txt"),
+                "\(resource).swift must remain available to the simulator regression gate"
+            )
+            XCTAssertNil(
+                Bundle.main.url(forResource: resource, withExtension: "swift.txt"),
+                "test audit sources must not ship in the app bundle"
+            )
+        }
+    }
+
     /// Without this, every submission stops to ask the same question.
     func testExportComplianceIsDeclaredSoSubmissionDoesNotStopToAsk() {
         XCTAssertEqual(Bundle.main.infoDictionary?["ITSAppUsesNonExemptEncryption"] as? Bool, false)

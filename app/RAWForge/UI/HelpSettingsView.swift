@@ -71,6 +71,54 @@ struct BuildIDClipboard {
     }
 }
 
+struct HelpSettingsBuiltDestination: View {
+    let kind: HelpSettingsDestination
+    let contentType: Any.Type
+    private let content: AnyView
+
+    init<Content: View>(
+        kind: HelpSettingsDestination,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.kind = kind
+        self.contentType = Content.self
+        self.content = AnyView(content())
+    }
+
+    var body: some View {
+        content
+    }
+}
+
+struct HelpSettingsDestinationFactory {
+    let report: CapabilityReport?
+    let model: CaptureModel?
+    let identity: DeviceIdentity
+
+    func view(for route: HelpSettingsDestination) -> HelpSettingsBuiltDestination {
+        switch route {
+        case .privacyData:
+            HelpSettingsBuiltDestination(kind: .privacyData) { PrivacyDataView() }
+        case .thisIPhone:
+            HelpSettingsBuiltDestination(kind: .thisIPhone) {
+                ThisIPhoneView(report: report, model: model)
+            }
+        case .diagnostics:
+            HelpSettingsBuiltDestination(kind: .diagnostics) {
+                DiagnosticsView(identity: identity)
+            }
+        case .support:
+            HelpSettingsBuiltDestination(kind: .support) {
+                SupportView(identity: identity)
+            }
+        case .openSourceAbout:
+            HelpSettingsBuiltDestination(kind: .openSourceAbout) {
+                AboutView(identity: identity)
+            }
+        }
+    }
+}
+
 struct HelpSettingsView: View {
     let report: CapabilityReport?
     private let model: CaptureModel?
@@ -96,7 +144,7 @@ struct HelpSettingsView: View {
             Section {
                 ForEach(HelpSettingsDestination.allCases) { route in
                     NavigationLink {
-                        view(for: route)
+                        destinationFactory.view(for: route)
                     } label: {
                         destinationLabel(route)
                     }
@@ -112,24 +160,16 @@ struct HelpSettingsView: View {
             .frame(minHeight: 44, alignment: .leading)
     }
 
-    @ViewBuilder
-    private func view(for route: HelpSettingsDestination) -> some View {
-        switch route {
-        case .privacyData:
-            PrivacyDataView()
-        case .thisIPhone:
-            ThisIPhoneView(report: report, model: model)
-        case .diagnostics:
-            DiagnosticsView(identity: identity)
-        case .support:
-            SupportView(identity: identity)
-        case .openSourceAbout:
-            AboutView(identity: identity)
-        }
+    private var destinationFactory: HelpSettingsDestinationFactory {
+        HelpSettingsDestinationFactory(
+            report: report,
+            model: model,
+            identity: identity
+        )
     }
 }
 
-private struct ThisIPhoneView: View {
+struct ThisIPhoneView: View {
     let report: CapabilityReport?
     let model: CaptureModel?
 
@@ -213,7 +253,7 @@ private struct ThisIPhoneView: View {
     }
 }
 
-private struct DiagnosticsView: View {
+struct DiagnosticsView: View {
     let identity: DeviceIdentity
     @State private var shared: ExportedArchive?
     @State private var warningCount = 0
@@ -276,7 +316,7 @@ private struct DiagnosticsView: View {
     }
 }
 
-private struct SupportView: View {
+struct SupportView: View {
     let identity: DeviceIdentity
     let clipboard: BuildIDClipboard
     @State private var copied = false

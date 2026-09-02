@@ -108,8 +108,10 @@ final class DebugLog: @unchecked Sendable {
     private var handle: FileHandle?
     private let osLog = Logger(subsystem: "com.tangericm.rawforge", category: "rawforge")
     private let storageDirectory: URL
+    private let backupExclusion: (URL) throws -> Void
     private let uptime: () -> TimeInterval
     private var launchOriginUptime: TimeInterval
+    private var runMarkerURL: URL?
 
     private static let clockFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -126,11 +128,13 @@ final class DebugLog: @unchecked Sendable {
 
     init(
         storageDirectory: URL = DebugLog.directory,
+        backupExclusion: @escaping (URL) throws -> Void = DebugLog.excludeFromBackup,
         uptime: @escaping () -> TimeInterval = {
             ProcessInfo.processInfo.systemUptime
         }
     ) {
         self.storageDirectory = storageDirectory
+        self.backupExclusion = backupExclusion
         self.uptime = uptime
         launchOriginUptime = uptime()
     }
@@ -162,32 +166,48 @@ final class DebugLog: @unchecked Sendable {
     func start(device: DeviceIdentity) {
         launchOriginUptime = uptime()
         let stamp = Self.stampFormatter.string(from: Date())
-        let storagePreparationError: Error?
-        do {
-            try Self.prepareStorage(at: storageDirectory)
-            storagePreparationError = nil
-        } catch {
-            // Logging remains best-effort, but report the failed privacy guard
-            // in memory and, when the directory itself exists, on disk.
-            try? FileManager.default.createDirectory(
-                at: storageDirectory,
-                withIntermediateDirectories: true
-            )
-            storagePreparationError = error
-        }
-        let url = storageDirectory.appendingPathComponent("rawforge-\(stamp).log")
-        FileManager.default.createFile(atPath: url.path, contents: nil)
-        handle = try? FileHandle(forWritingTo: url)
-        fileURL = url
+        var persistenceError: Error?
+        var unclean = false
+        var launchURL: URL?
 
-        let marker = storageDirectory.appendingPathComponent(".running")
-        let unclean = FileManager.default.fileExists(atPath: marker.path)
-        FileManager.default.createFile(atPath: marker.path, contents: Data())
+        handle = nil
+        fileURL = nil
+        runMarkerURL = nil
+        do {
+            try backupExclusion(storageDirectory)
+
+            let url = storageDirectory.appendingPathComponent("rawforge-\(stamp).log")
+            guard FileManager.default.createFile(atPath: url.path, contents: nil) else {
+                throw PersistenceError.couldNotCreateLaunchLog
+            }
+            do {
+                handle = try FileHandle(forWritingTo: url)
+            } catch {
+                try? FileManager.default.removeItem(at: url)
+                throw error
+            }
+            fileURL = url
+            launchURL = url
+
+            let marker = storageDirectory.appendingPathComponent(".running")
+            unclean = FileManager.default.fileExists(atPath: marker.path)
+            if FileManager.default.createFile(atPath: marker.path, contents: Data()) {
+                runMarkerURL = marker
+            }
+            sweepOldLogs()
+        } catch {
+            // Privacy fails closed: the ring and unified log remain available,
+            // but no launch report exists unless exclusion was verified first.
+            handle = nil
+            fileURL = nil
+            persistenceError = error
+        }
 
         write(.info, .app, "RAWForge \(device.buildDescription) launched")
-        if let storagePreparationError {
+        if let persistenceError {
             write(.error, .store,
-                  "diagnostic storage backup exclusion failed — \(storagePreparationError)")
+                  "diagnostic persistence unavailable; logging in memory only — "
+                  + "\(persistenceError)")
         }
         if device.isDirtyBuild {
             write(.warn, .app, "built from a working tree with uncommitted changes — this "
@@ -195,19 +215,20 @@ final class DebugLog: @unchecked Sendable {
         }
         write(.info, .app, "\(device.modelIdentifier) · \(device.systemName) \(device.systemVersion)"
               + (device.isSimulator ? " · SIMULATOR" : ""))
-        write(.info, .app, "log file \(url.lastPathComponent)")
+        if let launchURL {
+            write(.info, .app, "log file \(launchURL.lastPathComponent)")
+        }
         if unclean {
             write(.error, .app, "the previous run did not exit cleanly — it was killed or crashed. "
                   + "The log before this one holds whatever it managed to write.")
         }
-        sweepOldLogs()
         installExceptionHandler()
     }
 
     /// Reapplied at every launch so retained reports as well as this launch's
     /// file remain outside iCloud Backup. Creating the directory first covers
     /// upgrades without moving or replacing any legacy logs.
-    private static func prepareStorage(at directory: URL) throws {
+    private static func excludeFromBackup(_ directory: URL) throws {
         try FileManager.default.createDirectory(
             at: directory,
             withIntermediateDirectories: true
@@ -216,6 +237,18 @@ final class DebugLog: @unchecked Sendable {
         var values = URLResourceValues()
         values.isExcludedFromBackup = true
         try mutableDirectory.setResourceValues(values)
+
+        let verified = try mutableDirectory.resourceValues(
+            forKeys: [.isExcludedFromBackupKey]
+        )
+        guard verified.isExcludedFromBackup == true else {
+            throw PersistenceError.backupExclusionWasNotApplied
+        }
+    }
+
+    private enum PersistenceError: Error {
+        case backupExclusionWasNotApplied
+        case couldNotCreateLaunchLog
     }
 
     /// Called when the app resigns normally, so the next launch can tell a
@@ -223,9 +256,10 @@ final class DebugLog: @unchecked Sendable {
     func noteCleanExit() {
         write(.info, .app, "app resigned cleanly")
         flush()
-        try? FileManager.default.removeItem(
-            at: storageDirectory.appendingPathComponent(".running")
-        )
+        if let runMarkerURL {
+            try? FileManager.default.removeItem(at: runMarkerURL)
+            self.runMarkerURL = nil
+        }
     }
 
     /// An ObjC exception is the one failure mode this app is known to hit —
