@@ -26,11 +26,15 @@ final class RecordPrivacyMigratorTests: XCTestCase {
         XCTAssertFalse(sessionText.contains("openedAtUptime"))
 
         let station = try fixture.currentStation()
-        XCTAssertEqual(station.schemaVersion, 3)
+        XCTAssertEqual(station.schemaVersion, 4)
         XCTAssertEqual(station.monotonicTimebase, CaptureTimebase.persistedName)
         XCTAssertNotNil(station.captureSegmentID)
         let frame = try XCTUnwrap(station.brackets.first?.frames.first)
         XCTAssertEqual(frame.capturedAtSegmentStartSeconds, 3, accuracy: 0.000_001)
+        XCTAssertEqual(
+            frame.photoTimestampAtSegmentStartSeconds ?? -1,
+            200,
+            accuracy: 0.000_001)
         XCTAssertEqual(frame.deliveredAtSegmentStartSeconds ?? -1, 3.25, accuracy: 0.000_001)
         XCTAssertEqual(frame.latestMotionAtSegmentStartSeconds ?? -1, 2.75, accuracy: 0.000_001)
         assertWindow(station.motion, 1, 4)
@@ -38,10 +42,41 @@ final class RecordPrivacyMigratorTests: XCTestCase {
         assertWindow(station.brackets.first?.motionAtFire, 2, 3)
         assertWindow(frame.motion, 2.8, 3)
         assertWindow(frame.motionNeighbourhood, 2.5, 3.5)
+        let stationObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: fixture.stationURL))
+                as? [String: Any])
+        let bracketObjects = try XCTUnwrap(stationObject["brackets"] as? [[String: Any]])
+        let frameObjects = try XCTUnwrap(bracketObjects.first?["frames"] as? [[String: Any]])
+        let migratedFrameObject = try XCTUnwrap(frameObjects.first)
+        XCTAssertEqual(
+            Set(migratedFrameObject.keys),
+            Set([
+                "capturedAt",
+                "capturedAtSegmentStartSeconds",
+                "deliveredAtSegmentStartSeconds",
+                "dng",
+                "filename",
+                "frameIndex",
+                "latestMotionAtSegmentStartSeconds",
+                "motion",
+                "motionNeighbourhood",
+                "photoTimestampAtSegmentStartSeconds",
+                "requested",
+                "sensor",
+                "zoomFactor"
+            ]))
+        XCTAssertEqual(
+            migratedFrameObject["photoTimestampAtSegmentStartSeconds"] as? Double,
+            200)
+        XCTAssertNil(migratedFrameObject["photoTimestampSeconds"])
 
         let dark = try fixture.currentDarkSetting()
         let darkFrame = try XCTUnwrap(dark.frames.first)
         XCTAssertEqual(darkFrame.capturedAtSegmentStartSeconds, 0, accuracy: 0.000_001)
+        XCTAssertEqual(
+            darkFrame.photoTimestampAtSegmentStartSeconds ?? -1,
+            200,
+            accuracy: 0.000_001)
         XCTAssertEqual(darkFrame.latestMotionAtSegmentStartSeconds ?? -1, 1, accuracy: 0.000_001)
         assertWindow(darkFrame.motion, 0, 0.5)
 
@@ -65,6 +100,94 @@ final class RecordPrivacyMigratorTests: XCTestCase {
         XCTAssertEqual(marker["completedMigrationVersion"] as? Int, 1)
         XCTAssertEqual(marker["logsClearedMigrationVersion"] as? Int, 1)
         XCTAssertEqual(marker["noticeState"] as? String, "pending")
+    }
+
+    func testAnchoredStationSchema3MigratesPhotoTimestampAndPreservesPayloadBytesIdempotently() throws {
+        let fixture = try MigrationFixture.anchoredStationV3(origin: 500)
+        defer { fixture.remove() }
+        let beforeDNG = try Data(contentsOf: fixture.dngURL)
+        let beforeMotion = try Data(contentsOf: fixture.motionURL)
+        let legacyStation = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: fixture.stationURL))
+                as? [String: Any])
+        let legacyBrackets = try XCTUnwrap(legacyStation["brackets"] as? [[String: Any]])
+        let legacyFrames = try XCTUnwrap(legacyBrackets.first?["frames"] as? [[String: Any]])
+        XCTAssertEqual(legacyStation["schemaVersion"] as? Int, 3)
+        XCTAssertEqual(legacyFrames.first?["photoTimestampSeconds"] as? Double, 700)
+        XCTAssertNil(legacyFrames.first?["photoTimestampAtSegmentStartSeconds"])
+
+        let first = RecordPrivacyMigrator.migrate(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+
+        XCTAssertEqual(first.migratedSessions, 1)
+        XCTAssertEqual(first.untouchedUnknownRecords, 0)
+        XCTAssertTrue(first.failures.isEmpty)
+        let station = try fixture.currentStation()
+        XCTAssertEqual(station.schemaVersion, 4)
+        XCTAssertEqual(
+            station.brackets.first?.frames.first?.photoTimestampAtSegmentStartSeconds,
+            200)
+        let migratedStation = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: fixture.stationURL))
+                as? [String: Any])
+        let migratedBrackets = try XCTUnwrap(
+            migratedStation["brackets"] as? [[String: Any]])
+        let migratedFrames = try XCTUnwrap(
+            migratedBrackets.first?["frames"] as? [[String: Any]])
+        XCTAssertEqual(
+            migratedFrames.first?["photoTimestampAtSegmentStartSeconds"] as? Double,
+            200)
+        XCTAssertNil(migratedFrames.first?["photoTimestampSeconds"])
+        XCTAssertEqual(try Data(contentsOf: fixture.dngURL), beforeDNG)
+        XCTAssertEqual(try Data(contentsOf: fixture.motionURL), beforeMotion)
+
+        let firstMetadata = try fixture.allMetadataBytes()
+        let second = RecordPrivacyMigrator.migrate(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+
+        XCTAssertEqual(second, RecordPrivacyMigrator.Report())
+        XCTAssertEqual(try fixture.allMetadataBytes(), firstMetadata)
+        XCTAssertEqual(try Data(contentsOf: fixture.dngURL), beforeDNG)
+        XCTAssertEqual(try Data(contentsOf: fixture.motionURL), beforeMotion)
+    }
+
+    func testUnanchoredStationSchema3IsRejectedWithoutChangingPayloadOrMetadata() throws {
+        let fixture = try MigrationFixture.unanchoredStationV3(origin: 500)
+        defer { fixture.remove() }
+        let beforeMetadata = try fixture.allMetadataBytes()
+        let beforeDNG = try Data(contentsOf: fixture.dngURL)
+        let beforeMotion = try Data(contentsOf: fixture.motionURL)
+
+        let first = RecordPrivacyMigrator.migrate(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+
+        XCTAssertEqual(first.migratedSessions, 0)
+        XCTAssertEqual(first.untouchedUnknownRecords, 0)
+        XCTAssertEqual(first.failures.count, 1)
+        XCTAssertTrue(first.failures[0].contains(
+            "station-001.json is legacy but session schema 4's openedAtUptime is unavailable"))
+        XCTAssertEqual(try fixture.allMetadataBytes(), beforeMetadata)
+        XCTAssertEqual(try Data(contentsOf: fixture.dngURL), beforeDNG)
+        XCTAssertEqual(try Data(contentsOf: fixture.motionURL), beforeMotion)
+        XCTAssertNil(try fixture.markerObject()["completedMigrationVersion"])
+
+        let markerAfterFirst = try Data(contentsOf: fixture.markerURL)
+        let second = RecordPrivacyMigrator.migrate(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+
+        XCTAssertEqual(second.failures.count, 1)
+        XCTAssertEqual(try fixture.allMetadataBytes(), beforeMetadata)
+        XCTAssertEqual(try Data(contentsOf: fixture.markerURL), markerAfterFirst)
+        XCTAssertEqual(try Data(contentsOf: fixture.dngURL), beforeDNG)
+        XCTAssertEqual(try Data(contentsOf: fixture.motionURL), beforeMotion)
     }
 
     func testSecondRunIsACompleteNoOpAndPreservesNewRelativeLog() throws {
@@ -210,7 +333,7 @@ final class RecordPrivacyMigratorTests: XCTestCase {
         XCTAssertEqual(recovered.migratedSessions, 1)
         XCTAssertTrue(recovered.failures.isEmpty)
         XCTAssertEqual(try fixture.currentSession().schemaVersion, 5)
-        XCTAssertEqual(try fixture.currentStation().schemaVersion, 3)
+        XCTAssertEqual(try fixture.currentStation().schemaVersion, 4)
         XCTAssertTrue(try fixture.privacyArtifacts().isEmpty)
         XCTAssertEqual(try fixture.markerObject()["completedMigrationVersion"] as? Int, 1)
     }
@@ -242,7 +365,7 @@ final class RecordPrivacyMigratorTests: XCTestCase {
         let installedBytes = try fixture.allMetadataBytes()
         XCTAssertNotEqual(installedBytes, originalBytes)
         XCTAssertEqual(try fixture.currentSession().schemaVersion, 5)
-        XCTAssertEqual(try fixture.currentStation().schemaVersion, 3)
+        XCTAssertEqual(try fixture.currentStation().schemaVersion, 4)
         let interruptedArtifacts = try fixture.privacyArtifacts()
         XCTAssertTrue(interruptedArtifacts.contains(".privacy-metadata-transaction-v1.json"))
         XCTAssertEqual(
@@ -422,6 +545,162 @@ final class RecordPrivacyMigratorTests: XCTestCase {
         XCTAssertEqual(marker["logsClearedMigrationVersion"] as? Int, 1)
     }
 
+    func testStartupSkipsOrphanDeletionForAnUnknownSessionHeader() throws {
+        let fixture = try MigrationFixture.unknownSession(schemaVersion: 999)
+        defer { fixture.remove() }
+        let motionBytes = Data(#"{"opaque":"motion"}"#.utf8)
+        try motionBytes.write(to: fixture.motionURL)
+        let dngBytes = try Data(contentsOf: fixture.dngURL)
+
+        let result = LaunchStorageMaintenance.run(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+
+        XCTAssertEqual(result.migration.untouchedUnknownRecords, 1)
+        XCTAssertEqual(result.orphanedFramesRemoved, 0)
+        XCTAssertEqual(try Data(contentsOf: fixture.dngURL), dngBytes)
+        XCTAssertEqual(try Data(contentsOf: fixture.motionURL), motionBytes)
+    }
+
+    func testStartupTreatsAnUnknownStationMetadataFilenameAsPayloadOwnership() throws {
+        let fixture = try MigrationFixture.legacyV4(origin: 500)
+        defer { fixture.remove() }
+        _ = RecordPrivacyMigrator.migrate(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+        try fixture.setStationSchema(999)
+        let dngBytes = try Data(contentsOf: fixture.dngURL)
+        let motionBytes = try Data(contentsOf: fixture.motionURL)
+
+        let result = LaunchStorageMaintenance.run(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+
+        XCTAssertEqual(result.migration.untouchedUnknownRecords, 1)
+        XCTAssertEqual(result.orphanedFramesRemoved, 0)
+        XCTAssertEqual(try Data(contentsOf: fixture.dngURL), dngBytes)
+        XCTAssertEqual(try Data(contentsOf: fixture.motionURL), motionBytes)
+    }
+
+    func testStartupTreatsMalformedStationMetadataFilenameAsPayloadOwnership() throws {
+        let fixture = try MigrationFixture.legacyV4(origin: 500)
+        defer { fixture.remove() }
+        _ = RecordPrivacyMigrator.migrate(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+        try fixture.corruptStationJSON()
+        let dngBytes = try Data(contentsOf: fixture.dngURL)
+        let motionBytes = try Data(contentsOf: fixture.motionURL)
+
+        let result = LaunchStorageMaintenance.run(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+
+        XCTAssertEqual(result.migration.failures.count, 1)
+        XCTAssertEqual(result.orphanedFramesRemoved, 0)
+        XCTAssertEqual(try Data(contentsOf: fixture.dngURL), dngBytes)
+        XCTAssertEqual(try Data(contentsOf: fixture.motionURL), motionBytes)
+    }
+
+    func testStartupCompletesMigrationBeforeEvaluatingOrphanOwnership() throws {
+        let fixture = try MigrationFixture.legacyV4(origin: 500)
+        defer { fixture.remove() }
+        _ = RecordPrivacyMigrator.migrate(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+        try fm.removeItem(at: fixture.stationURL)
+        let dngBytes = try Data(contentsOf: fixture.dngURL)
+
+        let result = LaunchStorageMaintenance.run(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL,
+            migrate: { _, _, _ in
+                try! Data("future station metadata".utf8).write(to: fixture.stationURL)
+                return RecordPrivacyMigrator.Report()
+            })
+
+        XCTAssertEqual(result.orphanedFramesRemoved, 0)
+        XCTAssertEqual(try Data(contentsOf: fixture.dngURL), dngBytes)
+    }
+
+    func testStartupMigrationFailurePreservesLegacyPayloadBytesBeforeSweep() throws {
+        let fixture = try MigrationFixture.legacyV4(origin: 500)
+        defer { fixture.remove() }
+        let dngBytes = try Data(contentsOf: fixture.dngURL)
+        let motionBytes = try Data(contentsOf: fixture.motionURL)
+
+        let result = LaunchStorageMaintenance.run(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL,
+            migrate: { sessionsRoot, logsRoot, markerURL in
+                RecordPrivacyMigrator.migrate(
+                    sessionsRoot: sessionsRoot,
+                    logsRoot: logsRoot,
+                    markerURL: markerURL,
+                    exchange: { _, _ in throw InjectedFailure.exchange })
+            })
+
+        XCTAssertEqual(result.migration.failures.count, 1)
+        XCTAssertEqual(result.orphanedFramesRemoved, 0)
+        XCTAssertEqual(try Data(contentsOf: fixture.dngURL), dngBytes)
+        XCTAssertEqual(try Data(contentsOf: fixture.motionURL), motionBytes)
+    }
+
+    func testStartupMigrationFailureSkipsSweepForCurrentSessionOrphans() throws {
+        let fixture = try MigrationFixture.legacyV4(origin: 500)
+        defer { fixture.remove() }
+        _ = RecordPrivacyMigrator.migrate(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+        try fm.removeItem(at: fixture.stationURL)
+        let dngBytes = try Data(contentsOf: fixture.dngURL)
+        let motionBytes = try Data(contentsOf: fixture.motionURL)
+
+        let result = LaunchStorageMaintenance.run(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL,
+            migrate: { _, _, _ in
+                var report = RecordPrivacyMigrator.Report()
+                report.failures = ["injected migration failure"]
+                return report
+            })
+
+        XCTAssertEqual(result.migration.failures, ["injected migration failure"])
+        XCTAssertEqual(result.orphanedFramesRemoved, 0)
+        XCTAssertEqual(try Data(contentsOf: fixture.dngURL), dngBytes)
+        XCTAssertEqual(try Data(contentsOf: fixture.motionURL), motionBytes)
+    }
+
+    func testStartupDeletesTrueOrphanPayloadsFromAValidCurrentSession() throws {
+        let fixture = try MigrationFixture.legacyV4(origin: 500)
+        defer { fixture.remove() }
+        _ = RecordPrivacyMigrator.migrate(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+        try fm.removeItem(at: fixture.stationURL)
+
+        let result = LaunchStorageMaintenance.run(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+
+        XCTAssertTrue(result.migration.failures.isEmpty)
+        XCTAssertEqual(result.orphanedFramesRemoved, 1)
+        XCTAssertFalse(fm.fileExists(atPath: fixture.dngURL.path))
+        XCTAssertFalse(fm.fileExists(atPath: fixture.motionURL.path))
+    }
+
     @MainActor
     func testNoticeUsesExactCopyAndOneOKAcknowledgement() throws {
         let fixture = try MigrationFixture.legacyV4(origin: 500)
@@ -490,7 +769,8 @@ private final class MigrationFixture {
         stationURL = sessionDirectory.appendingPathComponent("station-001.json")
         motionURL = sessionDirectory.appendingPathComponent("motion-001.jsonl")
         darkURL = sessionDirectory.appendingPathComponent("dark-001.json")
-        dngURL = sessionDirectory.appendingPathComponent("frame.dng")
+        dngURL = sessionDirectory.appendingPathComponent(
+            "\(sessionID)_s001_b01_f01_1x.dng")
         try fm.createDirectory(at: sessionDirectory, withIntermediateDirectories: true)
         try fm.createDirectory(at: logsRoot, withIntermediateDirectories: true)
         try fm.createDirectory(at: markerURL.deletingLastPathComponent(),
@@ -525,6 +805,44 @@ private final class MigrationFixture {
         try fixture.fm.removeItem(at: fixture.stationURL)
         try fixture.fm.removeItem(at: fixture.motionURL)
         try fixture.fm.removeItem(at: fixture.darkURL)
+        return fixture
+    }
+
+    static func anchoredStationV3(origin: TimeInterval) throws -> MigrationFixture {
+        let fixture = try legacyV4(origin: origin)
+        let setup = RecordPrivacyMigrator.migrate(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+        XCTAssertEqual(setup.migratedSessions, 1)
+        XCTAssertTrue(setup.failures.isEmpty)
+
+        try fixture.mutateObject(at: fixture.sessionURL) {
+            $0["schemaVersion"] = 4
+            $0["openedAtUptime"] = origin
+        }
+        try fixture.mutateObject(at: fixture.stationURL) { station in
+            station["schemaVersion"] = 3
+            var brackets = try XCTUnwrap(station["brackets"] as? [[String: Any]])
+            var frames = try XCTUnwrap(brackets.first?["frames"] as? [[String: Any]])
+            var frame = try XCTUnwrap(frames.first)
+            let relative = try XCTUnwrap(
+                frame.removeValue(forKey: "photoTimestampAtSegmentStartSeconds") as? Double)
+            frame["photoTimestampSeconds"] = relative + origin
+            frames[0] = frame
+            brackets[0]["frames"] = frames
+            station["brackets"] = brackets
+        }
+        try fixture.fm.removeItem(at: fixture.markerURL)
+        return fixture
+    }
+
+    static func unanchoredStationV3(origin: TimeInterval) throws -> MigrationFixture {
+        let fixture = try anchoredStationV3(origin: origin)
+        try fixture.mutateObject(at: fixture.sessionURL) {
+            $0["schemaVersion"] = SessionRecord.currentSchemaVersion
+            $0.removeValue(forKey: "openedAtUptime")
+        }
         return fixture
     }
 
@@ -758,7 +1076,7 @@ private final class MigrationFixture {
             zoomFactor: 1,
             capturedAtSegmentStartSeconds: capture,
             capturedAt: Date(timeIntervalSince1970: 1_003),
-            photoTimestampSeconds: 700,
+            photoTimestampAtSegmentStartSeconds: 700,
             gapFromPreviousSeconds: nil,
             clipping: nil,
             motion: motion,
@@ -775,6 +1093,9 @@ private final class MigrationFixture {
         if let value = frame.removeValue(forKey: "latestMotionAtSegmentStartSeconds") {
             frame["latestMotionTimestamp"] = value
         }
+        if let value = frame.removeValue(forKey: "photoTimestampAtSegmentStartSeconds") {
+            frame["photoTimestampSeconds"] = value
+        }
     }
 
     private func encodedObject<T: Encodable>(_ value: T) throws -> [String: Any] {
@@ -783,10 +1104,13 @@ private final class MigrationFixture {
                 as? [String: Any])
     }
 
-    private func mutateObject(at url: URL, _ mutation: (inout [String: Any]) -> Void) throws {
+    private func mutateObject(
+        at url: URL,
+        _ mutation: (inout [String: Any]) throws -> Void
+    ) throws {
         var object = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
-        mutation(&object)
+        try mutation(&object)
         try write(object, to: url)
     }
 

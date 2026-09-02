@@ -3,6 +3,28 @@ import XCTest
 
 final class CompliancePresentationTests: XCTestCase {
 
+    func testCameraDeniedRootExposesHelpSettingsAndRequiredDestinations() throws {
+        let state = ContentRootState.resolve(
+            cameraDenied: true,
+            bootState: .ready)
+
+        XCTAssertEqual(state, .cameraDenied)
+        try assertHelpSettingsReachable(
+            from: state,
+            expectedActions: ["Open Settings", "Help & Settings"])
+    }
+
+    func testBootFailureRootExposesHelpSettingsAndRequiredDestinations() throws {
+        let state = ContentRootState.resolve(
+            cameraDenied: false,
+            bootState: .failed("sensor probe did not return a report"))
+
+        XCTAssertEqual(state, .bootFailed("sensor probe did not return a report"))
+        try assertHelpSettingsReachable(
+            from: state,
+            expectedActions: ["Help & Settings"])
+    }
+
     func testBundledPrivacyPolicyLoaderReadsThePolicyShownByPrivacyData() throws {
         let policy = try BundledPrivacyPolicy.load()
 
@@ -126,5 +148,27 @@ final class CompliancePresentationTests: XCTestCase {
             appCommit: "81a7bcb",
             isSimulator: false
         )
+    }
+
+    private func assertHelpSettingsReachable(
+        from state: ContentRootState,
+        expectedActions: [String]
+    ) throws {
+        let presentation = try XCTUnwrap(state.unavailablePresentation)
+        XCTAssertEqual(presentation.actions.map(\.title), expectedActions)
+        XCTAssertTrue(presentation.actions.contains(.helpSettings))
+        XCTAssertTrue(presentation.helpSettingsDestinations.contains(.privacyData))
+        XCTAssertTrue(presentation.helpSettingsDestinations.contains(.support))
+
+        let factory = HelpSettingsDestinationFactory(
+            report: nil,
+            model: nil,
+            identity: deviceIdentity())
+        XCTAssertEqual(
+            ObjectIdentifier(factory.view(for: .privacyData).contentType),
+            ObjectIdentifier(PrivacyDataView.self))
+        XCTAssertEqual(
+            ObjectIdentifier(factory.view(for: .support).contentType),
+            ObjectIdentifier(SupportView.self))
     }
 }

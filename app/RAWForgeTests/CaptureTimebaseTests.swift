@@ -12,6 +12,17 @@ final class CaptureTimebaseTests: XCTestCase {
         XCTAssertEqual(timebase.secondsSinceOrigin(99.9), 0)
     }
 
+    func testOptionalPhotoTimestampBecomesSegmentRelativeWhenPresent() {
+        let timebase = CaptureTimebase(segmentID: "test-segment", originUptime: 500)
+        let rawPhotoTimestamp: TimeInterval? = 503.25
+
+        XCTAssertEqual(
+            timebase.secondsSinceOrigin(rawPhotoTimestamp) ?? -1,
+            3.25,
+            accuracy: 0.000_001)
+        XCTAssertNil(timebase.secondsSinceOrigin(nil))
+    }
+
     func testMotionSummaryOffsetsOnlyItsWindow() {
         let original = MotionSummary.fixture(windowStart: 40, windowEnd: 41)
         let shifted = original.offsettingWindow(by: -40)

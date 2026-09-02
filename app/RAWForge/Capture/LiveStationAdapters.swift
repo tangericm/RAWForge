@@ -112,7 +112,7 @@ final class LiveStationCapture: StationCapturing {
                 capturedAtSegmentStartSeconds: request.timebase.secondsSinceOrigin(
                     rawCapturedUptime),
                 capturedAt: Date(),
-                photoTimestampSeconds: stamp,
+                photoTimestampAtSegmentStartSeconds: request.timebase.secondsSinceOrigin(stamp),
                 gapFromPreviousSeconds: pair(stamp, previousTimestamp).map { $0 - $1 },
                 clipping: clip,
                 motion: exposureWindow.flatMap { motion.summary(from: $0.0, to: $0.1) }

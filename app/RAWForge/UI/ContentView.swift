@@ -1,5 +1,72 @@
 import SwiftUI
 
+enum ContentBootState: Equatable {
+    case probing
+    case ready
+    case failed(String)
+}
+
+enum ContentRootAction: Hashable {
+    case openSystemSettings
+    case helpSettings
+
+    var title: String {
+        switch self {
+        case .openSystemSettings: return "Open Settings"
+        case .helpSettings: return "Help & Settings"
+        }
+    }
+}
+
+struct ContentRootPresentation: Equatable {
+    let title: String
+    let systemImage: String
+    let detail: String
+    let actions: [ContentRootAction]
+
+    var helpSettingsDestinations: [HelpSettingsDestination] {
+        actions.contains(.helpSettings) ? HelpSettingsDestination.allCases : []
+    }
+}
+
+enum ContentRootState: Equatable {
+    case cameraDenied
+    case booting
+    case bootFailed(String)
+    case ready
+
+    static func resolve(
+        cameraDenied: Bool,
+        bootState: ContentBootState
+    ) -> ContentRootState {
+        if cameraDenied { return .cameraDenied }
+        switch bootState {
+        case .probing: return .booting
+        case .ready: return .ready
+        case .failed(let detail): return .bootFailed(detail)
+        }
+    }
+
+    var unavailablePresentation: ContentRootPresentation? {
+        switch self {
+        case .cameraDenied:
+            return ContentRootPresentation(
+                title: "Camera access is off",
+                systemImage: "exclamationmark.triangle.fill",
+                detail: "RAWForge cannot probe or capture from a sensor until camera access is granted. Help & Settings remains available.",
+                actions: [.openSystemSettings, .helpSettings])
+        case .bootFailed(let detail):
+            return ContentRootPresentation(
+                title: "RAWForge could not start",
+                systemImage: "exclamationmark.triangle.fill",
+                detail: detail,
+                actions: [.helpSettings])
+        case .booting, .ready:
+            return nil
+        }
+    }
+}
+
 /// Four screens: the instrument, the record, the flight recorder, and the bench.
 ///
 /// The capture flow is the app. The bench is how the instrument is checked
@@ -8,7 +75,7 @@ import SwiftUI
 struct ContentView: View {
     @ObservedObject var launchNoticeStore: LaunchNoticeStore
     @StateObject private var model = CaptureModel()
-    @State private var booted = false
+    @State private var bootState: ContentBootState = .probing
     @State private var showingHelpSettings = false
 
     var body: some View {
@@ -29,44 +96,38 @@ struct ContentView: View {
                         .navigationTitle("Timeline")
                         .navigationBarTitleDisplayMode(.inline)
                 }
-            } else if model.cameraDenied {
-                CameraDeniedView()
-            } else if !booted {
-                BootingView()
             } else {
-                tabs
+                rootContent
             }
             #else
-            if model.cameraDenied {
-                CameraDeniedView()
-            } else if !booted {
-                BootingView()
-            } else {
-                tabs
-            }
+            rootContent
             #endif
         }
-        .task {
-            // Frames whose station never closed belong to a station that never
-            // existed. Swept before anything reads the directory.
-            let orphans = SessionStore.sweepOrphanedFrames()
-            if orphans > 0 {
-                logWarn(.store, "swept \(orphans) orphaned frame(s) from a station that never closed")
+        .sheet(isPresented: $showingHelpSettings) {
+            NavigationStack {
+                HelpSettingsView(report: model.report, model: model)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showingHelpSettings = false }
+                        }
+                    }
             }
+            .preferredColorScheme(.dark)
+        }
+        .task {
             #if DEBUG
             if DemoSeed.isRequested {
                 DemoSeed.apply(to: model)
-                booted = true
+                bootState = .ready
                 return
             }
             #endif
             await model.probe()
             model.refreshProtocols()
             model.restoreShotList()
-            if orphans > 0 {
-                model.status = "swept \(orphans) orphaned frame(s) from an unclosed station"
-            }
-            booted = true
+            bootState = model.report == nil
+                ? .failed(model.status)
+                : .ready
         }
         .alert(
             "Privacy update",
@@ -77,6 +138,45 @@ struct ContentView: View {
             Button("OK") { launchNoticeStore.acknowledge() }
         } message: {
             Text(launchNoticeStore.message ?? "")
+        }
+    }
+
+    @ViewBuilder
+    private var rootContent: some View {
+        switch ContentRootState.resolve(
+            cameraDenied: model.cameraDenied,
+            bootState: bootState
+        ) {
+        case .cameraDenied:
+            unavailableRoot(for: .cameraDenied)
+        case .booting:
+            BootingView()
+        case .bootFailed(let detail):
+            unavailableRoot(for: .bootFailed(detail))
+        case .ready:
+            tabs
+        }
+    }
+
+    @ViewBuilder
+    private func unavailableRoot(for state: ContentRootState) -> some View {
+        if let presentation = state.unavailablePresentation {
+            RootUnavailableView(
+                presentation: presentation,
+                perform: performRootAction)
+        } else {
+            BootingView()
+        }
+    }
+
+    private func performRootAction(_ action: ContentRootAction) {
+        switch action {
+        case .openSystemSettings:
+            if let url = URL(string: UIApplication.openSettingsURLString) {
+                UIApplication.shared.open(url)
+            }
+        case .helpSettings:
+            showingHelpSettings = true
         }
     }
 
@@ -100,17 +200,6 @@ struct ContentView: View {
                 .tabItem { Label("Console", systemImage: "text.alignleft") }.tag(2)
             NavigationStack { BenchView(model: model) }
                 .tabItem { Label("Bench", systemImage: "wrench.and.screwdriver") }.tag(3)
-        }
-        .sheet(isPresented: $showingHelpSettings) {
-            NavigationStack {
-                HelpSettingsView(report: model.report, model: model)
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("Done") { showingHelpSettings = false }
-                        }
-                    }
-            }
-            .preferredColorScheme(.dark)
         }
     }
 
@@ -151,22 +240,31 @@ private struct BootingView: View {
     }
 }
 
-/// Without the camera there is no instrument, so this is the whole app rather
-/// than a banner on it.
-private struct CameraDeniedView: View {
+/// Capture remains unavailable without the camera, while Help & Settings stays
+/// reachable from the stable root.
+private struct RootUnavailableView: View {
+    let presentation: ContentRootPresentation
+    let perform: (ContentRootAction) -> Void
+
     var body: some View {
         ContentUnavailableView {
-            Label("Camera access is off", systemImage: "exclamationmark.triangle.fill")
+            Label(presentation.title, systemImage: presentation.systemImage)
         } description: {
-            Text("RAWForge cannot probe a sensor, let alone capture one, without it. "
-                 + "Nothing else in the app will work until it is granted.")
+            Text(presentation.detail)
         } actions: {
-            Button("Open Settings") {
-                if let url = URL(string: UIApplication.openSettingsURLString) {
-                    UIApplication.shared.open(url)
+            ForEach(presentation.actions, id: \.self) { action in
+                if action == .openSystemSettings {
+                    Button(action.title) { perform(action) }
+                        .buttonStyle(.borderedProminent)
+                } else {
+                    Button {
+                        perform(action)
+                    } label: {
+                        Label(action.title, systemImage: "gearshape")
+                    }
+                    .buttonStyle(.bordered)
                 }
             }
-            .buttonStyle(.borderedProminent)
         }
     }
 }

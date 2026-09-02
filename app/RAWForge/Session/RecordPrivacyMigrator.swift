@@ -255,6 +255,14 @@ enum RecordPrivacyMigrator {
                         origin: origin,
                         segmentID: "privacy-migration-\(directory.lastPathComponent)"),
                     kind: .station))
+            case (StationRecord.currentFormat, 3):
+                guard let origin = legacyOrigin else {
+                    throw MigrationError.legacyStationWithoutAnchor(url.lastPathComponent)
+                }
+                replacements.append(Replacement(
+                    source: url,
+                    data: try migratedStationV3Data(data, origin: origin),
+                    kind: .station))
             case (StationRecord.currentFormat, StationRecord.currentSchemaVersion):
                 try validateCurrent(data, as: .station)
             default:
@@ -753,6 +761,34 @@ enum RecordPrivacyMigrator {
         return migrated
     }
 
+    private static func migratedStationV3Data(
+        _ data: Data,
+        origin: TimeInterval
+    ) throws -> Data {
+        var object = try jsonObject(data)
+        object["schemaVersion"] = StationRecord.currentSchemaVersion
+        guard var brackets = object["brackets"] as? [[String: Any]] else {
+            throw MigrationError.invalidJSONObject("brackets")
+        }
+        for bracketIndex in brackets.indices {
+            guard var frames = brackets[bracketIndex]["frames"] as? [[String: Any]] else {
+                throw MigrationError.invalidJSONObject("brackets.frames")
+            }
+            for frameIndex in frames.indices {
+                try renameOptionalRelative(
+                    in: &frames[frameIndex],
+                    oldKey: "photoTimestampSeconds",
+                    newKey: "photoTimestampAtSegmentStartSeconds",
+                    origin: origin)
+            }
+            brackets[bracketIndex]["frames"] = frames
+        }
+        object["brackets"] = brackets
+        let migrated = try encodeJSONObject(object)
+        try validateCurrent(migrated, as: .station)
+        return migrated
+    }
+
     private static func migratedMotionData(
         _ data: Data,
         origin: TimeInterval
@@ -787,6 +823,11 @@ enum RecordPrivacyMigrator {
             in: &frame,
             oldKey: "latestMotionTimestamp",
             newKey: "latestMotionAtSegmentStartSeconds",
+            origin: origin)
+        try renameOptionalRelative(
+            in: &frame,
+            oldKey: "photoTimestampSeconds",
+            newKey: "photoTimestampAtSegmentStartSeconds",
             origin: origin)
         try offsetSummary(in: &frame, key: "motion", origin: origin)
         try offsetSummary(in: &frame, key: "motionNeighbourhood", origin: origin)

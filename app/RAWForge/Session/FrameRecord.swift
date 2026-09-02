@@ -44,13 +44,12 @@ struct FrameRecord: Codable, Equatable {
     let capturedAtSegmentStartSeconds: TimeInterval
     let capturedAt: Date
 
-    /// `AVCapturePhoto.timestamp`, the capture pipeline's own clock. More
-    /// precise than anything measurable around the call, and the right source
-    /// for inter-frame gaps (#14 item 9).
-    let photoTimestampSeconds: Double?
+    /// `AVCapturePhoto.timestamp` converted into this Run's capture-segment
+    /// domain. The raw capture-pipeline clock remains in memory only.
+    let photoTimestampAtSegmentStartSeconds: TimeInterval?
 
     /// Gap from the previous frame in the same bracket, taken from
-    /// `photoTimestampSeconds` where available. Nil for the first frame.
+    /// raw in-memory photo timestamps where available. Nil for the first frame.
     let gapFromPreviousSeconds: TimeInterval?
 
     /// Per-CFA-channel distribution of the real Bayer payload over the
@@ -325,7 +324,7 @@ struct StationRecord: Codable, Equatable {
     }
 
     static let currentFormat = "rawforge.station"
-    static let currentSchemaVersion = 3
+    static let currentSchemaVersion = 4
 
     init(stationIndex: Int, sessionId: String, openedAt: Date, closedAt: Date,
          brackets: [BracketRecord], captureTimebase: CaptureTimebase,

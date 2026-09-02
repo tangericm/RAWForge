@@ -8,6 +8,10 @@ struct CaptureTimebase: Equatable {
     func secondsSinceOrigin(_ uptime: TimeInterval) -> TimeInterval {
         max(0, uptime - originUptime)
     }
+
+    func secondsSinceOrigin(_ uptime: TimeInterval?) -> TimeInterval? {
+        uptime.map(secondsSinceOrigin)
+    }
 }
 
 extension MotionSummary {

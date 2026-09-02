@@ -184,8 +184,10 @@ final class BenchModel: ObservableObject {
                             dng: witness, focus: nil, zoomFactor: rig.currentZoomFactor,
                             capturedAtSegmentStartSeconds: captureTimebase.secondsSinceOrigin(
                                 ProcessInfo.processInfo.systemUptime),
-                            capturedAt: Date(), photoTimestampSeconds:
-                                photo.timestamp.isValid ? photo.timestamp.seconds : nil,
+                            capturedAt: Date(),
+                            photoTimestampAtSegmentStartSeconds:
+                                captureTimebase.secondsSinceOrigin(
+                                    photo.timestamp.isValid ? photo.timestamp.seconds : nil),
                             gapFromPreviousSeconds: nil, clipping: clip, motion: nil,
                             motionNeighbourhood: nil,
                             deliveredAtSegmentStartSeconds: nil,
