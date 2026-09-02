@@ -33,7 +33,12 @@ REPO_ROOT="$(cd -- "$REQUESTED_REPO_ROOT" && pwd -P)"
 passed=0
 failed=0
 SEARCH_STATUS=0
-SEARCH_OUTPUT=""
+FRAME_SCAN_STATUS=0
+FRAME_CURRENT_RELATIVE=0
+FRAME_LEGACY_CAPTURED=0
+FRAME_LEGACY_DELIVERY=0
+ANSWER_SCAN_STATUS=0
+ANSWER_SCAN_OUTPUT=""
 
 pass() {
   local label="$1"
@@ -69,21 +74,73 @@ run_fixed_search() {
   fi
 }
 
-collect_fixed_matches() {
-  local needle="$1"
-  local path="$2"
-
-  if SEARCH_OUTPUT="$(grep -F -- "$needle" "$path" 2>/dev/null)"; then
-    SEARCH_STATUS=0
-  else
-    SEARCH_STATUS=$?
-  fi
-}
-
 fail_search_error() {
   local label="$1"
   local relative_path="$2"
-  fail "$label" "fixed-string search failed for $relative_path (grep exit $SEARCH_STATUS); verify that the file is readable"
+  fail "$label" "fixed-string search failed for $relative_path (grep exit $SEARCH_STATUS); verify that the file exists, is regular, and is readable"
+}
+
+collect_answer_section_bullets() {
+  local path="$1"
+  local answer_prefix="$2"
+
+  if ANSWER_SCAN_OUTPUT="$(LC_ALL=C awk -v prefix="$answer_prefix" '
+    function without_html_comments(line, start, finish, output) {
+      output = ""
+      while (1) {
+        if (html_comment) {
+          finish = index(line, "-->")
+          if (finish == 0) {
+            return output
+          }
+          line = substr(line, finish + 3)
+          html_comment = 0
+        } else {
+          start = index(line, "<!--")
+          if (start == 0) {
+            return output line
+          }
+          output = output substr(line, 1, start - 1)
+          line = substr(line, start + 4)
+          html_comment = 1
+        }
+      }
+    }
+
+    {
+      line = without_html_comments($0)
+
+      if (line ~ /^[[:space:]]*(```|~~~)/) {
+        in_fence = !in_fence
+        next
+      }
+      if (in_fence) {
+        next
+      }
+
+      if (line == "## App Privacy") {
+        in_section = 1
+        next
+      }
+      if (in_section && line ~ /^##[[:space:]]+/) {
+        in_section = 0
+      }
+
+      if (in_section && index(line, prefix) == 1) {
+        print line
+      }
+    }
+
+    END {
+      if (html_comment || in_fence) {
+        exit 3
+      }
+    }
+  ' "$path" 2>/dev/null)"; then
+    ANSWER_SCAN_STATUS=0
+  else
+    ANSWER_SCAN_STATUS=$?
+  fi
 }
 
 contains_fixed_string() {
@@ -134,73 +191,185 @@ exact_answer_line() {
   local success_message="$5"
   local path="$REPO_ROOT/$relative_path"
 
-  if [ ! -f "$path" ]; then
-    fail "$label" "missing required file: $relative_path"
-    return
-  fi
-
-  run_fixed_search "line" "$expected_line" "$path"
-  case "$SEARCH_STATUS" in
-    1)
-      fail "$label" "$relative_path must contain the exact unqualified answer line: $expected_line"
-      return
-      ;;
-    0) ;;
-    *)
-      fail_search_error "$label" "$relative_path"
-      return
-      ;;
-  esac
-
-  collect_fixed_matches "$answer_prefix" "$path"
-  case "$SEARCH_STATUS" in
+  collect_answer_section_bullets "$path" "$answer_prefix"
+  case "$ANSWER_SCAN_STATUS" in
     0)
-      if [ "$SEARCH_OUTPUT" = "$expected_line" ]; then
+      if [ "$ANSWER_SCAN_OUTPUT" = "$expected_line" ]; then
         pass "$label" "$success_message"
+      elif [ -z "$ANSWER_SCAN_OUTPUT" ]; then
+        fail "$label" "$relative_path must contain the exact unqualified answer line in ## App Privacy: $expected_line"
       else
-        fail "$label" "$relative_path contains a contradictory, duplicate, or qualified $answer_prefix answer"
+        fail "$label" "$relative_path contains a contradictory, duplicate, or qualified $answer_prefix bullet in ## App Privacy"
       fi
       ;;
-    1)
-      fail "$label" "$relative_path is missing answer prefix: $answer_prefix"
-      ;;
     *)
-      fail_search_error "$label" "$relative_path"
+      fail "$label" "App Privacy answer scan failed for $relative_path (awk exit $ANSWER_SCAN_STATUS); verify that the file exists, is readable, and has complete HTML comments and code fences"
       ;;
   esac
 }
 
-omits_exact_lines() {
-  local label="$1"
-  local relative_path="$2"
-  local success_message="$3"
-  local failure_message="$4"
-  local path="$REPO_ROOT/$relative_path"
-  local needle
+scan_frame_record_declarations() {
+  local path="$1"
+  local scan_output
 
-  shift 4
+  if scan_output="$(LC_ALL=C awk '
+    {
+      line = $0 "\n"
+      i = 1
+      while (i <= length(line)) {
+        c = substr(line, i, 1)
+        two = substr(line, i, 2)
+        three = substr(line, i, 3)
 
-  if [ ! -f "$path" ]; then
-    fail "$label" "missing required file: $relative_path"
+        if (block_depth > 0) {
+          if (two == "/*") {
+            block_depth++
+            clean = clean "  "
+            i += 2
+          } else if (two == "*/") {
+            block_depth--
+            clean = clean "  "
+            i += 2
+          } else {
+            clean = clean (c == "\n" ? "\n" : " ")
+            i++
+          }
+          continue
+        }
+
+        if (line_comment) {
+          if (c == "\n") {
+            line_comment = 0
+            clean = clean "\n"
+          } else {
+            clean = clean " "
+          }
+          i++
+          continue
+        }
+
+        if (string_mode == 3) {
+          if (three == "\"\"\"") {
+            string_mode = 0
+            clean = clean "   "
+            i += 3
+          } else {
+            clean = clean (c == "\n" ? "\n" : " ")
+            i++
+          }
+          continue
+        }
+
+        if (string_mode == 1) {
+          if (c == "\\") {
+            clean = clean " "
+            if (i < length(line)) {
+              clean = clean " "
+              i += 2
+            } else {
+              i++
+            }
+          } else if (c == "\"") {
+            string_mode = 0
+            clean = clean " "
+            i++
+          } else {
+            clean = clean (c == "\n" ? "\n" : " ")
+            i++
+          }
+          continue
+        }
+
+        if (two == "//") {
+          line_comment = 1
+          clean = clean "  "
+          i += 2
+        } else if (two == "/*") {
+          block_depth = 1
+          clean = clean "  "
+          i += 2
+        } else if (three == "\"\"\"") {
+          string_mode = 3
+          clean = clean "   "
+          i += 3
+        } else if (c == "\"") {
+          string_mode = 1
+          clean = clean " "
+          i++
+        } else {
+          clean = clean c
+          i++
+        }
+      }
+    }
+
+    END {
+      if (block_depth > 0 || string_mode > 0) {
+        exit 3
+      }
+
+      if (!match(clean, /struct[[:space:]]+FrameRecord[[:space:]]*(:[^{]*)?{/)) {
+        exit 4
+      }
+
+      start = RSTART + RLENGTH - 1
+      depth = 0
+      top = ""
+      for (i = start; i <= length(clean); i++) {
+        c = substr(clean, i, 1)
+        if (c == "{") {
+          depth++
+          top = top " "
+        } else if (c == "}") {
+          if (depth == 1) {
+            break
+          }
+          depth--
+          top = top " "
+        } else if (depth == 1) {
+          top = top c
+        } else {
+          top = top " "
+        }
+      }
+
+      if (depth != 1) {
+        exit 5
+      }
+
+      gsub(/[[:space:]]+/, " ", top)
+      current = top ~ /(^|[^[:alnum:]_])let[[:space:]]+capturedAtSegmentStartSeconds[[:space:]]*(:|=)/
+      legacy_capture = top ~ /(^|[^[:alnum:]_])(let|var)[[:space:]]+capturedAtUptime[[:space:]]*(:|=)/
+      legacy_delivery = top ~ /(^|[^[:alnum:]_])(let|var)[[:space:]]+uptimeAtDelivery[[:space:]]*(:|=)/
+      print (current ? 1 : 0), (legacy_capture ? 1 : 0), (legacy_delivery ? 1 : 0)
+    }
+  ' "$path" 2>/dev/null)"; then
+    FRAME_SCAN_STATUS=0
+  else
+    FRAME_SCAN_STATUS=$?
     return
   fi
 
-  for needle in "$@"; do
-    run_fixed_search "line" "$needle" "$path"
-    case "$SEARCH_STATUS" in
-      0)
-        fail "$label" "$failure_message"
-        return
-        ;;
-      1) ;;
-      *)
-        fail_search_error "$label" "$relative_path"
-        return
-        ;;
-    esac
-  done
+  set -- $scan_output
+  if [ "$#" -ne 3 ]; then
+    FRAME_SCAN_STATUS=6
+    return
+  fi
 
-  pass "$label" "$success_message"
+  case "$1$2$3" in
+    000|001|010|011|100|101|110|111)
+      FRAME_CURRENT_RELATIVE="$1"
+      FRAME_LEGACY_CAPTURED="$2"
+      FRAME_LEGACY_DELIVERY="$3"
+      ;;
+    *) FRAME_SCAN_STATUS=6 ;;
+  esac
+}
+
+fail_frame_scan_error() {
+  local label="$1"
+  local relative_path="$2"
+  fail "$label" "Swift declaration scan failed for $relative_path (awk exit $FRAME_SCAN_STATUS); verify that the file exists, is readable, and has complete comments, strings, and braces"
 }
 
 check_policy_copies() {
@@ -224,6 +393,30 @@ check_policy_copies() {
   fi
 }
 
+check_apache_license() {
+  local relative_path="LICENSE"
+  local path="$REPO_ROOT/$relative_path"
+  local name_status
+  local version_status
+
+  run_fixed_search "substring" "Apache License" "$path"
+  name_status="$SEARCH_STATUS"
+  run_fixed_search "substring" "Version 2.0" "$path"
+  version_status="$SEARCH_STATUS"
+
+  if [ "$name_status" -gt 1 ]; then
+    SEARCH_STATUS="$name_status"
+    fail_search_error "apache-2-license" "$relative_path"
+  elif [ "$version_status" -gt 1 ]; then
+    SEARCH_STATUS="$version_status"
+    fail_search_error "apache-2-license" "$relative_path"
+  elif [ "$name_status" -eq 0 ] && [ "$version_status" -eq 0 ]; then
+    pass "apache-2-license" "LICENSE contains Apache License, Version 2.0"
+  else
+    fail "apache-2-license" "LICENSE must contain Apache License and Version 2.0"
+  fi
+}
+
 echo "==> RAWForge privacy/compliance contract"
 
 UPTIME_SOURCE="app/RAWForge/Capture/StationController.swift"
@@ -235,32 +428,30 @@ contains_exact_line \
   "audited executable systemUptime line is missing from $UPTIME_SOURCE; comments, resources, and obsolete code do not satisfy the positive control"
 
 FRAME_RECORD="app/RAWForge/Session/FrameRecord.swift"
-contains_exact_line \
-  "current-frame-relative-time" \
-  "$FRAME_RECORD" \
-  "    let capturedAtSegmentStartSeconds: TimeInterval" \
-  "current FrameRecord declares capturedAtSegmentStartSeconds" \
-  "current FrameRecord must declare capturedAtSegmentStartSeconds in $FRAME_RECORD"
+scan_frame_record_declarations "$REPO_ROOT/$FRAME_RECORD"
+if [ "$FRAME_SCAN_STATUS" -ne 0 ]; then
+  fail_frame_scan_error "current-frame-relative-time" "$FRAME_RECORD"
+  fail_frame_scan_error "current-frame-no-capturedAtUptime" "$FRAME_RECORD"
+  fail_frame_scan_error "current-frame-no-uptimeAtDelivery" "$FRAME_RECORD"
+else
+  if [ "$FRAME_CURRENT_RELATIVE" -eq 1 ]; then
+    pass "current-frame-relative-time" "current FrameRecord declares capturedAtSegmentStartSeconds"
+  else
+    fail "current-frame-relative-time" "current FrameRecord must declare stored let capturedAtSegmentStartSeconds in $FRAME_RECORD"
+  fi
 
-omits_exact_lines \
-  "current-frame-no-capturedAtUptime" \
-  "$FRAME_RECORD" \
-  "current FrameRecord does not declare capturedAtUptime" \
-  "legacy capturedAtUptime is declared by the current FrameRecord in $FRAME_RECORD; keep legacy DTO fields inside the explicit migrator" \
-  "    let capturedAtUptime: TimeInterval" \
-  "    var capturedAtUptime: TimeInterval" \
-  "    let capturedAtUptime: TimeInterval?" \
-  "    var capturedAtUptime: TimeInterval?"
+  if [ "$FRAME_LEGACY_CAPTURED" -eq 0 ]; then
+    pass "current-frame-no-capturedAtUptime" "current FrameRecord does not declare capturedAtUptime"
+  else
+    fail "current-frame-no-capturedAtUptime" "legacy capturedAtUptime is declared by the current FrameRecord in $FRAME_RECORD; keep legacy DTO fields inside the explicit migrator"
+  fi
 
-omits_exact_lines \
-  "current-frame-no-uptimeAtDelivery" \
-  "$FRAME_RECORD" \
-  "current FrameRecord does not declare uptimeAtDelivery" \
-  "legacy uptimeAtDelivery is declared by the current FrameRecord in $FRAME_RECORD; keep legacy DTO fields inside the explicit migrator" \
-  "    let uptimeAtDelivery: TimeInterval" \
-  "    var uptimeAtDelivery: TimeInterval" \
-  "    let uptimeAtDelivery: TimeInterval?" \
-  "    var uptimeAtDelivery: TimeInterval?"
+  if [ "$FRAME_LEGACY_DELIVERY" -eq 0 ]; then
+    pass "current-frame-no-uptimeAtDelivery" "current FrameRecord does not declare uptimeAtDelivery"
+  else
+    fail "current-frame-no-uptimeAtDelivery" "legacy uptimeAtDelivery is declared by the current FrameRecord in $FRAME_RECORD; keep legacy DTO fields inside the explicit migrator"
+  fi
+fi
 
 MANIFEST="app/RAWForge/Resources/PrivacyInfo.xcprivacy"
 contains_fixed_string \
@@ -309,15 +500,7 @@ exact_answer_line \
   "- Tracking: **No**" \
   "App Store privacy answers state only Tracking: No"
 
-LICENSE_PATH="LICENSE"
-if [ ! -f "$REPO_ROOT/$LICENSE_PATH" ]; then
-  fail "apache-2-license" "missing required file: $LICENSE_PATH"
-elif grep -Fq -- "Apache License" "$REPO_ROOT/$LICENSE_PATH" &&
-     grep -Fq -- "Version 2.0" "$REPO_ROOT/$LICENSE_PATH"; then
-  pass "apache-2-license" "LICENSE contains Apache License, Version 2.0"
-else
-  fail "apache-2-license" "LICENSE must contain Apache License and Version 2.0"
-fi
+check_apache_license
 
 printf '\nCompliance assertions: %d passed, %d failed.\n' "$passed" "$failed"
 if [ "$failed" -ne 0 ]; then
