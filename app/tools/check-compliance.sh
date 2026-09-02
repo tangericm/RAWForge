@@ -32,6 +32,8 @@ fi
 REPO_ROOT="$(cd -- "$REQUESTED_REPO_ROOT" && pwd -P)"
 passed=0
 failed=0
+SEARCH_STATUS=0
+SEARCH_OUTPUT=""
 
 pass() {
   local label="$1"
@@ -47,6 +49,43 @@ fail() {
   failed=$((failed + 1))
 }
 
+run_fixed_search() {
+  local match_mode="$1"
+  local needle="$2"
+  local path="$3"
+
+  if [ "$match_mode" = "line" ]; then
+    if grep -Fqx -- "$needle" "$path" 2>/dev/null; then
+      SEARCH_STATUS=0
+    else
+      SEARCH_STATUS=$?
+    fi
+  else
+    if grep -Fq -- "$needle" "$path" 2>/dev/null; then
+      SEARCH_STATUS=0
+    else
+      SEARCH_STATUS=$?
+    fi
+  fi
+}
+
+collect_fixed_matches() {
+  local needle="$1"
+  local path="$2"
+
+  if SEARCH_OUTPUT="$(grep -F -- "$needle" "$path" 2>/dev/null)"; then
+    SEARCH_STATUS=0
+  else
+    SEARCH_STATUS=$?
+  fi
+}
+
+fail_search_error() {
+  local label="$1"
+  local relative_path="$2"
+  fail "$label" "fixed-string search failed for $relative_path (grep exit $SEARCH_STATUS); verify that the file is readable"
+}
+
 contains_fixed_string() {
   local label="$1"
   local relative_path="$2"
@@ -57,14 +96,17 @@ contains_fixed_string() {
 
   if [ ! -f "$path" ]; then
     fail "$label" "missing required file: $relative_path"
-  elif grep -Fq -- "$needle" "$path"; then
-    pass "$label" "$success_message"
   else
-    fail "$label" "$failure_message"
+    run_fixed_search "substring" "$needle" "$path"
+    case "$SEARCH_STATUS" in
+      0) pass "$label" "$success_message" ;;
+      1) fail "$label" "$failure_message" ;;
+      *) fail_search_error "$label" "$relative_path" ;;
+    esac
   fi
 }
 
-omits_fixed_string() {
+contains_exact_line() {
   local label="$1"
   local relative_path="$2"
   local needle="$3"
@@ -74,11 +116,91 @@ omits_fixed_string() {
 
   if [ ! -f "$path" ]; then
     fail "$label" "missing required file: $relative_path"
-  elif grep -Fq -- "$needle" "$path"; then
-    fail "$label" "$failure_message"
   else
-    pass "$label" "$success_message"
+    run_fixed_search "line" "$needle" "$path"
+    case "$SEARCH_STATUS" in
+      0) pass "$label" "$success_message" ;;
+      1) fail "$label" "$failure_message" ;;
+      *) fail_search_error "$label" "$relative_path" ;;
+    esac
   fi
+}
+
+exact_answer_line() {
+  local label="$1"
+  local relative_path="$2"
+  local answer_prefix="$3"
+  local expected_line="$4"
+  local success_message="$5"
+  local path="$REPO_ROOT/$relative_path"
+
+  if [ ! -f "$path" ]; then
+    fail "$label" "missing required file: $relative_path"
+    return
+  fi
+
+  run_fixed_search "line" "$expected_line" "$path"
+  case "$SEARCH_STATUS" in
+    1)
+      fail "$label" "$relative_path must contain the exact unqualified answer line: $expected_line"
+      return
+      ;;
+    0) ;;
+    *)
+      fail_search_error "$label" "$relative_path"
+      return
+      ;;
+  esac
+
+  collect_fixed_matches "$answer_prefix" "$path"
+  case "$SEARCH_STATUS" in
+    0)
+      if [ "$SEARCH_OUTPUT" = "$expected_line" ]; then
+        pass "$label" "$success_message"
+      else
+        fail "$label" "$relative_path contains a contradictory, duplicate, or qualified $answer_prefix answer"
+      fi
+      ;;
+    1)
+      fail "$label" "$relative_path is missing answer prefix: $answer_prefix"
+      ;;
+    *)
+      fail_search_error "$label" "$relative_path"
+      ;;
+  esac
+}
+
+omits_exact_lines() {
+  local label="$1"
+  local relative_path="$2"
+  local success_message="$3"
+  local failure_message="$4"
+  local path="$REPO_ROOT/$relative_path"
+  local needle
+
+  shift 4
+
+  if [ ! -f "$path" ]; then
+    fail "$label" "missing required file: $relative_path"
+    return
+  fi
+
+  for needle in "$@"; do
+    run_fixed_search "line" "$needle" "$path"
+    case "$SEARCH_STATUS" in
+      0)
+        fail "$label" "$failure_message"
+        return
+        ;;
+      1) ;;
+      *)
+        fail_search_error "$label" "$relative_path"
+        return
+        ;;
+    esac
+  done
+
+  pass "$label" "$success_message"
 }
 
 check_policy_copies() {
@@ -104,36 +226,41 @@ check_policy_copies() {
 
 echo "==> RAWForge privacy/compliance contract"
 
-SOURCE_DIR="app/RAWForge"
-if [ ! -d "$REPO_ROOT/$SOURCE_DIR" ]; then
-  fail "in-memory-system-uptime" "missing source directory: $SOURCE_DIR"
-elif grep -R -Fq -- "ProcessInfo.processInfo.systemUptime" "$REPO_ROOT/$SOURCE_DIR"; then
-  pass "in-memory-system-uptime" "source still uses systemUptime as the required positive control"
-else
-  fail "in-memory-system-uptime" "ProcessInfo.processInfo.systemUptime was not found under $SOURCE_DIR; the System Boot Time audit has lost its positive control"
-fi
+UPTIME_SOURCE="app/RAWForge/Capture/StationController.swift"
+contains_exact_line \
+  "in-memory-system-uptime" \
+  "$UPTIME_SOURCE" \
+  "        uptime: { ProcessInfo.processInfo.systemUptime }," \
+  "audited StationClock.live implementation reads systemUptime in memory" \
+  "audited executable systemUptime line is missing from $UPTIME_SOURCE; comments, resources, and obsolete code do not satisfy the positive control"
 
 FRAME_RECORD="app/RAWForge/Session/FrameRecord.swift"
-contains_fixed_string \
+contains_exact_line \
   "current-frame-relative-time" \
   "$FRAME_RECORD" \
-  "capturedAtSegmentStartSeconds:" \
+  "    let capturedAtSegmentStartSeconds: TimeInterval" \
   "current FrameRecord declares capturedAtSegmentStartSeconds" \
   "current FrameRecord must declare capturedAtSegmentStartSeconds in $FRAME_RECORD"
 
-omits_fixed_string \
+omits_exact_lines \
   "current-frame-no-capturedAtUptime" \
   "$FRAME_RECORD" \
-  "capturedAtUptime:" \
   "current FrameRecord does not declare capturedAtUptime" \
-  "legacy capturedAtUptime is declared by the current FrameRecord in $FRAME_RECORD; keep legacy DTO fields inside the explicit migrator"
+  "legacy capturedAtUptime is declared by the current FrameRecord in $FRAME_RECORD; keep legacy DTO fields inside the explicit migrator" \
+  "    let capturedAtUptime: TimeInterval" \
+  "    var capturedAtUptime: TimeInterval" \
+  "    let capturedAtUptime: TimeInterval?" \
+  "    var capturedAtUptime: TimeInterval?"
 
-omits_fixed_string \
+omits_exact_lines \
   "current-frame-no-uptimeAtDelivery" \
   "$FRAME_RECORD" \
-  "uptimeAtDelivery:" \
   "current FrameRecord does not declare uptimeAtDelivery" \
-  "legacy uptimeAtDelivery is declared by the current FrameRecord in $FRAME_RECORD; keep legacy DTO fields inside the explicit migrator"
+  "legacy uptimeAtDelivery is declared by the current FrameRecord in $FRAME_RECORD; keep legacy DTO fields inside the explicit migrator" \
+  "    let uptimeAtDelivery: TimeInterval" \
+  "    var uptimeAtDelivery: TimeInterval" \
+  "    let uptimeAtDelivery: TimeInterval?" \
+  "    var uptimeAtDelivery: TimeInterval?"
 
 MANIFEST="app/RAWForge/Resources/PrivacyInfo.xcprivacy"
 contains_fixed_string \
@@ -153,34 +280,34 @@ contains_fixed_string \
 check_policy_copies
 
 PROJECT="app/project.yml"
-contains_fixed_string \
+contains_exact_line \
   "camera-purpose-string" \
   "$PROJECT" \
-  "RAWForge uses the camera to preview your scene and save the RAW captures you choose to make." \
+  "        NSCameraUsageDescription: \"RAWForge uses the camera to preview your scene and save the RAW captures you choose to make.\"" \
   "project.yml contains the approved Camera purpose string" \
-  "project.yml is missing the approved Camera purpose string in $PROJECT"
+  "project.yml is missing the exact approved NSCameraUsageDescription key/value line in $PROJECT"
 
-contains_fixed_string \
+contains_exact_line \
   "motion-purpose-string" \
   "$PROJECT" \
-  "RAWForge records device motion during a capture so each RAW frame includes evidence of how steadily the phone was held." \
+  "        NSMotionUsageDescription: \"RAWForge records device motion during a capture so each RAW frame includes evidence of how steadily the phone was held.\"" \
   "project.yml contains the approved Motion purpose string" \
-  "project.yml is missing the approved Motion purpose string in $PROJECT"
+  "project.yml is missing the exact approved NSMotionUsageDescription key/value line in $PROJECT"
 
 PRIVACY_ANSWERS="docs/app-store/privacy-answers.md"
-contains_fixed_string \
+exact_answer_line \
   "privacy-data-not-collected" \
   "$PRIVACY_ANSWERS" \
+  "- Data collection:" \
   "- Data collection: **Data Not Collected**" \
-  "App Store privacy answers state Data Not Collected" \
-  "App Store privacy answers must state Data Not Collected in $PRIVACY_ANSWERS"
+  "App Store privacy answers state only Data Not Collected"
 
-contains_fixed_string \
+exact_answer_line \
   "privacy-tracking-no" \
   "$PRIVACY_ANSWERS" \
+  "- Tracking:" \
   "- Tracking: **No**" \
-  "App Store privacy answers state Tracking: No" \
-  "App Store privacy answers must state Tracking: No in $PRIVACY_ANSWERS"
+  "App Store privacy answers state only Tracking: No"
 
 LICENSE_PATH="LICENSE"
 if [ ! -f "$REPO_ROOT/$LICENSE_PATH" ]; then
