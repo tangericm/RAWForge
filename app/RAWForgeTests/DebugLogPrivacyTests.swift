@@ -57,6 +57,30 @@ final class DebugLogPrivacyTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: reportURL.path))
     }
 
+    func testBackupExclusionFailureKeepsDiagnosticsInMemoryAndCreatesNoReport() throws {
+        let storageDirectory = try makeTemporaryDirectory()
+        let log = DebugLog(
+            storageDirectory: storageDirectory,
+            backupExclusion: { _ in throw ForcedStorageError.backupExclusion }
+        )
+
+        log.start(device: deviceIdentity())
+        defer { log.noteCleanExit() }
+        log.write(.warn, .app, "in-memory witness")
+        log.flush()
+
+        XCTAssertNil(log.fileURL)
+        XCTAssertNil(log.currentReportURL())
+        XCTAssertTrue(log.snapshot().contains { $0.message == "in-memory witness" })
+
+        let storedItems = try FileManager.default.contentsOfDirectory(
+            at: storageDirectory,
+            includingPropertiesForKeys: nil
+        )
+        XCTAssertFalse(storedItems.contains { $0.pathExtension == "log" })
+        XCTAssertFalse(storedItems.contains { $0.lastPathComponent == ".running" })
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("rawforge-debug-log-tests-\(UUID().uuidString)",
@@ -79,6 +103,10 @@ final class DebugLogPrivacyTests: XCTestCase {
             appCommit: "test",
             isSimulator: true)
     }
+}
+
+private enum ForcedStorageError: Error {
+    case backupExclusion
 }
 
 private final class TestUptimeClock {

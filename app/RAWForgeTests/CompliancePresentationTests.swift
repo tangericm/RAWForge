@@ -10,11 +10,17 @@ final class CompliancePresentationTests: XCTestCase {
         XCTAssertTrue(policy.contains("RAWForge also marks the diagnostics directory"))
     }
 
-    func testHelpSettingsDestinationModelBuildsEveryRequiredRouteInOrder() {
-        XCTAssertEqual(
-            HelpSettingsDestination.allCases,
-            [.privacyData, .thisIPhone, .diagnostics, .support, .openSourceAbout]
+    func testHelpSettingsFactoryConstructsEveryRequiredDestinationInOrder() {
+        let expected: [HelpSettingsDestination] = [
+            .privacyData, .thisIPhone, .diagnostics, .support, .openSourceAbout
+        ]
+        let factory = HelpSettingsDestinationFactory(
+            report: nil,
+            model: nil,
+            identity: deviceIdentity()
         )
+
+        XCTAssertEqual(HelpSettingsDestination.allCases, expected)
         XCTAssertEqual(
             HelpSettingsDestination.allCases.map(\.title),
             [
@@ -25,6 +31,41 @@ final class CompliancePresentationTests: XCTestCase {
                 "Open Source & About"
             ]
         )
+        XCTAssertEqual(
+            HelpSettingsDestination.allCases.map { factory.view(for: $0).kind },
+            expected,
+            "HelpSettingsView and this test must use the same destination factory"
+        )
+        XCTAssertEqual(
+            HelpSettingsDestination.allCases.map {
+                ObjectIdentifier(factory.view(for: $0).contentType)
+            },
+            [
+                ObjectIdentifier(PrivacyDataView.self),
+                ObjectIdentifier(ThisIPhoneView.self),
+                ObjectIdentifier(DiagnosticsView.self),
+                ObjectIdentifier(SupportView.self),
+                ObjectIdentifier(AboutView.self)
+            ],
+            "each Help & Settings route must construct its intended concrete view"
+        )
+    }
+
+    func testReusedSettingsDestinationsRejectFixedPointFonts() throws {
+        let testBundle = Bundle(for: CompliancePresentationTests.self)
+        let fixedPointFont = #"\.font\s*\(\s*\.system\s*\(\s*size\s*:"#
+
+        for resource in ["DeviceProfileView", "LogConsoleView"] {
+            let url = try XCTUnwrap(
+                testBundle.url(forResource: resource, withExtension: "swift.txt"),
+                "\(resource).swift must be a test-only resource for the Dynamic Type gate"
+            )
+            let source = try String(contentsOf: url, encoding: .utf8)
+            XCTAssertNil(
+                source.range(of: fixedPointFont, options: .regularExpression),
+                "\(resource).swift must use semantic or scaled fonts"
+            )
+        }
     }
 
     func testBuildIDClipboardCopiesTheDisplayedBuildDescription() {

@@ -54,6 +54,23 @@ targets:
         buildPhase: resources
     dependencies:
       - target: RAWForge
+    # Xcode refuses .swift files in Copy Bundle Resources. Stage renamed,
+    # byte-identical copies into the test bundle so the simulator gate reads
+    # the live sources without placing them in the shipping app.
+    preBuildScripts:
+      - name: Stage Dynamic Type audit sources
+        script: |
+          set -eu
+          audit_dir="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}"
+          /bin/mkdir -p "$audit_dir"
+          /bin/cp "$SRCROOT/RAWForge/UI/DeviceProfileView.swift" "$audit_dir/DeviceProfileView.swift.txt"
+          /bin/cp "$SRCROOT/RAWForge/UI/LogConsoleView.swift" "$audit_dir/LogConsoleView.swift.txt"
+        inputFiles:
+          - "$(SRCROOT)/RAWForge/UI/DeviceProfileView.swift"
+          - "$(SRCROOT)/RAWForge/UI/LogConsoleView.swift"
+        outputFiles:
+          - "$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/DeviceProfileView.swift.txt"
+          - "$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/LogConsoleView.swift.txt"
     settings:
       base:
         # Xcode 26 supplies no default, same as the app target — without this
