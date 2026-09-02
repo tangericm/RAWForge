@@ -59,6 +59,7 @@ app/Info.plist
 Thumbs.db
 
 # Local scratch
+.superpowers/
 .research/
 scratch/
 app/build/
