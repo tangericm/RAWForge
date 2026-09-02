@@ -17,7 +17,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
 echo "───────────────────────────────────────────────"
-echo " 1/4  the tree is committed"
+echo " 1/5  the tree is committed"
 echo "───────────────────────────────────────────────"
 if [ -n "$(git status --porcelain)" ]; then
   echo "FAIL: uncommitted changes. A release names a commit." >&2
@@ -28,7 +28,7 @@ echo "OK: clean at $(git rev-parse --short HEAD)"
 
 echo
 echo "───────────────────────────────────────────────"
-echo " 2/4  the simulator suite passes"
+echo " 2/5  the simulator suite passes"
 echo "───────────────────────────────────────────────"
 ( cd app && xcodegen generate >/dev/null &&
   xcodebuild -project RAWForge.xcodeproj -scheme RAWForge \
@@ -38,13 +38,19 @@ echo "────────────────────────�
 
 echo
 echo "───────────────────────────────────────────────"
-echo " 3/4  Release builds and carries no developer-only code"
+echo " 3/5  the privacy and compliance contract holds"
+echo "───────────────────────────────────────────────"
+bash app/tools/check-compliance.sh
+
+echo
+echo "───────────────────────────────────────────────"
+echo " 4/5  Release builds and carries no developer-only code"
 echo "───────────────────────────────────────────────"
 bash app/tools/release-check.sh
 
 echo
 echo "───────────────────────────────────────────────"
-echo " 4/4  this tree has been run on a phone"
+echo " 5/5  this tree has been run on a phone"
 echo "───────────────────────────────────────────────"
 bash app/tools/require-hardware-verification.sh
 
