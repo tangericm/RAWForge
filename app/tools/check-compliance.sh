@@ -103,6 +103,19 @@ collect_answer_section_bullets() {
       return substr(probe, 1, length_run)
     }
 
+    function is_h1_or_h2_heading(line, indentation, probe) {
+      indentation = 0
+      while (substr(line, indentation + 1, 1) == " ") {
+        indentation++
+      }
+      if (indentation > 3) {
+        return 0
+      }
+
+      probe = substr(line, indentation + 1)
+      return probe ~ /^#[[:space:]]+/ || probe ~ /^##[[:space:]]+/
+    }
+
     function without_html_comments(line, start, finish, output) {
       output = ""
       while (1) {
@@ -129,9 +142,14 @@ collect_answer_section_bullets() {
       run = fence_run($0)
       if (in_fence) {
         if (substr(run, 1, 1) == fence_character && length(run) >= fence_length) {
-          in_fence = 0
-          fence_character = ""
-          fence_length = 0
+          closing_suffix = $0
+          sub(/^[[:space:]]*/, "", closing_suffix)
+          closing_suffix = substr(closing_suffix, length(run) + 1)
+          if (closing_suffix ~ /^[[:space:]]*$/) {
+            in_fence = 0
+            fence_character = ""
+            fence_length = 0
+          }
         }
         next
       }
@@ -149,7 +167,7 @@ collect_answer_section_bullets() {
         in_section = 1
         next
       }
-      if (in_section && (line ~ /^#[[:space:]]+/ || line ~ /^##[[:space:]]+/)) {
+      if (in_section && is_h1_or_h2_heading(line)) {
         in_section = 0
       }
 
