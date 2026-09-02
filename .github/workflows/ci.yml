@@ -58,6 +58,9 @@ jobs:
             | grep -E "Executed [0-9]+ tests?, with|TEST SUCCEEDED|TEST FAILED|error:" || true
           grep -q "TEST SUCCEEDED" /tmp/ci-test.log
 
+      - name: Privacy and compliance contract
+        run: bash app/tools/check-compliance.sh
+
       # Release differs from Debug in whole-module optimisation, and had never
       # been built at all until late in this project. It also proves the
       # developer-only screens are absent — gating a NavigationLink is not the
