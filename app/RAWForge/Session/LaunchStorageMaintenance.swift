@@ -22,10 +22,19 @@ enum LaunchStorageMaintenance {
                 markerURL: markerURL)
         }
     ) -> Report {
-        let migration = migrate(sessionsRoot, logsRoot, markerURL)
+        var migration = migrate(sessionsRoot, logsRoot, markerURL)
         let orphanedFramesRemoved = migration.failures.isEmpty
             ? SessionStore.sweepOrphanedFrames(sessionsRoot: sessionsRoot)
             : 0
+        if orphanedFramesRemoved > 0 {
+            do {
+                try RecordPrivacyMigrator.recordPendingOrphanedFramesRemoved(
+                    orphanedFramesRemoved,
+                    markerURL: markerURL)
+            } catch {
+                migration.failures.append("launch notice marker: \(error)")
+            }
+        }
         return Report(
             migration: migration,
             orphanedFramesRemoved: orphanedFramesRemoved)

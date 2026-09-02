@@ -129,6 +129,20 @@ enum RecordPrivacyMigrator {
         return report
     }
 
+    /// Successful cleanup events accumulate while the migration notice is pending,
+    /// so a later launch cannot erase an earlier disclosure before acknowledgement.
+    static func recordPendingOrphanedFramesRemoved(
+        _ count: Int,
+        markerURL: URL
+    ) throws {
+        guard count > 0 else { return }
+        var marker = try PrivacyMigrationMarkerStore.load(from: markerURL)
+        guard marker.noticeState == .pending else { return }
+        marker.pendingOrphanedFramesRemoved =
+            (marker.pendingOrphanedFramesRemoved ?? 0) + count
+        try PrivacyMigrationMarkerStore.save(marker, to: markerURL)
+    }
+
     private enum MetadataKind: String, Codable, Equatable {
         case session
         case station
@@ -1340,6 +1354,7 @@ private struct PrivacyMigrationMarker: Codable {
     var completedMigrationVersion: Int?
     var logsClearedMigrationVersion: Int?
     var noticeState: NoticeState = .none
+    var pendingOrphanedFramesRemoved: Int?
 }
 
 private enum PrivacyMigrationMarkerStore {
@@ -1398,8 +1413,11 @@ final class LaunchNoticeStore: ObservableObject {
     init(markerURL: URL, orphanedFramesRemoved: Int) {
         self.markerURL = markerURL
         let marker = try? PrivacyMigrationMarkerStore.load(from: markerURL)
+        let pendingOrphanedFramesRemoved = max(
+            marker?.pendingOrphanedFramesRemoved ?? 0,
+            orphanedFramesRemoved)
         message = marker?.noticeState == .pending
-            ? Self.noticeMessage(orphanedFramesRemoved: orphanedFramesRemoved)
+            ? Self.noticeMessage(orphanedFramesRemoved: pendingOrphanedFramesRemoved)
             : nil
     }
 
@@ -1415,6 +1433,7 @@ final class LaunchNoticeStore: ObservableObject {
         guard message != nil,
               var marker = try? PrivacyMigrationMarkerStore.load(from: markerURL) else { return }
         marker.noticeState = .acknowledged
+        marker.pendingOrphanedFramesRemoved = nil
         do {
             try PrivacyMigrationMarkerStore.save(marker, to: markerURL)
             message = nil

@@ -804,6 +804,111 @@ final class RecordPrivacyMigratorTests: XCTestCase {
     }
 
     @MainActor
+    func testPendingOrphanCleanupDisclosureSurvivesNextLaunchUntilAcknowledged() throws {
+        let fixture = try MigrationFixture.legacyV4(origin: 500)
+        defer { fixture.remove() }
+        try fm.removeItem(at: fixture.stationURL)
+        let combinedMessage =
+            "Earlier diagnostic logs were cleared so RAWForge no longer retains the phone's "
+            + "boot-time clock. Separately, launch cleanup removed 1 orphaned DNG file "
+            + "with no owning station metadata."
+
+        let firstMaintenance = LaunchStorageMaintenance.run(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+        let firstNotice = LaunchNoticeStore(
+            markerURL: fixture.markerURL,
+            orphanedFramesRemoved: firstMaintenance.orphanedFramesRemoved)
+
+        XCTAssertEqual(firstMaintenance.orphanedFramesRemoved, 1)
+        XCTAssertEqual(firstNotice.message, combinedMessage)
+
+        let secondMaintenance = LaunchStorageMaintenance.run(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+        let secondNotice = LaunchNoticeStore(
+            markerURL: fixture.markerURL,
+            orphanedFramesRemoved: secondMaintenance.orphanedFramesRemoved)
+
+        XCTAssertEqual(secondMaintenance.orphanedFramesRemoved, 0)
+        XCTAssertEqual(secondNotice.message, combinedMessage)
+
+        secondNotice.acknowledge()
+
+        XCTAssertNil(LaunchNoticeStore(
+            markerURL: fixture.markerURL,
+            orphanedFramesRemoved: 0).message)
+    }
+
+    @MainActor
+    func testPendingNoticeAccumulatesSuccessfulOrphanRemovalsAcrossLaunches() throws {
+        let fixture = try MigrationFixture.legacyV4(origin: 500)
+        defer { fixture.remove() }
+        try fm.removeItem(at: fixture.stationURL)
+
+        let firstMaintenance = LaunchStorageMaintenance.run(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+        _ = LaunchNoticeStore(
+            markerURL: fixture.markerURL,
+            orphanedFramesRemoved: firstMaintenance.orphanedFramesRemoved)
+
+        let nextOrphanURL = fixture.sessionDirectory.appendingPathComponent(
+            SessionStore.frameFilename(
+                sessionId: "legacy-session",
+                station: 2,
+                bracket: 1,
+                frame: 1,
+                sensor: "1x"))
+        try Data([0x44, 0x4E, 0x47, 0x02]).write(to: nextOrphanURL)
+
+        let secondMaintenance = LaunchStorageMaintenance.run(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+        let secondNotice = LaunchNoticeStore(
+            markerURL: fixture.markerURL,
+            orphanedFramesRemoved: secondMaintenance.orphanedFramesRemoved)
+
+        XCTAssertEqual(firstMaintenance.orphanedFramesRemoved, 1)
+        XCTAssertEqual(secondMaintenance.orphanedFramesRemoved, 1)
+        XCTAssertFalse(fm.fileExists(atPath: nextOrphanURL.path))
+        XCTAssertEqual(
+            secondNotice.message,
+            "Earlier diagnostic logs were cleared so RAWForge no longer retains the phone's "
+                + "boot-time clock. Separately, launch cleanup removed 2 orphaned DNG files "
+                + "with no owning station metadata.")
+    }
+
+    @MainActor
+    func testNoticeTreatsExistingMarkerWithoutPendingRemovalFieldAsZero() throws {
+        let fixture = try MigrationFixture.legacyV4(origin: 500)
+        defer { fixture.remove() }
+        let existingMarker = #"""
+        {
+          "completedMigrationVersion" : 1,
+          "format" : "rawforge.privacy-migration",
+          "logsClearedMigrationVersion" : 1,
+          "noticeState" : "pending",
+          "schemaVersion" : 1
+        }
+        """#
+        try Data(existingMarker.utf8).write(to: fixture.markerURL)
+
+        let notice = LaunchNoticeStore(
+            markerURL: fixture.markerURL,
+            orphanedFramesRemoved: 0)
+
+        XCTAssertEqual(
+            notice.message,
+            "Earlier diagnostic logs were cleared so RAWForge no longer retains the phone's "
+                + "boot-time clock. Captures and DNG files were not removed.")
+    }
+
+    @MainActor
     func testNoticeUsesExactCopyAndOneOKAcknowledgement() throws {
         let fixture = try MigrationFixture.legacyV4(origin: 500)
         defer { fixture.remove() }
