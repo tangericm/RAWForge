@@ -107,12 +107,12 @@ struct DeviceProfileView: View {
                     Text(spread > 0
                          ? "\(n) sample(s) · spread \(format(name, spread))"
                          : "\(n) sample(s)")
-                        .font(.system(size: 9)).foregroundStyle(.tertiary)
+                        .font(.caption2).monospaced().foregroundStyle(.tertiary)
                 }
             }
             Spacer()
             if !r.isMeasured {
-                Text("borrowed").font(.system(size: 9))
+                Text("borrowed").font(.caption2)
                     .padding(.horizontal, 6).padding(.vertical, 2)
                     .background(.orange.opacity(0.2), in: Capsule())
                     .foregroundStyle(.orange)

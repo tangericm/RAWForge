@@ -3,6 +3,40 @@ import XCTest
 
 final class CompliancePresentationTests: XCTestCase {
 
+    func testBundledPrivacyPolicyLoaderReadsThePolicyShownByPrivacyData() throws {
+        let policy = try BundledPrivacyPolicy.load()
+
+        XCTAssertTrue(policy.hasPrefix("# RAWForge Privacy Policy"))
+        XCTAssertTrue(policy.contains("RAWForge also marks the diagnostics directory"))
+    }
+
+    func testHelpSettingsDestinationModelBuildsEveryRequiredRouteInOrder() {
+        XCTAssertEqual(
+            HelpSettingsDestination.allCases,
+            [.privacyData, .thisIPhone, .diagnostics, .support, .openSourceAbout]
+        )
+        XCTAssertEqual(
+            HelpSettingsDestination.allCases.map(\.title),
+            [
+                "Privacy & Data",
+                "This iPhone",
+                "Diagnostics",
+                "Support",
+                "Open Source & About"
+            ]
+        )
+    }
+
+    func testBuildIDClipboardCopiesTheDisplayedBuildDescription() {
+        let identity = deviceIdentity()
+        var copiedText: String?
+        let clipboard = BuildIDClipboard { copiedText = $0 }
+
+        clipboard.copyBuildID(for: identity)
+
+        XCTAssertEqual(copiedText, CompliancePresentation.buildDescription(for: identity))
+    }
+
     func testPrivacySummaryAndPublishedLocationsMatchTheReleaseMetadata() {
         XCTAssertEqual(
             CompliancePresentation.privacySummary,
@@ -35,7 +69,14 @@ final class CompliancePresentationTests: XCTestCase {
     }
 
     func testBuildDescriptionUsesVersionBuildAndCommit() {
-        let identity = DeviceIdentity(
+        XCTAssertEqual(
+            CompliancePresentation.buildDescription(for: deviceIdentity()),
+            "1.0 (2609011700) 81a7bcb"
+        )
+    }
+
+    private func deviceIdentity() -> DeviceIdentity {
+        DeviceIdentity(
             modelIdentifier: "iPhone16,1",
             systemName: "iOS",
             systemVersion: "26.0",
@@ -43,11 +84,6 @@ final class CompliancePresentationTests: XCTestCase {
             appBuild: "2609011700",
             appCommit: "81a7bcb",
             isSimulator: false
-        )
-
-        XCTAssertEqual(
-            CompliancePresentation.buildDescription(for: identity),
-            "1.0 (2609011700) 81a7bcb"
         )
     }
 }

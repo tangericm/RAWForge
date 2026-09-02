@@ -27,6 +27,50 @@ struct CompliancePresentation {
     }
 }
 
+enum HelpSettingsDestination: String, CaseIterable, Identifiable {
+    case privacyData
+    case thisIPhone
+    case diagnostics
+    case support
+    case openSourceAbout
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .privacyData: return "Privacy & Data"
+        case .thisIPhone: return "This iPhone"
+        case .diagnostics: return "Diagnostics"
+        case .support: return "Support"
+        case .openSourceAbout: return "Open Source & About"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .privacyData: return "hand.raised"
+        case .thisIPhone: return "iphone"
+        case .diagnostics: return "stethoscope"
+        case .support: return "questionmark.circle"
+        case .openSourceAbout: return "info.circle"
+        }
+    }
+}
+
+struct BuildIDClipboard {
+    private let write: (String) -> Void
+
+    init(write: @escaping (String) -> Void) {
+        self.write = write
+    }
+
+    static let system = BuildIDClipboard { UIPasteboard.general.string = $0 }
+
+    func copyBuildID(for identity: DeviceIdentity) {
+        write(CompliancePresentation.buildDescription(for: identity))
+    }
+}
+
 struct HelpSettingsView: View {
     let report: CapabilityReport?
     private let model: CaptureModel?
@@ -50,34 +94,12 @@ struct HelpSettingsView: View {
     var body: some View {
         List {
             Section {
-                NavigationLink {
-                    PrivacyDataView()
-                } label: {
-                    destination("Privacy & Data", systemImage: "hand.raised")
-                }
-
-                NavigationLink {
-                    ThisIPhoneView(report: report, model: model)
-                } label: {
-                    destination("This iPhone", systemImage: "iphone")
-                }
-
-                NavigationLink {
-                    DiagnosticsView(identity: identity)
-                } label: {
-                    destination("Diagnostics", systemImage: "stethoscope")
-                }
-
-                NavigationLink {
-                    SupportView(identity: identity)
-                } label: {
-                    destination("Support", systemImage: "questionmark.circle")
-                }
-
-                NavigationLink {
-                    AboutView(identity: identity)
-                } label: {
-                    destination("Open Source & About", systemImage: "info.circle")
+                ForEach(HelpSettingsDestination.allCases) { route in
+                    NavigationLink {
+                        view(for: route)
+                    } label: {
+                        destinationLabel(route)
+                    }
                 }
             }
         }
@@ -85,9 +107,25 @@ struct HelpSettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
-    private func destination(_ title: String, systemImage: String) -> some View {
-        Label(title, systemImage: systemImage)
+    private func destinationLabel(_ route: HelpSettingsDestination) -> some View {
+        Label(route.title, systemImage: route.systemImage)
             .frame(minHeight: 44, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func view(for route: HelpSettingsDestination) -> some View {
+        switch route {
+        case .privacyData:
+            PrivacyDataView()
+        case .thisIPhone:
+            ThisIPhoneView(report: report, model: model)
+        case .diagnostics:
+            DiagnosticsView(identity: identity)
+        case .support:
+            SupportView(identity: identity)
+        case .openSourceAbout:
+            AboutView(identity: identity)
+        }
     }
 }
 
@@ -204,7 +242,7 @@ private struct DiagnosticsView: View {
                     Label("Share Diagnostic Report", systemImage: "square.and.arrow.up")
                         .frame(minHeight: 44, alignment: .leading)
                 }
-                .disabled(DebugLog.shared.fileURL == nil)
+                .disabled(DebugLog.shared.currentReportURL() == nil)
             } header: {
                 Text("Reports")
             } footer: {
@@ -232,8 +270,7 @@ private struct DiagnosticsView: View {
     }
 
     private func shareCurrentReport() {
-        DebugLog.shared.flush()
-        if let url = DebugLog.shared.fileURL {
+        if let url = DebugLog.shared.currentReportURL() {
             shared = ExportedArchive(url: url)
         }
     }
@@ -241,7 +278,13 @@ private struct DiagnosticsView: View {
 
 private struct SupportView: View {
     let identity: DeviceIdentity
+    let clipboard: BuildIDClipboard
     @State private var copied = false
+
+    init(identity: DeviceIdentity, clipboard: BuildIDClipboard = .system) {
+        self.identity = identity
+        self.clipboard = clipboard
+    }
 
     var body: some View {
         List {
@@ -283,7 +326,7 @@ private struct SupportView: View {
     }
 
     private func copyBuildID() {
-        UIPasteboard.general.string = CompliancePresentation.buildDescription(for: identity)
+        clipboard.copyBuildID(for: identity)
         copied = true
         UIAccessibility.post(notification: .announcement, argument: "Build ID copied")
     }

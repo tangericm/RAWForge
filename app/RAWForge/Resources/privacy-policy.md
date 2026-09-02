@@ -30,7 +30,7 @@ Diagnostic logs are kept locally for a bounded number of recent launches, with o
 
 ## iCloud backup
 
-RAWForge marks capture-session folders, including their DNG frames and session metadata, as excluded from iCloud backup. Small operational files in Application Support remain subject to normal iOS backup behavior.
+RAWForge marks capture-session folders, including their DNG frames and session metadata, as excluded from iCloud backup. RAWForge also marks the diagnostics directory, including retained launch logs, as excluded from iCloud backup. Small operational files in Application Support remain subject to normal iOS backup behavior.
 
 ## Diagnostics
 

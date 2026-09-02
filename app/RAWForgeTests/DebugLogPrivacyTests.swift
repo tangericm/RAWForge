@@ -4,19 +4,13 @@ import XCTest
 final class DebugLogPrivacyTests: XCTestCase {
     func testExportedLineStartsAtLaunchRelativeTimeAndOmitsWallClock() throws {
         let clock = TestUptimeClock(now: 987_654)
-        let log = DebugLog(uptime: { clock.now })
+        let storageDirectory = try makeTemporaryDirectory()
+        let log = DebugLog(storageDirectory: storageDirectory, uptime: { clock.now })
         let message = "privacy-test-\(UUID().uuidString)"
 
-        // The app under test opens its own second-resolution launch log. Cross
-        // a timestamp boundary so this private recorder cannot share that file.
-        Thread.sleep(forTimeInterval: 1.05)
         clock.now = 1_000_000
         log.start(device: deviceIdentity())
-        defer {
-            if let fileURL = log.fileURL {
-                try? FileManager.default.removeItem(at: fileURL)
-            }
-        }
+        defer { log.noteCleanExit() }
 
         clock.now = 1_000_012.345
         log.write(.info, .app, message)
@@ -36,6 +30,43 @@ final class DebugLogPrivacyTests: XCTestCase {
                       "the exported line must begin with launch-relative time")
         XCTAssertFalse(exportedLine.contains(entry.clock),
                        "the exported diagnostic must not contain a wall-clock column")
+    }
+
+    func testDiagnosticStorageExcludesRetainedLogsFromBackupAndProvidesAReportURL() throws {
+        let storageDirectory = try makeTemporaryDirectory()
+        let retainedLog = storageDirectory.appendingPathComponent("retained.log")
+        let retainedContents = Data("retained diagnostic".utf8)
+        try retainedContents.write(to: retainedLog)
+        let log = DebugLog(storageDirectory: storageDirectory)
+
+        log.start(device: deviceIdentity())
+        defer { log.noteCleanExit() }
+
+        let values = try storageDirectory.resourceValues(
+            forKeys: [.isExcludedFromBackupKey]
+        )
+        XCTAssertEqual(values.isExcludedFromBackup, true)
+        XCTAssertEqual(try Data(contentsOf: retainedLog), retainedContents,
+                       "excluding diagnostics from backup must not replace retained logs")
+
+        let reportURL = try XCTUnwrap(log.currentReportURL())
+        XCTAssertEqual(
+            reportURL.deletingLastPathComponent().standardizedFileURL,
+            storageDirectory.standardizedFileURL
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: reportURL.path))
+    }
+
+    private func makeTemporaryDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rawforge-debug-log-tests-\(UUID().uuidString)",
+                                    isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        return directory
     }
 
     private func deviceIdentity() -> DeviceIdentity {
