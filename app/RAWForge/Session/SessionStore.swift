@@ -12,13 +12,33 @@ enum SessionStore {
 
     enum StoreError: Error, CustomStringConvertible {
         case cannotCreateDirectory(String)
+        case cannotExcludeFromBackup(String)
         case cannotWriteHeader(String)
 
         var description: String {
             switch self {
             case .cannotCreateDirectory(let s): return "could not create the session directory: \(s)"
+            case .cannotExcludeFromBackup(let s): return "could not verify backup exclusion: \(s)"
             case .cannotWriteHeader(let s):     return "could not write the session header: \(s)"
             }
+        }
+    }
+
+    struct BackupExclusion {
+        let applyAndVerify: (URL) throws -> Bool
+
+        init(_ applyAndVerify: @escaping (URL) throws -> Bool) {
+            self.applyAndVerify = applyAndVerify
+        }
+
+        static let live = BackupExclusion { url in
+            var target = url
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = true
+            try target.setResourceValues(values)
+            let verified = try target.resourceValues(
+                forKeys: [.isExcludedFromBackupKey])
+            return verified.isExcludedFromBackup == true
         }
     }
 
@@ -71,7 +91,8 @@ enum SessionStore {
     @discardableResult
     static func open(capability: CapabilityReport, now: Date = Date(),
                      sessionType: String = "scene",
-                     calibration: (id: String, ageSeconds: Double)? = nil) throws -> SessionRecord {
+                     calibration: (id: String, ageSeconds: Double)? = nil,
+                     backupExclusion: BackupExclusion = .live) throws -> SessionRecord {
         let record = SessionRecord(
             sessionId: makeSessionId(now),
             openedAt: now,
@@ -81,20 +102,33 @@ enum SessionStore {
             calibrationSessionId: calibration?.id,
             calibrationAgeSeconds: calibration?.ageSeconds)
 
-        let dir = directory(for: record.sessionId)
+        // Backup exclusion is a privacy precondition for capture. Create only
+        // the empty root, set the value, and read it back before creating any
+        // session directory or writing its header/data.
         do {
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(
+                at: sessionsRoot, withIntermediateDirectories: true)
         } catch {
             throw StoreError.cannotCreateDirectory(error.localizedDescription)
         }
 
-        // #11: a ten-station scene runs to ~2 GB, and without this every one of
-        // those bytes goes into every iCloud backup. Set on the sessions root
-        // so it covers sessions not yet created.
-        var root = sessionsRoot
-        var flag = URLResourceValues()
-        flag.isExcludedFromBackup = true
-        try? root.setResourceValues(flag)
+        let exclusionVerified: Bool
+        do {
+            exclusionVerified = try backupExclusion.applyAndVerify(sessionsRoot)
+        } catch {
+            throw StoreError.cannotExcludeFromBackup(error.localizedDescription)
+        }
+        guard exclusionVerified else {
+            throw StoreError.cannotExcludeFromBackup(
+                "the sessions root did not report isExcludedFromBackup=true")
+        }
+
+        let dir = directory(for: record.sessionId)
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: false)
+        } catch {
+            throw StoreError.cannotCreateDirectory(error.localizedDescription)
+        }
 
         do {
             let encoder = JSONEncoder()
@@ -205,7 +239,14 @@ enum SessionStore {
     /// shot and nothing would say so. An unreadable record is a fact about the
     /// session and belongs on screen.
     static func loadStationsDetailed(_ sessionId: String) -> (stations: [StationRecord], unreadable: [String]) {
-        let dir = directory(for: sessionId)
+        loadStationsDetailed(sessionId, sessionsRoot: sessionsRoot)
+    }
+
+    private static func loadStationsDetailed(
+        _ sessionId: String,
+        sessionsRoot: URL
+    ) -> (stations: [StationRecord], unreadable: [String]) {
+        let dir = sessionsRoot.appendingPathComponent(sessionId, isDirectory: true)
         let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
         var stations: [StationRecord] = []
         var unreadable: [String] = []
@@ -313,12 +354,24 @@ enum SessionStore {
     /// Runs before anything else reads the sessions directory, so no orphan is
     /// ever visible in the browser or counted in a capacity estimate.
     @discardableResult
-    static func sweepOrphanedFrames() -> Int {
+    static func sweepOrphanedFrames(
+        sessionsRoot: URL = sessionsRoot,
+        removeItem: (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) }
+    ) -> Int {
         var removed = 0
-        for sessionId in existingSessionIds() {
-            let dir = directory(for: sessionId)
+        for sessionId in existingSessionIds(at: sessionsRoot) {
+            let dir = sessionsRoot.appendingPathComponent(sessionId, isDirectory: true)
             let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
-            let closedStations = Set(loadStations(sessionId).map(\.stationIndex))
+            let sessionURL = dir.appendingPathComponent("session.json")
+            guard let sessionData = try? Data(contentsOf: sessionURL),
+                  (try? decoder.decode(SessionRecord.self, from: sessionData)) != nil else {
+                // An unknown, malformed, or not-yet-migrated header may carry
+                // ownership facts that this build cannot interpret. Deleting
+                // anything from that directory would turn uncertainty into
+                // data loss.
+                continue
+            }
+            let ownedStations = Set(files.compactMap(stationIndexOwnedByMetadataFilename))
             // Calibration runs write per setting, not per station, and are the
             // documented carve-out (#15) — their frames are never orphans.
             let darkSettings = files.filter { $0.lastPathComponent.hasPrefix("dark-") }
@@ -327,22 +380,37 @@ enum SessionStore {
                 if !darkSettings.isEmpty, name.contains("_d") { continue }
                 guard let r = name.range(of: "_s"),
                       let station = Int(name[r.upperBound...].prefix(3)) else { continue }
-                if !closedStations.contains(station) {
-                    try? FileManager.default.removeItem(at: f)
-                    removed += 1
+                if !ownedStations.contains(station) {
+                    do {
+                        try removeItem(f)
+                        removed += 1
+                    } catch {
+                        // The caller reports successful frame deletion only.
+                    }
                 }
             }
             for f in files where f.lastPathComponent.hasPrefix("motion-")
                     && f.pathExtension == "jsonl" {
                 let number = f.deletingPathExtension().lastPathComponent.dropFirst("motion-".count)
-                guard let station = Int(number), !closedStations.contains(station) else { continue }
-                try? FileManager.default.removeItem(at: f)
+                guard let station = Int(number), !ownedStations.contains(station) else { continue }
+                try? removeItem(f)
             }
         }
         return removed
     }
 
+    private static func stationIndexOwnedByMetadataFilename(_ url: URL) -> Int? {
+        guard url.pathExtension == "json" else { return nil }
+        let stem = url.deletingPathExtension().lastPathComponent
+        guard stem.hasPrefix("station-") else { return nil }
+        return Int(stem.dropFirst("station-".count))
+    }
+
     static func existingSessionIds() -> [String] {
+        existingSessionIds(at: sessionsRoot)
+    }
+
+    private static func existingSessionIds(at sessionsRoot: URL) -> [String] {
         let contents = try? FileManager.default.contentsOfDirectory(
             at: sessionsRoot, includingPropertiesForKeys: nil)
         return (contents ?? [])

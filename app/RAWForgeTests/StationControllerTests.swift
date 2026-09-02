@@ -372,7 +372,7 @@ private func frameFixture(request: StationCaptureRequest) -> FrameRecord {
         capturedAtSegmentStartSeconds: request.timebase.secondsSinceOrigin(
             request.timebase.originUptime + 2.5),
         capturedAt: Date(timeIntervalSince1970: 10),
-        photoTimestampSeconds: nil,
+        photoTimestampAtSegmentStartSeconds: nil,
         gapFromPreviousSeconds: nil,
         clipping: nil,
         motion: nil,

@@ -13,10 +13,11 @@ struct RAWForgeApp: App {
         // Legacy records reject the current decoders, and old logs contain
         // unstructured uptime. Resolve both before a store or log reads them.
         let markerURL = AppStorage.supportFile("privacy-migration-v1.json")
-        let migration = RecordPrivacyMigrator.migrate(
+        let maintenance = LaunchStorageMaintenance.run(
             sessionsRoot: SessionStore.sessionsRoot,
             logsRoot: DebugLog.directory,
             markerURL: markerURL)
+        let migration = maintenance.migration
         _launchNotice = StateObject(
             wrappedValue: LaunchNoticeStore(markerURL: markerURL))
 
@@ -32,6 +33,12 @@ struct RAWForgeApp: App {
         }
         for failure in migration.failures {
             logError(.store, "privacy migration failed — \(failure)")
+        }
+        if maintenance.orphanedFramesRemoved > 0 {
+            logWarn(
+                .store,
+                "swept \(maintenance.orphanedFramesRemoved) orphaned frame(s) "
+                    + "from a valid current session with no owning station metadata")
         }
     }
 

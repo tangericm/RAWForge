@@ -5,6 +5,14 @@ import XCTest
 /// the paths where a bug loses data rather than merely displaying it wrong.
 final class StoreIntegrationTests: XCTestCase {
 
+    private enum InjectedBackupError: Error {
+        case setterFailed
+    }
+
+    private enum InjectedRemovalError: Error {
+        case refused
+    }
+
     private var created: [String] = []
     private var createdProtocols: [String] = []
 
@@ -19,8 +27,17 @@ final class StoreIntegrationTests: XCTestCase {
 
     private func makeSession(_ suffix: String) throws -> String {
         let id = "TEST\(suffix)"
-        try FileManager.default.createDirectory(
-            at: SessionStore.directory(for: id), withIntermediateDirectories: true)
+        let directory = SessionStore.directory(for: id)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let session = SessionRecord(
+            sessionId: id,
+            openedAt: Date(timeIntervalSince1970: 1_000),
+            capability: CapabilityReport(device: .current(), sensors: []),
+            availableCapacityBytes: 1_000_000)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(session).write(
+            to: directory.appendingPathComponent("session.json"))
         created.append(id)
         return id
     }
@@ -59,6 +76,65 @@ final class StoreIntegrationTests: XCTestCase {
             sessionId: "S", setting: 7, repeatIndex: 3, sensor: "tele")
         XCTAssertEqual(name, "S_d007_r03_tele.dng")
         XCTAssertFalse(name.contains("_s"), "a dark frame has no station")
+    }
+
+    // MARK: - Backup exclusion
+
+    func testOpenRefusesToCreateSessionWhenBackupExclusionSetterThrows() {
+        let now = Date(timeIntervalSince1970: 4_102_444_800)
+        let id = SessionStore.makeSessionId(now)
+        created.append(id)
+
+        XCTAssertThrowsError(try SessionStore.open(
+            capability: CapabilityReport(device: .current(), sensors: []),
+            now: now,
+            backupExclusion: .init { _ in throw InjectedBackupError.setterFailed }
+        )) { error in
+            guard case SessionStore.StoreError.cannotExcludeFromBackup = error else {
+                return XCTFail("expected typed backup-exclusion failure, got \(error)")
+            }
+        }
+
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: SessionStore.directory(for: id).path),
+            "a privacy-setting failure must happen before session data exists")
+    }
+
+    func testOpenRefusesToCreateSessionWhenBackupExclusionReadbackIsFalse() {
+        let now = Date(timeIntervalSince1970: 4_102_444_801)
+        let id = SessionStore.makeSessionId(now)
+        created.append(id)
+
+        XCTAssertThrowsError(try SessionStore.open(
+            capability: CapabilityReport(device: .current(), sensors: []),
+            now: now,
+            backupExclusion: .init { _ in false }
+        )) { error in
+            guard case SessionStore.StoreError.cannotExcludeFromBackup = error else {
+                return XCTFail("expected typed backup-exclusion failure, got \(error)")
+            }
+        }
+
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: SessionStore.directory(for: id).path),
+            "an unverifiable privacy setting must happen before session data exists")
+    }
+
+    func testOpenUsesRealBackupExclusionAndVerifiesItOnTheSessionsRoot() throws {
+        let now = Date(timeIntervalSince1970: 4_102_444_802)
+        let id = SessionStore.makeSessionId(now)
+        created.append(id)
+
+        _ = try SessionStore.open(
+            capability: CapabilityReport(device: .current(), sensors: []),
+            now: now)
+
+        let values = try SessionStore.sessionsRoot.resourceValues(
+            forKeys: [.isExcludedFromBackupKey])
+        XCTAssertEqual(values.isExcludedFromBackup, true)
+        XCTAssertTrue(FileManager.default.fileExists(atPath:
+            SessionStore.directory(for: id)
+                .appendingPathComponent("session.json").path))
     }
 
     // MARK: - The orphan sweep
@@ -113,6 +189,25 @@ final class StoreIntegrationTests: XCTestCase {
             .map(\.lastPathComponent).filter { $0.hasSuffix(".dng") }
         XCTAssertEqual(names.count, 1)
         XCTAssertTrue(names[0].contains("_s001_"))
+    }
+
+    func testSweepDoesNotReportAFrameAsRemovedWhenDeletionFails() throws {
+        let id = try makeSession("RemovalFailure")
+        try writeFrame(id, station: 1, frame: 1)
+        let frameURL = SessionStore.directory(for: id).appendingPathComponent(
+            SessionStore.frameFilename(
+                sessionId: id, station: 1, bracket: 1, frame: 1, sensor: "1x"))
+        let bytes = try Data(contentsOf: frameURL)
+
+        let removed = SessionStore.sweepOrphanedFrames { url in
+            if url.standardizedFileURL == frameURL.standardizedFileURL {
+                throw InjectedRemovalError.refused
+            }
+            try FileManager.default.removeItem(at: url)
+        }
+
+        XCTAssertEqual(removed, 0, "the launch notice may count only successful deletion")
+        XCTAssertEqual(try Data(contentsOf: frameURL), bytes)
     }
 
     // MARK: - Unreadable records

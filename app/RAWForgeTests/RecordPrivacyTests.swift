@@ -18,14 +18,34 @@ final class RecordPrivacyTests: XCTestCase {
         XCTAssertTrue(stationText.contains("segment-1"))
     }
 
-    func testCurrentFrameEncodingContainsOnlyRelativeMonotonicKeys() throws {
+    func testCurrentFrameRoundTripUsesExactRelativeKeySetAndPhotoValue() throws {
         let frame = FrameRecord.fixture(capturedAtSegmentStartSeconds: 2.5)
-        let text = String(decoding: try JSONEncoder.rawforge.encode(frame), as: UTF8.self)
+        let data = try JSONEncoder.rawforge.encode(frame)
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any])
 
-        XCTAssertTrue(text.contains("capturedAtSegmentStartSeconds"))
-        XCTAssertFalse(text.contains("capturedAtUptime"))
-        XCTAssertFalse(text.contains("uptimeAtDelivery"))
-        XCTAssertFalse(text.contains("latestMotionTimestamp"))
+        XCTAssertEqual(
+            Set(object.keys),
+            Set([
+                "capturedAt",
+                "capturedAtSegmentStartSeconds",
+                "deliveredAtSegmentStartSeconds",
+                "dng",
+                "filename",
+                "frameIndex",
+                "latestMotionAtSegmentStartSeconds",
+                "photoTimestampAtSegmentStartSeconds",
+                "requested",
+                "sensor",
+                "zoomFactor"
+            ]))
+        XCTAssertEqual(
+            object["photoTimestampAtSegmentStartSeconds"] as? Double,
+            2.375)
+        XCTAssertNil(object["photoTimestampSeconds"])
+
+        let decoded = try JSONDecoder.rawforge.decode(FrameRecord.self, from: data)
+        XCTAssertEqual(decoded.photoTimestampAtSegmentStartSeconds, 2.375)
     }
 
     func testCurrentMotionSampleNamesItsRelativeDomain() throws {
@@ -48,7 +68,7 @@ final class RecordPrivacyTests: XCTestCase {
             let data = try replacingSchema(in: session, with: schema)
             XCTAssertThrowsError(try JSONDecoder.rawforge.decode(SessionRecord.self, from: data))
         }
-        for schema in [2, 999] {
+        for schema in [2, 3, 999] {
             let data = try replacingSchema(in: station, with: schema)
             XCTAssertThrowsError(try JSONDecoder.rawforge.decode(StationRecord.self, from: data))
         }
@@ -117,7 +137,7 @@ private extension FrameRecord {
             zoomFactor: 1,
             capturedAtSegmentStartSeconds: capturedAtSegmentStartSeconds,
             capturedAt: Date(timeIntervalSince1970: 1_000),
-            photoTimestampSeconds: nil,
+            photoTimestampAtSegmentStartSeconds: 2.375,
             gapFromPreviousSeconds: nil,
             clipping: nil,
             motion: nil,

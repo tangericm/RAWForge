@@ -35,8 +35,10 @@ failed=0
 SEARCH_STATUS=0
 FRAME_SCAN_STATUS=0
 FRAME_CURRENT_RELATIVE=0
+FRAME_CURRENT_PHOTO_RELATIVE=0
 FRAME_LEGACY_CAPTURED=0
 FRAME_LEGACY_DELIVERY=0
+FRAME_LEGACY_PHOTO_TIMESTAMP=0
 ANSWER_SCAN_STATUS=0
 ANSWER_SCAN_OUTPUT=""
 
@@ -338,10 +340,11 @@ scan_frame_record_declarations() {
       return 0
     }
 
-    function has_instance_current(text, remaining, consumed, match_start, match_length, matched, relative_let, declaration_start, advance) {
+    function has_instance_declaration(text, name, remaining, consumed, match_start, match_length, matched, relative_let, declaration_start, advance, pattern) {
       remaining = text
       consumed = 0
-      while (match(remaining, /(^|[^[:alnum:]_])let[[:space:]]+capturedAtSegmentStartSeconds[[:space:]]*(:|=)/)) {
+      pattern = "(^|[^[:alnum:]_])let[[:space:]]+" name "[[:space:]]*(:|=)"
+      while (match(remaining, pattern)) {
         match_start = RSTART
         match_length = RLENGTH
         matched = substr(remaining, match_start, match_length)
@@ -510,8 +513,10 @@ scan_frame_record_declarations() {
       start = RSTART + RLENGTH - 1
       depth = 0
       top = ""
+      record = ""
       for (i = start; i <= length(clean); i++) {
         c = substr(clean, i, 1)
+        record = record c
         if (c == "{") {
           depth++
           top = top " "
@@ -533,10 +538,12 @@ scan_frame_record_declarations() {
       }
 
       gsub(/[[:space:]]+/, " ", top)
-      current = has_instance_current(top)
+      current = has_instance_declaration(top, "capturedAtSegmentStartSeconds")
+      photo_current = has_instance_declaration(top, "photoTimestampAtSegmentStartSeconds")
       legacy_capture = top ~ /(^|[^[:alnum:]_])(let|var)[[:space:]]+capturedAtUptime[[:space:]]*(:|=)/
       legacy_delivery = top ~ /(^|[^[:alnum:]_])(let|var)[[:space:]]+uptimeAtDelivery[[:space:]]*(:|=)/
-      print (current ? 1 : 0), (legacy_capture ? 1 : 0), (legacy_delivery ? 1 : 0)
+      legacy_photo = record ~ /(^|[^[:alnum:]_])photoTimestampSeconds([^[:alnum:]_]|$)/
+      print (current ? 1 : 0), (photo_current ? 1 : 0), (legacy_capture ? 1 : 0), (legacy_delivery ? 1 : 0), (legacy_photo ? 1 : 0)
     }
   ' "$path" 2>/dev/null)"; then
     FRAME_SCAN_STATUS=0
@@ -546,16 +553,18 @@ scan_frame_record_declarations() {
   fi
 
   set -- $scan_output
-  if [ "$#" -ne 3 ]; then
+  if [ "$#" -ne 5 ]; then
     FRAME_SCAN_STATUS=6
     return
   fi
 
-  case "$1$2$3" in
-    000|001|010|011|100|101|110|111)
+  case "$1$2$3$4$5" in
+    [01][01][01][01][01])
       FRAME_CURRENT_RELATIVE="$1"
-      FRAME_LEGACY_CAPTURED="$2"
-      FRAME_LEGACY_DELIVERY="$3"
+      FRAME_CURRENT_PHOTO_RELATIVE="$2"
+      FRAME_LEGACY_CAPTURED="$3"
+      FRAME_LEGACY_DELIVERY="$4"
+      FRAME_LEGACY_PHOTO_TIMESTAMP="$5"
       ;;
     *) FRAME_SCAN_STATUS=6 ;;
   esac
@@ -626,13 +635,21 @@ FRAME_RECORD="app/RAWForge/Session/FrameRecord.swift"
 scan_frame_record_declarations "$REPO_ROOT/$FRAME_RECORD"
 if [ "$FRAME_SCAN_STATUS" -ne 0 ]; then
   fail_frame_scan_error "current-frame-relative-time" "$FRAME_RECORD"
+  fail_frame_scan_error "current-frame-photo-relative-time" "$FRAME_RECORD"
   fail_frame_scan_error "current-frame-no-capturedAtUptime" "$FRAME_RECORD"
   fail_frame_scan_error "current-frame-no-uptimeAtDelivery" "$FRAME_RECORD"
+  fail_frame_scan_error "current-frame-no-photoTimestampSeconds" "$FRAME_RECORD"
 else
   if [ "$FRAME_CURRENT_RELATIVE" -eq 1 ]; then
     pass "current-frame-relative-time" "current FrameRecord declares capturedAtSegmentStartSeconds"
   else
     fail "current-frame-relative-time" "current FrameRecord must declare stored let capturedAtSegmentStartSeconds in $FRAME_RECORD"
+  fi
+
+  if [ "$FRAME_CURRENT_PHOTO_RELATIVE" -eq 1 ]; then
+    pass "current-frame-photo-relative-time" "current FrameRecord declares photoTimestampAtSegmentStartSeconds"
+  else
+    fail "current-frame-photo-relative-time" "current FrameRecord must declare stored let photoTimestampAtSegmentStartSeconds in $FRAME_RECORD"
   fi
 
   if [ "$FRAME_LEGACY_CAPTURED" -eq 0 ]; then
@@ -645,6 +662,11 @@ else
     pass "current-frame-no-uptimeAtDelivery" "current FrameRecord does not declare uptimeAtDelivery"
   else
     fail "current-frame-no-uptimeAtDelivery" "legacy uptimeAtDelivery is declared by the current FrameRecord in $FRAME_RECORD; keep legacy DTO fields inside the explicit migrator"
+  fi
+  if [ "$FRAME_LEGACY_PHOTO_TIMESTAMP" -eq 0 ]; then
+    pass "current-frame-no-photoTimestampSeconds" "current FrameRecord does not declare or encode photoTimestampSeconds"
+  else
+    fail "current-frame-no-photoTimestampSeconds" "legacy photoTimestampSeconds appears in the current FrameRecord durable contract in $FRAME_RECORD; keep the raw photo clock in memory and legacy fields inside the explicit migrator"
   fi
 fi
 
