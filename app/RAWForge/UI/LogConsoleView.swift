@@ -199,13 +199,13 @@ struct LogConsoleView: View {
             Rectangle().fill(tint(e.level)).frame(width: 2)
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 6) {
-                    Text(e.clock).font(.system(size: 9)).monospaced().foregroundStyle(.secondary)
-                    Text(e.category.rawValue).font(.system(size: 9)).monospaced()
+                    Text(e.clock).font(.caption2).monospaced().foregroundStyle(.secondary)
+                    Text(e.category.rawValue).font(.caption2).monospaced()
                         .foregroundStyle(.tertiary)
                     Spacer(minLength: 0)
                 }
                 Text(e.message)
-                    .font(.system(size: 11)).monospaced()
+                    .font(.caption).monospaced()
                     .foregroundStyle(e.level == .error ? Color.red
                                      : e.level == .warn ? Color.orange : Color.primary)
                     .textSelection(.enabled)
@@ -259,8 +259,9 @@ struct LogConsoleView: View {
     }
 
     private func shareCurrent() {
-        DebugLog.shared.flush()
-        if let url = DebugLog.shared.fileURL { shared = ExportedArchive(url: url) }
+        if let url = DebugLog.shared.currentReportURL() {
+            shared = ExportedArchive(url: url)
+        }
     }
 }
 

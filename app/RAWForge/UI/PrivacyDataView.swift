@@ -1,13 +1,26 @@
 import SwiftUI
 
+enum BundledPrivacyPolicy {
+    enum LoadingError: Error {
+        case missingResource
+    }
+
+    static func load(from bundle: Bundle = .main) throws -> String {
+        guard let url = bundle.url(
+            forResource: "privacy-policy",
+            withExtension: "md"
+        ) else {
+            throw LoadingError.missingResource
+        }
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+}
+
 struct PrivacyDataView: View {
     private let bundledPolicy: String
 
     init() {
-        bundledPolicy = Bundle.main.url(
-            forResource: "privacy-policy",
-            withExtension: "md"
-        ).flatMap { try? String(contentsOf: $0, encoding: .utf8) } ??
+        bundledPolicy = (try? BundledPrivacyPolicy.load()) ??
             "The bundled privacy policy could not be opened."
     }
 
@@ -42,7 +55,7 @@ struct PrivacyDataView: View {
 
             Section("Storage & backup") {
                 Text("DNG frames, capture records, motion evidence, Recipes, and bounded diagnostic logs are stored locally in RAWForge’s app container.")
-                Text("Capture folders are excluded from iCloud backup. Small operational files in Application Support remain subject to normal iOS backup behavior.")
+                Text("Capture folders and diagnostic reports are excluded from iCloud backup. Small operational files in Application Support remain subject to normal iOS backup behavior.")
             }
 
             Section("Export") {

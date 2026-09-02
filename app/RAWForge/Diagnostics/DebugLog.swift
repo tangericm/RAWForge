@@ -107,6 +107,7 @@ final class DebugLog: @unchecked Sendable {
     private let io = DispatchQueue(label: "com.tangericm.rawforge.debuglog", qos: .utility)
     private var handle: FileHandle?
     private let osLog = Logger(subsystem: "com.tangericm.rawforge", category: "rawforge")
+    private let storageDirectory: URL
     private let uptime: () -> TimeInterval
     private var launchOriginUptime: TimeInterval
 
@@ -123,9 +124,13 @@ final class DebugLog: @unchecked Sendable {
         return f
     }()
 
-    init(uptime: @escaping () -> TimeInterval = {
-        ProcessInfo.processInfo.systemUptime
-    }) {
+    init(
+        storageDirectory: URL = DebugLog.directory,
+        uptime: @escaping () -> TimeInterval = {
+            ProcessInfo.processInfo.systemUptime
+        }
+    ) {
+        self.storageDirectory = storageDirectory
         self.uptime = uptime
         launchOriginUptime = uptime()
     }
@@ -157,18 +162,33 @@ final class DebugLog: @unchecked Sendable {
     func start(device: DeviceIdentity) {
         launchOriginUptime = uptime()
         let stamp = Self.stampFormatter.string(from: Date())
-        let dir = Self.directory
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let url = dir.appendingPathComponent("rawforge-\(stamp).log")
+        let storagePreparationError: Error?
+        do {
+            try Self.prepareStorage(at: storageDirectory)
+            storagePreparationError = nil
+        } catch {
+            // Logging remains best-effort, but report the failed privacy guard
+            // in memory and, when the directory itself exists, on disk.
+            try? FileManager.default.createDirectory(
+                at: storageDirectory,
+                withIntermediateDirectories: true
+            )
+            storagePreparationError = error
+        }
+        let url = storageDirectory.appendingPathComponent("rawforge-\(stamp).log")
         FileManager.default.createFile(atPath: url.path, contents: nil)
         handle = try? FileHandle(forWritingTo: url)
         fileURL = url
 
-        let marker = dir.appendingPathComponent(".running")
+        let marker = storageDirectory.appendingPathComponent(".running")
         let unclean = FileManager.default.fileExists(atPath: marker.path)
         FileManager.default.createFile(atPath: marker.path, contents: Data())
 
         write(.info, .app, "RAWForge \(device.buildDescription) launched")
+        if let storagePreparationError {
+            write(.error, .store,
+                  "diagnostic storage backup exclusion failed — \(storagePreparationError)")
+        }
         if device.isDirtyBuild {
             write(.warn, .app, "built from a working tree with uncommitted changes — this "
                   + "binary matches no commit in the history")
@@ -184,12 +204,28 @@ final class DebugLog: @unchecked Sendable {
         installExceptionHandler()
     }
 
+    /// Reapplied at every launch so retained reports as well as this launch's
+    /// file remain outside iCloud Backup. Creating the directory first covers
+    /// upgrades without moving or replacing any legacy logs.
+    private static func prepareStorage(at directory: URL) throws {
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        var mutableDirectory = directory
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try mutableDirectory.setResourceValues(values)
+    }
+
     /// Called when the app resigns normally, so the next launch can tell a
     /// clean exit from a kill.
     func noteCleanExit() {
         write(.info, .app, "app resigned cleanly")
         flush()
-        try? FileManager.default.removeItem(at: Self.directory.appendingPathComponent(".running"))
+        try? FileManager.default.removeItem(
+            at: storageDirectory.appendingPathComponent(".running")
+        )
     }
 
     /// An ObjC exception is the one failure mode this app is known to hit —
@@ -211,7 +247,7 @@ final class DebugLog: @unchecked Sendable {
     private func sweepOldLogs() {
         io.async {
             let files = ((try? FileManager.default.contentsOfDirectory(
-                at: Self.directory, includingPropertiesForKeys: nil)) ?? [])
+                at: self.storageDirectory, includingPropertiesForKeys: nil)) ?? [])
                 .filter { $0.pathExtension == "log" }
                 .sorted { $0.lastPathComponent > $1.lastPathComponent }
             for old in files.dropFirst(Self.launchesKept) {
@@ -265,6 +301,15 @@ final class DebugLog: @unchecked Sendable {
 
     func flush() {
         io.sync { try? handle?.synchronize() }
+    }
+
+    /// The current report is shareable only after pending writes have reached
+    /// a real file. Both settings and the console use this same boundary.
+    func currentReportURL() -> URL? {
+        flush()
+        guard let fileURL,
+              FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
+        return fileURL
     }
 
     // MARK: - Reading
