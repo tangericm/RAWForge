@@ -4,7 +4,7 @@ RAWForge is a local Bayer RAW capture instrument. It has no account, sign-in, ba
 
 ## Review device
 
-Use a physical iPhone running iOS 17 or later. RAWForge probes the iPhone's camera capabilities at launch and enables capture only when at least one physical rear camera reports Bayer RAW support. The iOS Simulator does not provide Bayer RAW capture. If the primary action says **No Bayer sensor on this device**, please use a compatible physical iPhone; the message is the intended capability gate rather than a login or connectivity failure.
+Use a physical iPhone running iOS 17 or later. RAWForge probes the iPhone's camera capabilities at launch and enables capture only when at least one physical rear camera reports Bayer RAW support. The iOS Simulator does not provide Bayer RAW capture. If the viewfinder status says **No Bayer sensor**, please use a compatible physical iPhone.
 
 ## Reproducible starter Recipe capture
 
