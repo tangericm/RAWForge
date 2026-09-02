@@ -9,6 +9,7 @@ struct ContentView: View {
     @ObservedObject var launchNoticeStore: LaunchNoticeStore
     @StateObject private var model = CaptureModel()
     @State private var booted = false
+    @State private var showingHelpSettings = false
 
     var body: some View {
         Group {
@@ -81,15 +82,44 @@ struct ContentView: View {
 
     private var tabs: some View {
         TabView(selection: $tab) {
-            NavigationStack { CaptureFlowView(model: model, showConsole: { tab = 2 }) }
+            NavigationStack {
+                CaptureFlowView(model: model, showConsole: { tab = 2 })
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) { helpSettingsButton }
+                    }
+            }
                 .tabItem { Label("Capture", systemImage: "camera.aperture") }.tag(0)
-            NavigationStack { SessionBrowser() }
+            NavigationStack {
+                SessionBrowser()
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) { helpSettingsButton }
+                    }
+            }
                 .tabItem { Label("Sessions", systemImage: "folder") }.tag(1)
             NavigationStack { LogConsoleView() }
                 .tabItem { Label("Console", systemImage: "text.alignleft") }.tag(2)
             NavigationStack { BenchView(model: model) }
                 .tabItem { Label("Bench", systemImage: "wrench.and.screwdriver") }.tag(3)
         }
+        .sheet(isPresented: $showingHelpSettings) {
+            NavigationStack {
+                HelpSettingsView(report: model.report, model: model)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showingHelpSettings = false }
+                        }
+                    }
+            }
+            .preferredColorScheme(.dark)
+        }
+    }
+
+    private var helpSettingsButton: some View {
+        Button { showingHelpSettings = true } label: {
+            Image(systemName: "gearshape")
+        }
+        .accessibilityLabel("Help & Settings")
+        .accessibilityHint("Opens privacy, device, diagnostics, support, and app information")
     }
 
     /// Debug builds can be launched straight onto a tab, which is how these
@@ -160,7 +190,7 @@ struct BenchView: View {
     var body: some View {
         List {
             if let report = model.report {
-                capabilitySection(report)
+                CapabilitySummarySection(report: report)
                 runsSection
                 Section("Per sensor") {
                     ForEach(report.sensors) { SensorSummaryRow(sensor: $0) }
@@ -171,9 +201,15 @@ struct BenchView: View {
         .navigationTitle("Bench")
     }
 
-    // MARK: - What this device can do
+}
 
-    private func capabilitySection(_ report: CapabilityReport) -> some View {
+/// Shared by the current Bench and the release Help & Settings hierarchy.
+/// This is the existing capability presentation, extracted without changing
+/// what it says or how it derives its values.
+struct CapabilitySummarySection: View {
+    let report: CapabilityReport
+
+    var body: some View {
         Section {
             ForEach(report.capabilities) { c in
                 HStack(alignment: .top, spacing: 10) {
@@ -197,8 +233,9 @@ struct BenchView: View {
                  + "read later against the controls it was actually shot with.")
         }
     }
+}
 
-    // MARK: - Runs
+extension BenchView {
 
     /// Both runs produce a *finding about the instrument*, which is why they are
     /// not on the capture screen. Each says what question it answers, because
@@ -311,7 +348,7 @@ struct BenchView: View {
 
 /// Capabilities are reflected, never judged (#6): every sensor is listed, and
 /// the unusable ones name their specific shortfall rather than vanishing.
-private struct SensorSummaryRow: View {
+struct SensorSummaryRow: View {
     let sensor: SensorCapability
 
     var body: some View {
