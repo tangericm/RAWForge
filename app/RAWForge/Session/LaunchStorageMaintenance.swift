@@ -27,19 +27,15 @@ enum LaunchStorageMaintenance {
         let orphanedFramesRemoved = migration.failures.isEmpty
             ? SessionStore.sweepOrphanedFrames(sessionsRoot: sessionsRoot)
             : 0
-        var orphanedFramesToDisclose = 0
-        if migration.failures.isEmpty {
-            let disclosure = RecordPrivacyMigrator.pendingOrphanRemovalDisclosure(
-                orphanedFramesRemoved,
-                markerURL: markerURL)
-            orphanedFramesToDisclose = disclosure.count
-            if let failure = disclosure.persistenceFailure {
-                migration.failures.append("launch notice marker: \(failure)")
-            }
+        let disclosure = RecordPrivacyMigrator.pendingOrphanRemovalDisclosure(
+            orphanedFramesRemoved,
+            markerURL: markerURL)
+        if let failure = disclosure.persistenceFailure {
+            migration.failures.append("launch notice marker: \(failure)")
         }
         return Report(
             migration: migration,
             orphanedFramesRemoved: orphanedFramesRemoved,
-            orphanedFramesToDisclose: orphanedFramesToDisclose)
+            orphanedFramesToDisclose: disclosure.count)
     }
 }

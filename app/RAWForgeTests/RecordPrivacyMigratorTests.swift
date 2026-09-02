@@ -759,6 +759,59 @@ final class RecordPrivacyMigratorTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: fixture.motionURL), motionBytes)
     }
 
+    @MainActor
+    func testFailedMigrationRetainsPriorPendingCleanupDisclosureWithoutSweeping() throws {
+        let fixture = try MigrationFixture.legacyV4(origin: 500)
+        defer { fixture.remove() }
+        try fm.removeItem(at: fixture.stationURL)
+
+        let firstMaintenance = LaunchStorageMaintenance.run(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+        XCTAssertTrue(firstMaintenance.migration.failures.isEmpty)
+        XCTAssertEqual(firstMaintenance.orphanedFramesRemoved, 1)
+        XCTAssertEqual(firstMaintenance.orphanedFramesToDisclose, 1)
+        let markerBeforeFailedLaunch = try Data(contentsOf: fixture.markerURL)
+
+        let nextOrphanURL = fixture.sessionDirectory.appendingPathComponent(
+            SessionStore.frameFilename(
+                sessionId: "legacy-session",
+                station: 2,
+                bracket: 1,
+                frame: 1,
+                sensor: "1x"))
+        let nextOrphanBytes = Data([0x44, 0x4E, 0x47, 0x03])
+        try nextOrphanBytes.write(to: nextOrphanURL)
+
+        let failedMaintenance = LaunchStorageMaintenance.run(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL,
+            migrate: { _, _, _ in
+                var report = RecordPrivacyMigrator.Report()
+                report.failures = ["injected migration failure"]
+                return report
+            })
+        let notice = LaunchNoticeStore(
+            markerURL: fixture.markerURL,
+            orphanedFramesToDisclose: failedMaintenance.orphanedFramesToDisclose)
+
+        XCTAssertEqual(failedMaintenance.migration.failures, ["injected migration failure"])
+        XCTAssertEqual(failedMaintenance.orphanedFramesRemoved, 0)
+        XCTAssertEqual(failedMaintenance.orphanedFramesToDisclose, 1)
+        XCTAssertEqual(try Data(contentsOf: nextOrphanURL), nextOrphanBytes)
+        XCTAssertEqual(try Data(contentsOf: fixture.markerURL), markerBeforeFailedLaunch)
+        XCTAssertEqual(
+            try fixture.markerObject()["pendingOrphanedFramesRemoved"] as? Int,
+            1)
+        XCTAssertEqual(
+            notice.message,
+            "Earlier diagnostic logs were cleared so RAWForge no longer retains the phone's "
+                + "boot-time clock. Separately, launch cleanup removed 1 orphaned DNG file "
+                + "with no owning station metadata.")
+    }
+
     func testStartupDeletesTrueOrphanPayloadsFromAValidCurrentSession() throws {
         let fixture = try MigrationFixture.legacyV4(origin: 500)
         defer { fixture.remove() }
