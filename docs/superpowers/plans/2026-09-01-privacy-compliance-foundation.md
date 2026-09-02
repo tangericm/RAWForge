@@ -622,3 +622,60 @@ git add app/tools/check-compliance.sh .github/workflows/ci.yml \
   app/tools/preflight-release.sh docs/app-store/release-checklist.md
 git commit -m "ci: enforce privacy and compliance contract"
 ```
+
+---
+
+### Task 7: Close the two final privacy-review residuals
+
+**Authorized:** 2026-09-02
+
+**Files:**
+- Modify: `app/RAWForge/RAWForgeApp.swift`
+- Modify: `app/RAWForge/Session/LaunchStorageMaintenance.swift`
+- Modify: `app/RAWForge/Session/RecordPrivacyMigrator.swift`
+- Modify: `app/RAWForgeTests/RecordPrivacyMigratorTests.swift`
+- Modify other directly covering tests only when the behavior requires it
+
+**Interfaces:**
+- Consumes: `LaunchStorageMaintenance.Report.orphanedFramesRemoved`
+- Produces: launch notice copy that distinguishes privacy migration from orphan cleanup
+- Consumes: unversioned schema-3-era `DarkSettingRecord` JSON containing `photoTimestampSeconds`
+- Produces: current dark-setting JSON containing only `photoTimestampAtSegmentStartSeconds`
+
+- [ ] **Step 1: Write and run the failing combined-launch notice test**
+
+Exercise the real launch-maintenance and notice boundary where privacy migration succeeds
+and true orphan cleanup removes at least one DNG in the same launch. The visible notice
+must not say that no DNG was removed. Preserve the truthful no-removal copy when the sweep
+removed nothing. Run the focused test and capture the expected RED failure before changing
+production code.
+
+- [ ] **Step 2: Write and run failing dark-calibration migration tests**
+
+Create a hand-authored unversioned dark-setting fixture from the schema-3 era with a
+non-nil absolute `photoTimestampSeconds`. With a session anchor, migration must replace
+the old key with the hand-derived segment-relative value while preserving DNG and motion
+bytes. Without an anchor, migration must fail safely and preserve metadata and payload
+bytes. Run both tests and capture the expected RED failures before implementation.
+
+- [ ] **Step 3: Implement the narrowest compatibility-safe fixes**
+
+Thread the orphan-removal outcome into the launch notice without duplicating sheet or
+startup ownership. Detect the legacy dark-frame key before current decoding can ignore it;
+convert it only with a valid anchor, remove the old key, and preserve idempotence and
+transactional behavior.
+
+- [ ] **Step 4: Run focused and complete software gates**
+
+```bash
+cd app
+xcodebuild -project RAWForge.xcodeproj -scheme RAWForge \
+  -destination "platform=iOS Simulator,name=iPhone 17 Pro" test
+cd ..
+bash app/tools/check-compliance.sh
+bash app/tools/release-check.sh
+```
+
+Expected: focused regressions and full simulator suite pass, compliance passes, Release
+inspection passes, `git diff --check` is clean, and no hardware or external publication
+is performed.
