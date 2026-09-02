@@ -81,6 +81,88 @@ final class DebugLogPrivacyTests: XCTestCase {
         XCTAssertFalse(storedItems.contains { $0.lastPathComponent == ".running" })
     }
 
+    func testMalformedMigrationMarkerCannotExposeLegacyLogThroughCurrentReportList() throws {
+        let migrationRoot = try makeTemporaryDirectory()
+        let sessionsRoot = migrationRoot.appendingPathComponent("sessions", isDirectory: true)
+        let markerURL = migrationRoot.appendingPathComponent(
+            "support/privacy-migration-v1.json")
+        try FileManager.default.createDirectory(
+            at: sessionsRoot,
+            withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: markerURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true)
+        try Data("{ not json".utf8).write(to: markerURL)
+        let legacyURL = try writeUniqueLegacyLog("malformed-marker")
+        defer { try? FileManager.default.removeItem(at: legacyURL) }
+
+        let report = RecordPrivacyMigrator.migrate(
+            sessionsRoot: sessionsRoot,
+            logsRoot: legacyLogsDirectory,
+            markerURL: markerURL)
+
+        XCTAssertEqual(report.failures.count, 1)
+        XCTAssertTrue(report.failures[0].contains("privacy migration marker:"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: legacyURL.path))
+        XCTAssertFalse(DebugLog.allFiles().contains {
+            $0.standardizedFileURL == legacyURL.standardizedFileURL
+        })
+        try assertCurrentSafeReportIsShareable()
+    }
+
+    func testLegacyLogQuarantineFailureCannotExposeLegacyLogThroughCurrentReportList() throws {
+        let migrationRoot = try makeTemporaryDirectory()
+        let sessionsRoot = migrationRoot.appendingPathComponent("sessions", isDirectory: true)
+        let markerURL = migrationRoot.appendingPathComponent(
+            "support/privacy-migration-v1.json")
+        try FileManager.default.createDirectory(
+            at: sessionsRoot,
+            withIntermediateDirectories: true)
+        let legacyURL = try writeUniqueLegacyLog("quarantine-failure")
+        defer { try? FileManager.default.removeItem(at: legacyURL) }
+        var operations = RecordPrivacyMigrator.FileOperations.live
+        operations.moveItem = { _, _ in throw ForcedStorageError.legacyQuarantine }
+
+        let report = RecordPrivacyMigrator.migrate(
+            sessionsRoot: sessionsRoot,
+            logsRoot: legacyLogsDirectory,
+            markerURL: markerURL,
+            operations: operations)
+
+        XCTAssertEqual(report.failures.count, 1)
+        XCTAssertTrue(report.failures[0].contains("legacy logs quarantine:"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: legacyURL.path))
+        XCTAssertFalse(DebugLog.allFiles().contains {
+            $0.standardizedFileURL == legacyURL.standardizedFileURL
+        })
+        try assertCurrentSafeReportIsShareable()
+    }
+
+    private var legacyLogsDirectory: URL {
+        AppStorage.documentsDirectory.appendingPathComponent("logs", isDirectory: true)
+    }
+
+    private func writeUniqueLegacyLog(_ label: String) throws -> URL {
+        try FileManager.default.createDirectory(
+            at: legacyLogsDirectory,
+            withIntermediateDirectories: true)
+        let url = legacyLogsDirectory.appendingPathComponent(
+            "legacy-\(label)-\(UUID().uuidString).log")
+        try Data("legacy raw uptime 987654".utf8).write(to: url)
+        return url
+    }
+
+    private func assertCurrentSafeReportIsShareable() throws {
+        DebugLog.shared.write(.info, .app, "safe-report-witness-\(UUID().uuidString)")
+        let current = try XCTUnwrap(DebugLog.shared.currentReportURL())
+        XCTAssertEqual(
+            current.deletingLastPathComponent().standardizedFileURL,
+            DebugLog.directory.standardizedFileURL)
+        XCTAssertTrue(DebugLog.allFiles().contains {
+            $0.standardizedFileURL == current.standardizedFileURL
+        })
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("rawforge-debug-log-tests-\(UUID().uuidString)",
@@ -107,6 +189,7 @@ final class DebugLogPrivacyTests: XCTestCase {
 
 private enum ForcedStorageError: Error {
     case backupExclusion
+    case legacyQuarantine
 }
 
 private final class TestUptimeClock {

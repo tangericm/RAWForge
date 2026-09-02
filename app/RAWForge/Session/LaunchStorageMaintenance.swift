@@ -16,6 +16,7 @@ enum LaunchStorageMaintenance {
         sessionsRoot: URL,
         logsRoot: URL,
         markerURL: URL,
+        cleanupOperations: RecordPrivacyMigrator.OrphanCleanupOperations = .live,
         migrate: Migration = { sessionsRoot, logsRoot, markerURL in
             RecordPrivacyMigrator.migrate(
                 sessionsRoot: sessionsRoot,
@@ -24,18 +25,17 @@ enum LaunchStorageMaintenance {
         }
     ) -> Report {
         var migration = migrate(sessionsRoot, logsRoot, markerURL)
-        let orphanedFramesRemoved = migration.failures.isEmpty
-            ? SessionStore.sweepOrphanedFrames(sessionsRoot: sessionsRoot)
-            : 0
-        let disclosure = RecordPrivacyMigrator.pendingOrphanRemovalDisclosure(
-            orphanedFramesRemoved,
-            markerURL: markerURL)
-        if let failure = disclosure.persistenceFailure {
-            migration.failures.append("launch notice marker: \(failure)")
+        let disclosure = RecordPrivacyMigrator.reconcileOrphanCleanup(
+            sessionsRoot: sessionsRoot,
+            markerURL: markerURL,
+            allowRemoval: migration.failures.isEmpty,
+            operations: cleanupOperations)
+        if let failure = disclosure.failure {
+            migration.failures.append(failure)
         }
         return Report(
             migration: migration,
-            orphanedFramesRemoved: orphanedFramesRemoved,
+            orphanedFramesRemoved: disclosure.removed,
             orphanedFramesToDisclose: disclosure.count)
     }
 }

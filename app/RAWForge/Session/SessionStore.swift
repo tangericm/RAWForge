@@ -353,15 +353,20 @@ enum SessionStore {
     ///
     /// Runs before anything else reads the sessions directory, so no orphan is
     /// ever visible in the browser or counted in a capacity estimate.
-    @discardableResult
-    static func sweepOrphanedFrames(
-        sessionsRoot: URL = sessionsRoot,
-        removeItem: (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) }
-    ) -> Int {
-        var removed = 0
+    struct OrphanCleanupCandidate: Hashable {
+        let relativePath: String
+        let url: URL
+        let countsTowardDisclosure: Bool
+    }
+
+    static func orphanCleanupCandidates(
+        sessionsRoot: URL = sessionsRoot
+    ) -> [OrphanCleanupCandidate] {
+        var candidates: [OrphanCleanupCandidate] = []
         for sessionId in existingSessionIds(at: sessionsRoot) {
             let dir = sessionsRoot.appendingPathComponent(sessionId, isDirectory: true)
-            let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+            let files = (try? FileManager.default.contentsOfDirectory(
+                at: dir, includingPropertiesForKeys: nil)) ?? []
             let sessionURL = dir.appendingPathComponent("session.json")
             guard let sessionData = try? Data(contentsOf: sessionURL),
                   (try? decoder.decode(SessionRecord.self, from: sessionData)) != nil else {
@@ -372,38 +377,149 @@ enum SessionStore {
                 continue
             }
             let ownedStations = Set(files.compactMap(stationIndexOwnedByMetadataFilename))
-            // Calibration runs write per setting, not per station, and are the
-            // documented carve-out (#15) — their frames are never orphans.
-            let darkSettings = files.filter { $0.lastPathComponent.hasPrefix("dark-") }
-            for f in files where f.pathExtension == "dng" {
-                let name = f.lastPathComponent
-                if !darkSettings.isEmpty, name.contains("_d") { continue }
-                guard let r = name.range(of: "_s"),
-                      let station = Int(name[r.upperBound...].prefix(3)) else { continue }
-                if !ownedStations.contains(station) {
-                    do {
-                        try removeItem(f)
-                        removed += 1
-                    } catch {
-                        // The caller reports successful frame deletion only.
-                    }
-                }
+            // Dark calibration frames use the distinct `_d..._r...` grammar and
+            // therefore never enter station ownership cleanup.
+            for file in files where file.pathExtension == "dng" {
+                guard (try? file.resourceValues(
+                    forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+                guard let frame = parseFrameFilename(
+                    file.lastPathComponent, sessionId: sessionId),
+                    !ownedStations.contains(frame.station) else { continue }
+                let relativePath = "\(sessionId)/\(file.lastPathComponent)"
+                guard let candidate = validatedOrphanCleanupCandidate(
+                    relativePath: relativePath,
+                    sessionsRoot: sessionsRoot) else { continue }
+                candidates.append(candidate)
             }
-            for f in files where f.lastPathComponent.hasPrefix("motion-")
-                    && f.pathExtension == "jsonl" {
-                let number = f.deletingPathExtension().lastPathComponent.dropFirst("motion-".count)
-                guard let station = Int(number), !ownedStations.contains(station) else { continue }
-                try? removeItem(f)
+            for file in files where file.pathExtension == "jsonl" {
+                guard (try? file.resourceValues(
+                    forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+                guard let station = motionStationIndex(file.lastPathComponent),
+                      !ownedStations.contains(station) else { continue }
+                let relativePath = "\(sessionId)/\(file.lastPathComponent)"
+                guard let candidate = validatedOrphanCleanupCandidate(
+                    relativePath: relativePath,
+                    sessionsRoot: sessionsRoot) else { continue }
+                candidates.append(candidate)
+            }
+        }
+        return candidates.sorted { $0.relativePath < $1.relativePath }
+    }
+
+    static func validatedOrphanCleanupCandidate(
+        relativePath: String,
+        sessionsRoot: URL
+    ) -> OrphanCleanupCandidate? {
+        guard !relativePath.hasPrefix("/"),
+              !relativePath.contains("\\") else { return nil }
+        let components = relativePath.split(separator: "/", omittingEmptySubsequences: false)
+        guard components.count == 2 else { return nil }
+        let sessionId = String(components[0])
+        let filename = String(components[1])
+        guard !sessionId.isEmpty, sessionId != ".", sessionId != "..",
+              !filename.isEmpty, filename != ".", filename != ".." else { return nil }
+
+        let countsTowardDisclosure: Bool
+        if parseFrameFilename(filename, sessionId: sessionId) != nil {
+            countsTowardDisclosure = true
+        } else if motionStationIndex(filename) != nil {
+            countsTowardDisclosure = false
+        } else {
+            return nil
+        }
+
+        let root = sessionsRoot.standardizedFileURL.resolvingSymlinksInPath()
+        let url = sessionsRoot
+            .appendingPathComponent(sessionId, isDirectory: true)
+            .appendingPathComponent(filename)
+            .standardizedFileURL
+        let resolved = url.resolvingSymlinksInPath()
+        guard resolved.path.hasPrefix(root.path + "/") else { return nil }
+        return OrphanCleanupCandidate(
+            relativePath: relativePath,
+            url: url,
+            countsTowardDisclosure: countsTowardDisclosure)
+    }
+
+    @discardableResult
+    static func sweepOrphanedFrames(
+        sessionsRoot: URL = sessionsRoot,
+        removeItem: (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) }
+    ) -> Int {
+        var removed = 0
+        for candidate in orphanCleanupCandidates(sessionsRoot: sessionsRoot) {
+            do {
+                try removeItem(candidate.url)
+                if candidate.countsTowardDisclosure { removed += 1 }
+            } catch {
+                // The caller reports successful frame deletion only.
             }
         }
         return removed
+    }
+
+    private struct FrameFilenameParts {
+        let station: Int
+    }
+
+    /// Parses the complete generated frame grammar. Widths in the formatter are
+    /// minimums, so structural delimiters — not fixed-width prefixes — bound
+    /// every numeric component.
+    private static func parseFrameFilename(
+        _ filename: String,
+        sessionId: String
+    ) -> FrameFilenameParts? {
+        guard filename.hasSuffix(".dng") else { return nil }
+        let stem = filename.dropLast(".dng".count)
+        let prefix = "\(sessionId)_s"
+        guard stem.hasPrefix(prefix) else { return nil }
+        let afterPrefix = stem.dropFirst(prefix.count)
+        guard let bracketDelimiter = afterPrefix.range(of: "_b") else { return nil }
+        let stationComponent = afterPrefix[..<bracketDelimiter.lowerBound]
+        guard stationComponent.count >= 3,
+              let station = decimalInteger(stationComponent) else {
+            return nil
+        }
+        let afterBracketDelimiter = afterPrefix[bracketDelimiter.upperBound...]
+        guard let frameDelimiter = afterBracketDelimiter.range(of: "_f") else { return nil }
+        let bracketComponent = afterBracketDelimiter[..<frameDelimiter.lowerBound]
+        guard bracketComponent.count >= 2,
+              decimalInteger(bracketComponent) != nil else {
+            return nil
+        }
+        let afterFrameDelimiter = afterBracketDelimiter[frameDelimiter.upperBound...]
+        guard let sensorDelimiter = afterFrameDelimiter.firstIndex(of: "_") else { return nil }
+        let frameComponent = afterFrameDelimiter[..<sensorDelimiter]
+        guard frameComponent.count >= 2,
+              decimalInteger(frameComponent) != nil,
+              !afterFrameDelimiter[afterFrameDelimiter.index(after: sensorDelimiter)...].isEmpty else {
+            return nil
+        }
+        return FrameFilenameParts(station: station)
+    }
+
+    private static func motionStationIndex(_ filename: String) -> Int? {
+        guard filename.hasPrefix("motion-"), filename.hasSuffix(".jsonl") else { return nil }
+        let start = filename.index(filename.startIndex, offsetBy: "motion-".count)
+        let end = filename.index(filename.endIndex, offsetBy: -".jsonl".count)
+        let stationComponent = filename[start..<end]
+        guard stationComponent.count >= 3 else { return nil }
+        return decimalInteger(stationComponent)
+    }
+
+    private static func decimalInteger<S: StringProtocol>(_ text: S) -> Int? {
+        guard !text.isEmpty,
+              text.unicodeScalars.allSatisfy({ (48...57).contains($0.value) }) else {
+            return nil
+        }
+        return Int(text)
     }
 
     private static func stationIndexOwnedByMetadataFilename(_ url: URL) -> Int? {
         guard url.pathExtension == "json" else { return nil }
         let stem = url.deletingPathExtension().lastPathComponent
         guard stem.hasPrefix("station-") else { return nil }
-        return Int(stem.dropFirst("station-".count))
+        return decimalInteger(stem.dropFirst("station-".count))
     }
 
     static func existingSessionIds() -> [String] {
