@@ -85,6 +85,24 @@ collect_answer_section_bullets() {
   local answer_prefix="$2"
 
   if ANSWER_SCAN_OUTPUT="$(LC_ALL=C awk -v prefix="$answer_prefix" '
+    function fence_run(line, probe, character, length_run) {
+      probe = line
+      sub(/^[[:space:]]*/, "", probe)
+      character = substr(probe, 1, 1)
+      if (character != "`" && character != "~") {
+        return ""
+      }
+
+      length_run = 1
+      while (substr(probe, length_run + 1, 1) == character) {
+        length_run++
+      }
+      if (length_run < 3) {
+        return ""
+      }
+      return substr(probe, 1, length_run)
+    }
+
     function without_html_comments(line, start, finish, output) {
       output = ""
       while (1) {
@@ -108,21 +126,30 @@ collect_answer_section_bullets() {
     }
 
     {
-      line = without_html_comments($0)
-
-      if (line ~ /^[[:space:]]*(```|~~~)/) {
-        in_fence = !in_fence
-        next
-      }
+      run = fence_run($0)
       if (in_fence) {
+        if (substr(run, 1, 1) == fence_character && length(run) >= fence_length) {
+          in_fence = 0
+          fence_character = ""
+          fence_length = 0
+        }
         next
       }
+
+      if (!html_comment && run != "") {
+        in_fence = 1
+        fence_character = substr(run, 1, 1)
+        fence_length = length(run)
+        next
+      }
+
+      line = without_html_comments($0)
 
       if (line == "## App Privacy") {
         in_section = 1
         next
       }
-      if (in_section && line ~ /^##[[:space:]]+/) {
+      if (in_section && (line ~ /^#[[:space:]]+/ || line ~ /^##[[:space:]]+/)) {
         in_section = 0
       }
 
@@ -213,6 +240,106 @@ scan_frame_record_declarations() {
   local scan_output
 
   if scan_output="$(LC_ALL=C awk '
+    function emit_blank(character) {
+      clean = clean (character == "\n" ? "\n" : " ")
+    }
+
+    function emit_blanks(text, count, offset) {
+      for (offset = 1; offset <= count; offset++) {
+        emit_blank(substr(text, offset, 1))
+      }
+    }
+
+    function push_state(kind, level) {
+      state_depth++
+      state_kind[state_depth] = kind
+      state_level[state_depth] = level
+    }
+
+    function pop_state() {
+      delete state_kind[state_depth]
+      delete state_level[state_depth]
+      state_depth--
+    }
+
+    function is_declaration_modifier(word) {
+      return word == "public" || word == "internal" || word == "private" ||
+        word == "fileprivate" || word == "package" || word == "open" ||
+        word == "final" || word == "lazy" || word == "override" ||
+        word == "required" || word == "convenience" || word == "dynamic" ||
+        word == "optional" || word == "nonisolated" ||
+        word == "nonmutating" || word == "mutating" || word == "weak" ||
+        word == "unowned" || word == "borrowing" || word == "consuming" ||
+        word == "sending"
+    }
+
+    function has_type_member_modifier(text, declaration_start, cursor, finish, start, word, depth, character) {
+      cursor = declaration_start - 1
+      while (cursor > 0) {
+        while (cursor > 0 && substr(text, cursor, 1) ~ /[[:space:]]/) {
+          cursor--
+        }
+
+        if (substr(text, cursor, 1) == ")") {
+          depth = 1
+          cursor--
+          while (cursor > 0 && depth > 0) {
+            character = substr(text, cursor, 1)
+            if (character == ")") {
+              depth++
+            } else if (character == "(") {
+              depth--
+            }
+            cursor--
+          }
+          if (depth != 0) {
+            return 0
+          }
+          while (cursor > 0 && substr(text, cursor, 1) ~ /[[:space:]]/) {
+            cursor--
+          }
+        }
+
+        finish = cursor
+        while (cursor > 0 && substr(text, cursor, 1) ~ /[[:alnum:]_]/) {
+          cursor--
+        }
+        if (finish == cursor) {
+          return 0
+        }
+
+        start = cursor + 1
+        word = substr(text, start, finish - start + 1)
+        if (word == "static" || word == "class") {
+          return 1
+        }
+        if (!is_declaration_modifier(word)) {
+          return 0
+        }
+      }
+      return 0
+    }
+
+    function has_instance_current(text, remaining, consumed, match_start, match_length, matched, relative_let, declaration_start, advance) {
+      remaining = text
+      consumed = 0
+      while (match(remaining, /(^|[^[:alnum:]_])let[[:space:]]+capturedAtSegmentStartSeconds[[:space:]]*(:|=)/)) {
+        match_start = RSTART
+        match_length = RLENGTH
+        matched = substr(remaining, match_start, match_length)
+        relative_let = match(matched, /let[[:space:]]+/)
+        declaration_start = consumed + match_start + relative_let - 1
+        if (!has_type_member_modifier(text, declaration_start)) {
+          return 1
+        }
+
+        advance = match_start + match_length - 1
+        consumed += advance
+        remaining = substr(remaining, advance + 1)
+      }
+      return 0
+    }
+
     {
       line = $0 "\n"
       i = 1
@@ -220,81 +347,131 @@ scan_frame_record_declarations() {
         c = substr(line, i, 1)
         two = substr(line, i, 2)
         three = substr(line, i, 3)
+        state = state_depth > 0 ? state_kind[state_depth] : "code"
 
-        if (block_depth > 0) {
+        if (state == "block-comment") {
           if (two == "/*") {
-            block_depth++
-            clean = clean "  "
+            state_level[state_depth]++
+            emit_blanks(two, 2)
             i += 2
           } else if (two == "*/") {
-            block_depth--
-            clean = clean "  "
+            state_level[state_depth]--
+            emit_blanks(two, 2)
+            if (state_level[state_depth] == 0) {
+              pop_state()
+            }
             i += 2
           } else {
-            clean = clean (c == "\n" ? "\n" : " ")
+            emit_blank(c)
             i++
           }
           continue
         }
 
-        if (line_comment) {
+        if (state == "line-comment") {
+          emit_blank(c)
           if (c == "\n") {
-            line_comment = 0
-            clean = clean "\n"
-          } else {
-            clean = clean " "
+            pop_state()
           }
           i++
           continue
         }
 
-        if (string_mode == 3) {
-          if (three == "\"\"\"") {
-            string_mode = 0
-            clean = clean "   "
+        if (state == "multiline-string") {
+          if (two == "\\(") {
+            emit_blanks(two, 2)
+            push_state("interpolation", 1)
+            i += 2
+          } else if (c == "\\") {
+            emit_blank(c)
+            if (i < length(line)) {
+              emit_blank(substr(line, i + 1, 1))
+              i += 2
+            } else {
+              i++
+            }
+          } else if (three == "\"\"\"") {
+            emit_blanks(three, 3)
+            pop_state()
             i += 3
           } else {
-            clean = clean (c == "\n" ? "\n" : " ")
+            emit_blank(c)
             i++
           }
           continue
         }
 
-        if (string_mode == 1) {
-          if (c == "\\") {
-            clean = clean " "
+        if (state == "string") {
+          if (two == "\\(") {
+            emit_blanks(two, 2)
+            push_state("interpolation", 1)
+            i += 2
+          } else if (c == "\\") {
+            emit_blank(c)
             if (i < length(line)) {
-              clean = clean " "
+              emit_blank(substr(line, i + 1, 1))
               i += 2
             } else {
               i++
             }
           } else if (c == "\"") {
-            string_mode = 0
-            clean = clean " "
+            emit_blank(c)
+            pop_state()
             i++
           } else {
-            clean = clean (c == "\n" ? "\n" : " ")
+            emit_blank(c)
+            i++
+          }
+          continue
+        }
+
+        if (state == "interpolation") {
+          if (two == "//") {
+            emit_blanks(two, 2)
+            push_state("line-comment", 0)
+            i += 2
+          } else if (two == "/*") {
+            emit_blanks(two, 2)
+            push_state("block-comment", 1)
+            i += 2
+          } else if (three == "\"\"\"") {
+            emit_blanks(three, 3)
+            push_state("multiline-string", 0)
+            i += 3
+          } else if (c == "\"") {
+            emit_blank(c)
+            push_state("string", 0)
+            i++
+          } else {
+            emit_blank(c)
+            if (c == "(") {
+              state_level[state_depth]++
+            } else if (c == ")") {
+              state_level[state_depth]--
+              if (state_level[state_depth] == 0) {
+                pop_state()
+              }
+            }
             i++
           }
           continue
         }
 
         if (two == "//") {
-          line_comment = 1
-          clean = clean "  "
+          emit_blanks(two, 2)
+          push_state("line-comment", 0)
           i += 2
         } else if (two == "/*") {
-          block_depth = 1
-          clean = clean "  "
+          emit_blanks(two, 2)
+          push_state("block-comment", 1)
           i += 2
         } else if (three == "\"\"\"") {
-          string_mode = 3
-          clean = clean "   "
+          emit_blanks(three, 3)
+          push_state("multiline-string", 0)
           i += 3
         } else if (c == "\"") {
-          string_mode = 1
-          clean = clean " "
+          emit_blank(c)
+          push_state("string", 0)
           i++
         } else {
           clean = clean c
@@ -304,7 +481,7 @@ scan_frame_record_declarations() {
     }
 
     END {
-      if (block_depth > 0 || string_mode > 0) {
+      if (state_depth > 0) {
         exit 3
       }
 
@@ -338,7 +515,7 @@ scan_frame_record_declarations() {
       }
 
       gsub(/[[:space:]]+/, " ", top)
-      current = top ~ /(^|[^[:alnum:]_])let[[:space:]]+capturedAtSegmentStartSeconds[[:space:]]*(:|=)/
+      current = has_instance_current(top)
       legacy_capture = top ~ /(^|[^[:alnum:]_])(let|var)[[:space:]]+capturedAtUptime[[:space:]]*(:|=)/
       legacy_delivery = top ~ /(^|[^[:alnum:]_])(let|var)[[:space:]]+uptimeAtDelivery[[:space:]]*(:|=)/
       print (current ? 1 : 0), (legacy_capture ? 1 : 0), (legacy_delivery ? 1 : 0)
