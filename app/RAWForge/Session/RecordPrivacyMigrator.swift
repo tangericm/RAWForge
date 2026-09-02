@@ -129,43 +129,318 @@ enum RecordPrivacyMigrator {
         return report
     }
 
-    struct PendingOrphanRemovalDisclosure {
+    struct OrphanCleanupDisclosure {
+        let removed: Int
         let count: Int
-        let persistenceFailure: String?
+        let failure: String?
     }
 
-    /// Successful cleanup events accumulate while the migration notice is pending.
-    /// The returned count remains truthful for this launch even if persistence fails.
-    static func pendingOrphanRemovalDisclosure(
-        _ count: Int,
-        markerURL: URL
-    ) -> PendingOrphanRemovalDisclosure {
+    struct OrphanCleanupOperations {
+        var removeItem: (_ url: URL) throws -> Void
+        var writeAtomically: (_ data: Data, _ url: URL) throws -> Void
+
+        static var live: OrphanCleanupOperations {
+            OrphanCleanupOperations(
+                removeItem: { try FileManager.default.removeItem(at: $0) },
+                writeAtomically: { try $0.write(to: $1, options: .atomic) })
+        }
+    }
+
+    /// Writes the complete candidate set before removing any DNG. If final marker
+    /// persistence is interrupted, missing candidates reconstruct successful
+    /// removals on the next launch and candidates still present are retried.
+    static func reconcileOrphanCleanup(
+        sessionsRoot: URL,
+        markerURL: URL,
+        allowRemoval: Bool,
+        operations: OrphanCleanupOperations = .live
+    ) -> OrphanCleanupDisclosure {
+        var marker: PrivacyMigrationMarker
         do {
-            var marker = try PrivacyMigrationMarkerStore.load(from: markerURL)
-            guard marker.noticeState == .pending else {
-                return PendingOrphanRemovalDisclosure(count: 0, persistenceFailure: nil)
-            }
-            let accumulatedCount = (marker.pendingOrphanedFramesRemoved ?? 0) + count
-            guard count > 0 else {
-                return PendingOrphanRemovalDisclosure(
-                    count: accumulatedCount,
-                    persistenceFailure: nil)
-            }
-            marker.pendingOrphanedFramesRemoved = accumulatedCount
-            do {
-                try PrivacyMigrationMarkerStore.save(marker, to: markerURL)
-                return PendingOrphanRemovalDisclosure(
-                    count: accumulatedCount,
-                    persistenceFailure: nil)
-            } catch {
-                return PendingOrphanRemovalDisclosure(
-                    count: accumulatedCount,
-                    persistenceFailure: "\(error)")
-            }
+            marker = try PrivacyMigrationMarkerStore.load(from: markerURL)
         } catch {
-            return PendingOrphanRemovalDisclosure(
-                count: count,
-                persistenceFailure: "\(error)")
+            return OrphanCleanupDisclosure(
+                removed: 0,
+                count: 0,
+                failure: "launch notice marker: \(error)")
+        }
+
+        if let transaction = marker.orphanCleanupTransaction {
+            let candidates: [SessionStore.OrphanCleanupCandidate]
+            do {
+                candidates = try validatedOrphanCleanupCandidates(
+                    transaction,
+                    marker: marker,
+                    sessionsRoot: sessionsRoot)
+            } catch {
+                return OrphanCleanupDisclosure(
+                    removed: 0,
+                    count: pendingOrphanDisclosureCount(in: marker),
+                    failure: "orphan cleanup journal: \(error)")
+            }
+
+            let observedCount = candidates.reduce(into: 0) { count, candidate in
+                if !FileManager.default.fileExists(atPath: candidate.url.path) {
+                    count += 1
+                }
+            }
+            guard allowRemoval else {
+                do {
+                    return OrphanCleanupDisclosure(
+                        removed: 0,
+                        count: try accumulatedOrphanCount(
+                            prior: transaction.priorPendingOrphanedFramesRemoved ?? 0,
+                            current: observedCount),
+                        failure: nil)
+                } catch {
+                    return OrphanCleanupDisclosure(
+                        removed: 0,
+                        count: pendingOrphanDisclosureCount(in: marker),
+                        failure: "orphan cleanup journal: \(error)")
+                }
+            }
+
+            return finishOrphanCleanup(
+                transaction,
+                candidates: candidates,
+                sessionsRoot: sessionsRoot,
+                markerURL: markerURL,
+                marker: marker,
+                operations: operations)
+        }
+
+        let priorCount = pendingOrphanDisclosureCount(in: marker)
+        if let pendingCount = marker.pendingOrphanedFramesRemoved,
+           pendingCount < 0 || marker.noticeState != .pending {
+            return OrphanCleanupDisclosure(
+                removed: 0,
+                count: priorCount,
+                failure: "orphan cleanup journal: invalid pending removal state")
+        }
+        guard allowRemoval else {
+            return OrphanCleanupDisclosure(removed: 0, count: priorCount, failure: nil)
+        }
+
+        let discovered = SessionStore.orphanCleanupCandidates(sessionsRoot: sessionsRoot)
+        let frameCandidates = discovered.filter(\.countsTowardDisclosure)
+        guard !frameCandidates.isEmpty else {
+            removeOrphanMotion(discovered, operations: operations)
+            return OrphanCleanupDisclosure(removed: 0, count: priorCount, failure: nil)
+        }
+        do {
+            _ = try accumulatedOrphanCount(
+                prior: marker.pendingOrphanedFramesRemoved ?? 0,
+                current: frameCandidates.count)
+        } catch {
+            return OrphanCleanupDisclosure(
+                removed: 0,
+                count: priorCount,
+                failure: "orphan cleanup journal: \(error)")
+        }
+
+        let transaction = OrphanCleanupTransaction(
+            priorNoticeState: marker.noticeState,
+            priorPendingOrphanedFramesRemoved: marker.pendingOrphanedFramesRemoved,
+            candidateRelativePaths: frameCandidates.map(\.relativePath))
+        marker.noticeState = .pending
+        marker.orphanCleanupTransaction = transaction
+        do {
+            try PrivacyMigrationMarkerStore.save(
+                marker,
+                to: markerURL,
+                writeAtomically: operations.writeAtomically)
+        } catch {
+            return OrphanCleanupDisclosure(
+                removed: 0,
+                count: priorCount,
+                failure: "launch notice marker: \(error)")
+        }
+        return finishOrphanCleanup(
+            transaction,
+            candidates: frameCandidates,
+            sessionsRoot: sessionsRoot,
+            markerURL: markerURL,
+            marker: marker,
+            operations: operations)
+    }
+
+    private static func finishOrphanCleanup(
+        _ transaction: OrphanCleanupTransaction,
+        candidates: [SessionStore.OrphanCleanupCandidate],
+        sessionsRoot: URL,
+        markerURL: URL,
+        marker: PrivacyMigrationMarker,
+        operations: OrphanCleanupOperations
+    ) -> OrphanCleanupDisclosure {
+        let currentlyOrphaned = Set(
+            SessionStore.orphanCleanupCandidates(sessionsRoot: sessionsRoot)
+                .filter(\.countsTowardDisclosure)
+                .map(\.relativePath))
+        var removedNow = 0
+        var successfulPaths = Set<String>()
+        for candidate in candidates {
+            if !FileManager.default.fileExists(atPath: candidate.url.path) {
+                successfulPaths.insert(candidate.relativePath)
+                continue
+            }
+            guard currentlyOrphaned.contains(candidate.relativePath) else { continue }
+            do {
+                try operations.removeItem(candidate.url)
+                successfulPaths.insert(candidate.relativePath)
+                removedNow += 1
+            } catch {
+                // A failed deletion remains a discoverable orphan for a later launch.
+            }
+        }
+
+        let accumulatedCount: Int
+        do {
+            accumulatedCount = try accumulatedOrphanCount(
+                prior: transaction.priorPendingOrphanedFramesRemoved ?? 0,
+                current: successfulPaths.count)
+        } catch {
+            return OrphanCleanupDisclosure(
+                removed: removedNow,
+                count: transaction.priorPendingOrphanedFramesRemoved ?? 0,
+                failure: "orphan cleanup journal: \(error)")
+        }
+
+        var finalizedMarker = marker
+        finalizedMarker.orphanCleanupTransaction = nil
+        if successfulPaths.isEmpty {
+            finalizedMarker.noticeState = transaction.priorNoticeState
+            finalizedMarker.pendingOrphanedFramesRemoved =
+                transaction.priorPendingOrphanedFramesRemoved
+        } else {
+            finalizedMarker.noticeState = .pending
+            finalizedMarker.pendingOrphanedFramesRemoved = accumulatedCount
+        }
+        do {
+            try PrivacyMigrationMarkerStore.save(
+                finalizedMarker,
+                to: markerURL,
+                writeAtomically: operations.writeAtomically)
+        } catch {
+            return OrphanCleanupDisclosure(
+                removed: removedNow,
+                count: accumulatedCount,
+                failure: "launch notice marker: \(error)")
+        }
+
+        removeOrphanMotion(
+            SessionStore.orphanCleanupCandidates(sessionsRoot: sessionsRoot),
+            operations: operations)
+        return OrphanCleanupDisclosure(
+            removed: removedNow,
+            count: successfulPaths.isEmpty
+                ? disclosureCount(
+                    noticeState: transaction.priorNoticeState,
+                    pendingCount: transaction.priorPendingOrphanedFramesRemoved)
+                : accumulatedCount,
+            failure: nil)
+    }
+
+    private static func validatedOrphanCleanupCandidates(
+        _ transaction: OrphanCleanupTransaction,
+        marker: PrivacyMigrationMarker,
+        sessionsRoot: URL
+    ) throws -> [SessionStore.OrphanCleanupCandidate] {
+        guard transaction.format == "rawforge.orphan-cleanup",
+              transaction.schemaVersion == 1 else {
+            throw OrphanCleanupError.unsupportedTransaction(
+                transaction.format, transaction.schemaVersion)
+        }
+        guard marker.noticeState == .pending,
+              marker.pendingOrphanedFramesRemoved
+                == transaction.priorPendingOrphanedFramesRemoved else {
+            throw OrphanCleanupError.inconsistentMarkerState
+        }
+        if let prior = transaction.priorPendingOrphanedFramesRemoved, prior < 0 {
+            throw OrphanCleanupError.invalidPriorCount(prior)
+        }
+        guard transaction.priorNoticeState == .pending
+                || transaction.priorPendingOrphanedFramesRemoved == nil else {
+            throw OrphanCleanupError.inconsistentPriorState
+        }
+        let paths = transaction.candidateRelativePaths
+        guard !paths.isEmpty, Set(paths).count == paths.count else {
+            throw OrphanCleanupError.invalidCandidateList
+        }
+        _ = try accumulatedOrphanCount(
+            prior: transaction.priorPendingOrphanedFramesRemoved ?? 0,
+            current: paths.count)
+        return try paths.map { path in
+            guard let candidate = SessionStore.validatedOrphanCleanupCandidate(
+                relativePath: path,
+                sessionsRoot: sessionsRoot),
+                  candidate.countsTowardDisclosure else {
+                throw OrphanCleanupError.invalidRelativePath(path)
+            }
+            return candidate
+        }
+    }
+
+    private static func accumulatedOrphanCount(prior: Int, current: Int) throws -> Int {
+        guard prior >= 0, current >= 0 else { throw OrphanCleanupError.invalidCount }
+        let (count, overflow) = prior.addingReportingOverflow(current)
+        guard !overflow else { throw OrphanCleanupError.countOverflow }
+        return count
+    }
+
+    private static func pendingOrphanDisclosureCount(
+        in marker: PrivacyMigrationMarker
+    ) -> Int {
+        disclosureCount(
+            noticeState: marker.noticeState,
+            pendingCount: marker.pendingOrphanedFramesRemoved)
+    }
+
+    private static func disclosureCount(
+        noticeState: PrivacyMigrationMarker.NoticeState,
+        pendingCount: Int?
+    ) -> Int {
+        guard noticeState == .pending else { return 0 }
+        return max(0, pendingCount ?? 0)
+    }
+
+    private static func removeOrphanMotion(
+        _ candidates: [SessionStore.OrphanCleanupCandidate],
+        operations: OrphanCleanupOperations
+    ) {
+        for candidate in candidates where !candidate.countsTowardDisclosure {
+            try? operations.removeItem(candidate.url)
+        }
+    }
+
+    private enum OrphanCleanupError: Error, CustomStringConvertible {
+        case unsupportedTransaction(String, Int)
+        case inconsistentMarkerState
+        case inconsistentPriorState
+        case invalidPriorCount(Int)
+        case invalidCandidateList
+        case invalidRelativePath(String)
+        case invalidCount
+        case countOverflow
+
+        var description: String {
+            switch self {
+            case .unsupportedTransaction(let format, let schema):
+                return "unsupported transaction \(format) schema \(schema)"
+            case .inconsistentMarkerState:
+                return "transaction does not match the pending marker"
+            case .inconsistentPriorState:
+                return "transaction prior notice state is inconsistent"
+            case .invalidPriorCount(let count):
+                return "invalid prior removal count \(count)"
+            case .invalidCandidateList:
+                return "candidate list is empty or contains duplicates"
+            case .invalidRelativePath(let path):
+                return "invalid relative path \(path)"
+            case .invalidCount:
+                return "removal count is negative"
+            case .countOverflow:
+                return "removal count overflow"
+            }
         }
     }
 
@@ -1368,6 +1643,26 @@ private struct LegacyMotionSample: Decodable {
 
 // MARK: - Versioned marker and launch notice
 
+private struct OrphanCleanupTransaction: Codable {
+    let format: String
+    let schemaVersion: Int
+    let priorNoticeState: PrivacyMigrationMarker.NoticeState
+    let priorPendingOrphanedFramesRemoved: Int?
+    let candidateRelativePaths: [String]
+
+    init(
+        priorNoticeState: PrivacyMigrationMarker.NoticeState,
+        priorPendingOrphanedFramesRemoved: Int?,
+        candidateRelativePaths: [String]
+    ) {
+        format = "rawforge.orphan-cleanup"
+        schemaVersion = 1
+        self.priorNoticeState = priorNoticeState
+        self.priorPendingOrphanedFramesRemoved = priorPendingOrphanedFramesRemoved
+        self.candidateRelativePaths = candidateRelativePaths
+    }
+}
+
 private struct PrivacyMigrationMarker: Codable {
     enum NoticeState: String, Codable {
         case none
@@ -1381,6 +1676,7 @@ private struct PrivacyMigrationMarker: Codable {
     var logsClearedMigrationVersion: Int?
     var noticeState: NoticeState = .none
     var pendingOrphanedFramesRemoved: Int?
+    var orphanCleanupTransaction: OrphanCleanupTransaction?
 }
 
 private enum PrivacyMigrationMarkerStore {
@@ -1457,6 +1753,7 @@ final class LaunchNoticeStore: ObservableObject {
               var marker = try? PrivacyMigrationMarkerStore.load(from: markerURL) else { return }
         marker.noticeState = .acknowledged
         marker.pendingOrphanedFramesRemoved = nil
+        marker.orphanCleanupTransaction = nil
         do {
             try PrivacyMigrationMarkerStore.save(marker, to: markerURL)
             message = nil

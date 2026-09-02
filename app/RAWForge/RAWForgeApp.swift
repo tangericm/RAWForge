@@ -15,7 +15,7 @@ struct RAWForgeApp: App {
         let markerURL = AppStorage.supportFile("privacy-migration-v1.json")
         let maintenance = LaunchStorageMaintenance.run(
             sessionsRoot: SessionStore.sessionsRoot,
-            logsRoot: DebugLog.directory,
+            logsRoot: DebugLog.legacyDirectory,
             markerURL: markerURL)
         let migration = maintenance.migration
         _launchNotice = StateObject(

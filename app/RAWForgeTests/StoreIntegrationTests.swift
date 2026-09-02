@@ -210,6 +210,55 @@ final class StoreIntegrationTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: frameURL), bytes)
     }
 
+    func testSweepPreservesGeneratedFramesOwnedByStations999And1000() throws {
+        let id = try makeSession("StationWidthBoundary")
+        try writeFrame(id, station: 999, frame: 1)
+        try writeFrame(id, station: 1000, frame: 1)
+        try writeStation(id, index: 999)
+        try writeStation(id, index: 1000)
+        let station999URL = SessionStore.directory(for: id).appendingPathComponent(
+            SessionStore.frameFilename(
+                sessionId: id, station: 999, bracket: 1, frame: 1, sensor: "1x"))
+        let station1000URL = SessionStore.directory(for: id).appendingPathComponent(
+            SessionStore.frameFilename(
+                sessionId: id, station: 1000, bracket: 1, frame: 1, sensor: "1x"))
+
+        let removed = SessionStore.sweepOrphanedFrames()
+
+        XCTAssertEqual(removed, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: station999URL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: station1000URL.path))
+    }
+
+    func testSweepRemovesGeneratedOrphan1000ButLeavesMalformedAndUnrelatedDNGs() throws {
+        let id = try makeSession("OrphanStation1000")
+        try writeFrame(id, station: 1000, frame: 1)
+        let directory = SessionStore.directory(for: id)
+        let orphanURL = directory.appendingPathComponent(SessionStore.frameFilename(
+            sessionId: id, station: 1000, bracket: 1, frame: 1, sensor: "1x"))
+        let unrelatedURL = directory.appendingPathComponent(
+            "unrelated_s1000_b01_f01_1x.dng")
+        let malformedURL = directory.appendingPathComponent(
+            "\(id)_s1000x_b01_f01_1x.dng")
+        let unrelatedBytes = Data([0x44, 0x4E, 0x47, 0x71])
+        let malformedBytes = Data([0x44, 0x4E, 0x47, 0x72])
+        try unrelatedBytes.write(to: unrelatedURL)
+        try malformedBytes.write(to: malformedURL)
+
+        let removed = SessionStore.sweepOrphanedFrames()
+
+        XCTAssertEqual(removed, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: orphanURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: unrelatedURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: malformedURL.path))
+        if FileManager.default.fileExists(atPath: unrelatedURL.path) {
+            XCTAssertEqual(try Data(contentsOf: unrelatedURL), unrelatedBytes)
+        }
+        if FileManager.default.fileExists(atPath: malformedURL.path) {
+            XCTAssertEqual(try Data(contentsOf: malformedURL), malformedBytes)
+        }
+    }
+
     // MARK: - Unreadable records
 
     /// A station file that does not parse must be reported, not silently

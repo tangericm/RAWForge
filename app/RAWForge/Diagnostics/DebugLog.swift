@@ -13,9 +13,10 @@ import os
 ///
 /// - **In memory** — a ring the console screen tails live, so a problem can be
 ///   read at the pose rather than after the walk back.
-/// - **On disk** — one file per launch under `Documents/logs`, which puts it in
+/// - **On disk** — one file per launch under `Documents/logs-v2`, which puts it in
 ///   the same place as the sessions and out the same route (#11: Files, or a
-///   cable). The last few launches are kept; older ones are swept.
+///   cable). The versioned directory cannot enumerate legacy raw-uptime logs.
+///   The last few launches are kept; older ones are swept.
 /// - **In the unified log** — mirrored to `os.Logger`, so a device attached to
 ///   Console.app or `devicectl` shows the same stream with no export step.
 ///
@@ -143,6 +144,13 @@ final class DebugLog: @unchecked Sendable {
 
     static var directory: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("logs-v2", isDirectory: true)
+    }
+
+    /// Kept separate so migration can quarantine legacy raw-uptime reports
+    /// without ever placing them in a current-report share surface.
+    static var legacyDirectory: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("logs", isDirectory: true)
     }
 
@@ -227,7 +235,7 @@ final class DebugLog: @unchecked Sendable {
 
     /// Reapplied at every launch so retained reports as well as this launch's
     /// file remain outside iCloud Backup. Creating the directory first covers
-    /// upgrades without moving or replacing any legacy logs.
+    /// upgrades without moving or replacing any retained safe-format logs.
     private static func excludeFromBackup(_ directory: URL) throws {
         try FileManager.default.createDirectory(
             at: directory,

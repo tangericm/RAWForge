@@ -41,6 +41,10 @@ final class AppStorageTests: XCTestCase {
                       "protocols are authored by the user")
         XCTAssertTrue(DebugLog.directory.path.hasPrefix(documents),
                       "logs are deliberately handed over when something goes wrong")
+        XCTAssertTrue(DebugLog.legacyDirectory.path.hasPrefix(documents),
+                      "legacy reports stay available only to the privacy migrator")
+        XCTAssertNotEqual(DebugLog.directory, DebugLog.legacyDirectory,
+                          "safe reports must not share an enumeration root with legacy logs")
     }
 
     // MARK: - Migration

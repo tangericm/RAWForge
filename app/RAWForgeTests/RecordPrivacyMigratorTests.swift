@@ -800,7 +800,10 @@ final class RecordPrivacyMigratorTests: XCTestCase {
         XCTAssertEqual(failedMaintenance.migration.failures, ["injected migration failure"])
         XCTAssertEqual(failedMaintenance.orphanedFramesRemoved, 0)
         XCTAssertEqual(failedMaintenance.orphanedFramesToDisclose, 1)
-        XCTAssertEqual(try Data(contentsOf: nextOrphanURL), nextOrphanBytes)
+        XCTAssertTrue(fm.fileExists(atPath: nextOrphanURL.path))
+        if fm.fileExists(atPath: nextOrphanURL.path) {
+            XCTAssertEqual(try Data(contentsOf: nextOrphanURL), nextOrphanBytes)
+        }
         XCTAssertEqual(try Data(contentsOf: fixture.markerURL), markerBeforeFailedLaunch)
         XCTAssertEqual(
             try fixture.markerObject()["pendingOrphanedFramesRemoved"] as? Int,
@@ -939,7 +942,54 @@ final class RecordPrivacyMigratorTests: XCTestCase {
     }
 
     @MainActor
-    func testDisclosureSaveFailureStillReportsPriorPlusCurrentRemovalCount() throws {
+    func testCleanupAfterAcknowledgementCreatesANewPendingDisclosure() throws {
+        let fixture = try MigrationFixture.legacyV4(origin: 500)
+        defer { fixture.remove() }
+        try fm.removeItem(at: fixture.stationURL)
+
+        let firstMaintenance = LaunchStorageMaintenance.run(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+        let firstNotice = LaunchNoticeStore(
+            markerURL: fixture.markerURL,
+            orphanedFramesToDisclose: firstMaintenance.orphanedFramesToDisclose)
+        firstNotice.acknowledge()
+        XCTAssertNil(firstNotice.message)
+
+        let laterOrphanURL = fixture.sessionDirectory.appendingPathComponent(
+            SessionStore.frameFilename(
+                sessionId: "legacy-session",
+                station: 2,
+                bracket: 1,
+                frame: 1,
+                sensor: "1x"))
+        try Data([0x44, 0x4E, 0x47, 0x12]).write(to: laterOrphanURL)
+
+        let laterMaintenance = LaunchStorageMaintenance.run(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+        let laterNotice = LaunchNoticeStore(
+            markerURL: fixture.markerURL,
+            orphanedFramesToDisclose: laterMaintenance.orphanedFramesToDisclose)
+
+        XCTAssertEqual(laterMaintenance.orphanedFramesRemoved, 1)
+        XCTAssertEqual(laterMaintenance.orphanedFramesToDisclose, 1)
+        XCTAssertFalse(fm.fileExists(atPath: laterOrphanURL.path))
+        XCTAssertEqual(
+            laterNotice.message,
+            "Earlier diagnostic logs were cleared so RAWForge no longer retains the phone's "
+                + "boot-time clock. Separately, launch cleanup removed 1 orphaned DNG file "
+                + "with no owning station metadata.")
+        XCTAssertEqual(try fixture.markerObject()["noticeState"] as? String, "pending")
+        XCTAssertEqual(
+            try fixture.markerObject()["pendingOrphanedFramesRemoved"] as? Int,
+            1)
+    }
+
+    @MainActor
+    func testCleanupIntentSaveFailurePreservesOrphanAndPriorDisclosure() throws {
         let fixture = try MigrationFixture.legacyV4(origin: 500)
         defer { fixture.remove() }
         try fm.removeItem(at: fixture.stationURL)
@@ -1000,15 +1050,326 @@ final class RecordPrivacyMigratorTests: XCTestCase {
             markerURL: fixture.markerURL,
             orphanedFramesToDisclose: secondMaintenance.orphanedFramesToDisclose)
 
-        XCTAssertEqual(secondMaintenance.orphanedFramesRemoved, 1)
-        XCTAssertEqual(secondMaintenance.orphanedFramesToDisclose, 2)
-        XCTAssertFalse(fm.fileExists(atPath: nextOrphanURL.path))
+        XCTAssertEqual(secondMaintenance.orphanedFramesRemoved, 0)
+        XCTAssertEqual(secondMaintenance.orphanedFramesToDisclose, 1)
+        XCTAssertTrue(fm.fileExists(atPath: nextOrphanURL.path))
         XCTAssertEqual(secondMaintenance.migration.failures.count, 1)
         XCTAssertTrue(
             secondMaintenance.migration.failures[0].contains("launch notice marker:"))
         XCTAssertEqual(
             try fixture.markerObject()["pendingOrphanedFramesRemoved"] as? Int,
             1)
+        XCTAssertEqual(
+            notice.message,
+            "Earlier diagnostic logs were cleared so RAWForge no longer retains the phone's "
+                + "boot-time clock. Separately, launch cleanup removed 1 orphaned DNG file "
+                + "with no owning station metadata.")
+    }
+
+    @MainActor
+    func testCleanupMarkerSaveFailureRelaunchNeverLeavesDeletionUndisclosed() throws {
+        let fixture = try MigrationFixture.legacyV4(origin: 500)
+        defer { fixture.remove() }
+        try fm.removeItem(at: fixture.stationURL)
+
+        let firstMaintenance = LaunchStorageMaintenance.run(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+        XCTAssertEqual(firstMaintenance.orphanedFramesRemoved, 1)
+        XCTAssertEqual(firstMaintenance.orphanedFramesToDisclose, 1)
+
+        let nextOrphanURL = fixture.sessionDirectory.appendingPathComponent(
+            SessionStore.frameFilename(
+                sessionId: "legacy-session",
+                station: 2,
+                bracket: 1,
+                frame: 1,
+                sensor: "1x"))
+        let nextOrphanBytes = Data([0x44, 0x4E, 0x47, 0x22])
+        try nextOrphanBytes.write(to: nextOrphanURL)
+
+        let markerDirectory = fixture.markerURL.deletingLastPathComponent()
+        var markerDirectoryIsReadOnly = false
+        defer {
+            if markerDirectoryIsReadOnly {
+                try? fm.setAttributes(
+                    [.posixPermissions: 0o700],
+                    ofItemAtPath: markerDirectory.path)
+            }
+        }
+        let failedMaintenance = LaunchStorageMaintenance.run(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL,
+            migrate: { sessionsRoot, logsRoot, markerURL in
+                let migration = RecordPrivacyMigrator.migrate(
+                    sessionsRoot: sessionsRoot,
+                    logsRoot: logsRoot,
+                    markerURL: markerURL)
+                XCTAssertTrue(migration.failures.isEmpty)
+                do {
+                    try self.fm.setAttributes(
+                        [.posixPermissions: 0o500],
+                        ofItemAtPath: markerDirectory.path)
+                    markerDirectoryIsReadOnly = true
+                } catch {
+                    XCTFail("Could not make marker directory read-only: \(error)")
+                }
+                return migration
+            })
+        try fm.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: markerDirectory.path)
+        markerDirectoryIsReadOnly = false
+
+        XCTAssertEqual(failedMaintenance.orphanedFramesRemoved, 0)
+        XCTAssertEqual(failedMaintenance.orphanedFramesToDisclose, 1)
+        XCTAssertEqual(try Data(contentsOf: nextOrphanURL), nextOrphanBytes)
+        XCTAssertTrue(failedMaintenance.migration.failures.contains {
+            $0.contains("launch notice marker:")
+        })
+
+        let recoveredMaintenance = LaunchStorageMaintenance.run(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+        let recoveredNotice = LaunchNoticeStore(
+            markerURL: fixture.markerURL,
+            orphanedFramesToDisclose: recoveredMaintenance.orphanedFramesToDisclose)
+
+        XCTAssertEqual(recoveredMaintenance.orphanedFramesRemoved, 1)
+        XCTAssertEqual(recoveredMaintenance.orphanedFramesToDisclose, 2)
+        XCTAssertFalse(fm.fileExists(atPath: nextOrphanURL.path))
+        XCTAssertEqual(
+            recoveredNotice.message,
+            "Earlier diagnostic logs were cleared so RAWForge no longer retains the phone's "
+                + "boot-time clock. Separately, launch cleanup removed 2 orphaned DNG files "
+                + "with no owning station metadata.")
+
+        let repeatedMaintenance = LaunchStorageMaintenance.run(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+        XCTAssertEqual(repeatedMaintenance.orphanedFramesRemoved, 0)
+        XCTAssertEqual(repeatedMaintenance.orphanedFramesToDisclose, 2)
+    }
+
+    func testCleanupJournalRejectsTraversalWithoutDeletingOrHidingFailure() throws {
+        let fixture = try MigrationFixture.legacyV4(origin: 500)
+        defer { fixture.remove() }
+        let setup = RecordPrivacyMigrator.migrate(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+        XCTAssertTrue(setup.failures.isEmpty)
+        let outsideURL = fixture.sessionsRoot.deletingLastPathComponent()
+            .appendingPathComponent("outside.dng")
+        let outsideBytes = Data([0x44, 0x4E, 0x47, 0x55])
+        try outsideBytes.write(to: outsideURL)
+        var marker = try fixture.markerObject()
+        marker["pendingOrphanedFramesRemoved"] = 1
+        marker["orphanCleanupTransaction"] = [
+            "format": "rawforge.orphan-cleanup",
+            "schemaVersion": 1,
+            "priorNoticeState": "pending",
+            "priorPendingOrphanedFramesRemoved": 1,
+            "candidateRelativePaths": ["../outside.dng"]
+        ]
+        try JSONSerialization.data(
+            withJSONObject: marker,
+            options: [.prettyPrinted, .sortedKeys]
+        ).write(to: fixture.markerURL, options: .atomic)
+
+        let maintenance = LaunchStorageMaintenance.run(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+
+        XCTAssertEqual(maintenance.orphanedFramesRemoved, 0)
+        XCTAssertEqual(maintenance.orphanedFramesToDisclose, 1)
+        XCTAssertEqual(try Data(contentsOf: outsideURL), outsideBytes)
+        XCTAssertTrue(maintenance.migration.failures.contains {
+            $0.contains("orphan cleanup journal:") && $0.contains("../outside.dng")
+        })
+    }
+
+    @MainActor
+    func testFinalDisclosureSaveFailureRecoversPartialDeletionExactlyOnce() throws {
+        let fixture = try MigrationFixture.legacyV4(origin: 500)
+        defer { fixture.remove() }
+        try fm.removeItem(at: fixture.stationURL)
+        let firstMaintenance = LaunchStorageMaintenance.run(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+        XCTAssertEqual(firstMaintenance.orphanedFramesRemoved, 1)
+        XCTAssertEqual(firstMaintenance.orphanedFramesToDisclose, 1)
+
+        let removedBeforeFailureURL = fixture.sessionDirectory.appendingPathComponent(
+            SessionStore.frameFilename(
+                sessionId: "legacy-session",
+                station: 2,
+                bracket: 1,
+                frame: 1,
+                sensor: "1x"))
+        let failedRemovalURL = fixture.sessionDirectory.appendingPathComponent(
+            SessionStore.frameFilename(
+                sessionId: "legacy-session",
+                station: 3,
+                bracket: 1,
+                frame: 1,
+                sensor: "1x"))
+        try Data([0x44, 0x4E, 0x47, 0x32]).write(to: removedBeforeFailureURL)
+        try Data([0x44, 0x4E, 0x47, 0x33]).write(to: failedRemovalURL)
+
+        var cleanupOperations = RecordPrivacyMigrator.OrphanCleanupOperations.live
+        let writeAtomically = cleanupOperations.writeAtomically
+        let removeItem = cleanupOperations.removeItem
+        var markerWriteCount = 0
+        var durableIntentObservedBeforeRemoval = false
+        cleanupOperations.writeAtomically = { data, url in
+            guard url.standardizedFileURL == fixture.markerURL.standardizedFileURL else {
+                return try writeAtomically(data, url)
+            }
+            markerWriteCount += 1
+            if markerWriteCount == 2 { throw InjectedFailure.markerSave }
+            try writeAtomically(data, url)
+        }
+        cleanupOperations.removeItem = { url in
+            let transaction = try XCTUnwrap(
+                try fixture.markerObject()["orphanCleanupTransaction"] as? [String: Any])
+            let candidates = try XCTUnwrap(
+                transaction["candidateRelativePaths"] as? [String])
+            durableIntentObservedBeforeRemoval = candidates.contains {
+                $0.hasSuffix("/\(url.lastPathComponent)")
+            }
+            if url.standardizedFileURL == failedRemovalURL.standardizedFileURL {
+                throw InjectedFailure.cleanupRemoval
+            }
+            try removeItem(url)
+        }
+
+        let interrupted = LaunchStorageMaintenance.run(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL,
+            cleanupOperations: cleanupOperations)
+
+        XCTAssertTrue(durableIntentObservedBeforeRemoval)
+        XCTAssertEqual(markerWriteCount, 2)
+        XCTAssertEqual(interrupted.orphanedFramesRemoved, 1)
+        XCTAssertEqual(interrupted.orphanedFramesToDisclose, 2)
+        XCTAssertFalse(fm.fileExists(atPath: removedBeforeFailureURL.path))
+        XCTAssertTrue(fm.fileExists(atPath: failedRemovalURL.path))
+        XCTAssertTrue(interrupted.migration.failures.contains {
+            $0.contains("launch notice marker:")
+        })
+        XCTAssertEqual(
+            try fixture.markerObject()["pendingOrphanedFramesRemoved"] as? Int,
+            1)
+        XCTAssertNotNil(try fixture.markerObject()["orphanCleanupTransaction"])
+
+        let recovered = LaunchStorageMaintenance.run(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+        let recoveredNotice = LaunchNoticeStore(
+            markerURL: fixture.markerURL,
+            orphanedFramesToDisclose: recovered.orphanedFramesToDisclose)
+
+        XCTAssertTrue(recovered.migration.failures.isEmpty)
+        XCTAssertEqual(recovered.orphanedFramesRemoved, 1)
+        XCTAssertEqual(recovered.orphanedFramesToDisclose, 3)
+        XCTAssertFalse(fm.fileExists(atPath: failedRemovalURL.path))
+        XCTAssertNil(try fixture.markerObject()["orphanCleanupTransaction"])
+        XCTAssertEqual(
+            try fixture.markerObject()["pendingOrphanedFramesRemoved"] as? Int,
+            3)
+        XCTAssertEqual(
+            recoveredNotice.message,
+            "Earlier diagnostic logs were cleared so RAWForge no longer retains the phone's "
+                + "boot-time clock. Separately, launch cleanup removed 3 orphaned DNG files "
+                + "with no owning station metadata.")
+
+        let repeated = LaunchStorageMaintenance.run(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+        XCTAssertTrue(repeated.migration.failures.isEmpty)
+        XCTAssertEqual(repeated.orphanedFramesRemoved, 0)
+        XCTAssertEqual(repeated.orphanedFramesToDisclose, 3)
+        XCTAssertNil(try fixture.markerObject()["orphanCleanupTransaction"])
+    }
+
+    @MainActor
+    func testMigrationFailureDefersPendingJournalAndRetainsObservedDisclosure() throws {
+        let fixture = try MigrationFixture.legacyV4(origin: 500)
+        defer { fixture.remove() }
+        try fm.removeItem(at: fixture.stationURL)
+        let first = LaunchStorageMaintenance.run(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+        XCTAssertEqual(first.orphanedFramesToDisclose, 1)
+
+        let removedBeforeFailureURL = fixture.sessionDirectory.appendingPathComponent(
+            SessionStore.frameFilename(
+                sessionId: "legacy-session",
+                station: 2,
+                bracket: 1,
+                frame: 1,
+                sensor: "1x"))
+        try Data([0x44, 0x4E, 0x47, 0x42]).write(to: removedBeforeFailureURL)
+        var cleanupOperations = RecordPrivacyMigrator.OrphanCleanupOperations.live
+        let writeAtomically = cleanupOperations.writeAtomically
+        var markerWriteCount = 0
+        cleanupOperations.writeAtomically = { data, url in
+            guard url.standardizedFileURL == fixture.markerURL.standardizedFileURL else {
+                return try writeAtomically(data, url)
+            }
+            markerWriteCount += 1
+            if markerWriteCount == 2 { throw InjectedFailure.markerSave }
+            try writeAtomically(data, url)
+        }
+        let interrupted = LaunchStorageMaintenance.run(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL,
+            cleanupOperations: cleanupOperations)
+        XCTAssertEqual(interrupted.orphanedFramesRemoved, 1)
+        XCTAssertEqual(interrupted.orphanedFramesToDisclose, 2)
+        XCTAssertFalse(fm.fileExists(atPath: removedBeforeFailureURL.path))
+
+        let untouchedOrphanURL = fixture.sessionDirectory.appendingPathComponent(
+            SessionStore.frameFilename(
+                sessionId: "legacy-session",
+                station: 3,
+                bracket: 1,
+                frame: 1,
+                sensor: "1x"))
+        let untouchedBytes = Data([0x44, 0x4E, 0x47, 0x43])
+        try untouchedBytes.write(to: untouchedOrphanURL)
+        let markerBeforeFailedMigration = try Data(contentsOf: fixture.markerURL)
+
+        let failed = LaunchStorageMaintenance.run(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL,
+            migrate: { _, _, _ in
+                var report = RecordPrivacyMigrator.Report()
+                report.failures = ["injected migration failure"]
+                return report
+            })
+        let notice = LaunchNoticeStore(
+            markerURL: fixture.markerURL,
+            orphanedFramesToDisclose: failed.orphanedFramesToDisclose)
+
+        XCTAssertEqual(failed.migration.failures, ["injected migration failure"])
+        XCTAssertEqual(failed.orphanedFramesRemoved, 0)
+        XCTAssertEqual(failed.orphanedFramesToDisclose, 2)
+        XCTAssertEqual(try Data(contentsOf: untouchedOrphanURL), untouchedBytes)
+        XCTAssertEqual(try Data(contentsOf: fixture.markerURL), markerBeforeFailedMigration)
         XCTAssertEqual(
             notice.message,
             "Earlier diagnostic logs were cleared so RAWForge no longer retains the phone's "
@@ -1087,6 +1448,7 @@ private enum InjectedFailure: Error {
     case backupCleanup
     case markerSave
     case sessionClassification
+    case cleanupRemoval
 }
 
 private final class MigrationFixture {
