@@ -273,8 +273,17 @@ enum RecordPrivacyMigrator {
         if let origin = legacyOrigin {
             for url in darkURLs {
                 let data = try Data(contentsOf: url)
+                let containsLegacyPhotoTimestamp = try darkSettingContainsLegacyPhotoTimestamp(data)
                 if (try? decoder.decode(DarkSettingRecord.self, from: data)) != nil {
-                    try validateCurrent(data, as: .darkSetting)
+                    if containsLegacyPhotoTimestamp {
+                        replacements.append(Replacement(
+                            source: url,
+                            data: try migratedUnversionedDarkSettingData(
+                                data, origin: origin),
+                            kind: .darkSetting))
+                    } else {
+                        try validateCurrent(data, as: .darkSetting)
+                    }
                 } else {
                     _ = try decoder.decode(LegacyDarkSettingRecord.self, from: data)
                     replacements.append(Replacement(
@@ -297,7 +306,11 @@ enum RecordPrivacyMigrator {
         } else if envelope.format == SessionRecord.currentFormat,
                   envelope.schemaVersion == SessionRecord.currentSchemaVersion {
             for url in darkURLs {
-                try validateCurrent(Data(contentsOf: url), as: .darkSetting)
+                let data = try Data(contentsOf: url)
+                if try darkSettingContainsLegacyPhotoTimestamp(data) {
+                    throw MigrationError.legacyDarkSettingWithoutAnchor(url.lastPathComponent)
+                }
+                try validateCurrent(data, as: .darkSetting)
             }
             for url in motionURLs {
                 try validateCurrent(Data(contentsOf: url), as: .motionStream)
@@ -761,6 +774,35 @@ enum RecordPrivacyMigrator {
         return migrated
     }
 
+    private static func migratedUnversionedDarkSettingData(
+        _ data: Data,
+        origin: TimeInterval
+    ) throws -> Data {
+        var object = try jsonObject(data)
+        guard var frames = object["frames"] as? [[String: Any]] else {
+            throw MigrationError.invalidJSONObject("dark.frames")
+        }
+        for index in frames.indices {
+            try renameOptionalRelative(
+                in: &frames[index],
+                oldKey: "photoTimestampSeconds",
+                newKey: "photoTimestampAtSegmentStartSeconds",
+                origin: origin)
+        }
+        object["frames"] = frames
+        let migrated = try encodeJSONObject(object)
+        try validateCurrent(migrated, as: .darkSetting)
+        return migrated
+    }
+
+    private static func darkSettingContainsLegacyPhotoTimestamp(_ data: Data) throws -> Bool {
+        let object = try jsonObject(data)
+        guard let frames = object["frames"] as? [[String: Any]] else {
+            throw MigrationError.invalidJSONObject("dark.frames")
+        }
+        return frames.contains { $0.keys.contains("photoTimestampSeconds") }
+    }
+
     private static func migratedStationV3Data(
         _ data: Data,
         origin: TimeInterval
@@ -1094,6 +1136,7 @@ enum RecordPrivacyMigrator {
     private enum MigrationError: Error, CustomStringConvertible {
         case missingSessionHeader
         case legacyStationWithoutAnchor(String)
+        case legacyDarkSettingWithoutAnchor(String)
         case invalidJSONObject(String)
         case invalidNumber(String)
         case emptyMotionLine
@@ -1123,6 +1166,9 @@ enum RecordPrivacyMigrator {
                 return "session.json is missing"
             case .legacyStationWithoutAnchor(let name):
                 return "\(name) is legacy but session schema 4's openedAtUptime is unavailable"
+            case .legacyDarkSettingWithoutAnchor(let name):
+                return "\(name) contains legacy photoTimestampSeconds but the session anchor "
+                    + "is unavailable"
             case .invalidJSONObject(let key):
                 return "invalid JSON object at \(key)"
             case .invalidNumber(let key):
@@ -1349,10 +1395,20 @@ final class LaunchNoticeStore: ObservableObject {
     @Published private(set) var message: String?
     private let markerURL: URL
 
-    init(markerURL: URL) {
+    init(markerURL: URL, orphanedFramesRemoved: Int) {
         self.markerURL = markerURL
         let marker = try? PrivacyMigrationMarkerStore.load(from: markerURL)
-        message = marker?.noticeState == .pending ? Self.privacyMigrationMessage : nil
+        message = marker?.noticeState == .pending
+            ? Self.noticeMessage(orphanedFramesRemoved: orphanedFramesRemoved)
+            : nil
+    }
+
+    private static func noticeMessage(orphanedFramesRemoved: Int) -> String {
+        guard orphanedFramesRemoved > 0 else { return privacyMigrationMessage }
+        let file = orphanedFramesRemoved == 1 ? "file" : "files"
+        return "Earlier diagnostic logs were cleared so RAWForge no longer retains the phone's "
+            + "boot-time clock. Separately, launch cleanup removed \(orphanedFramesRemoved) "
+            + "orphaned DNG \(file) with no owning station metadata."
     }
 
     func acknowledge() {

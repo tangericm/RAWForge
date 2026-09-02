@@ -190,6 +190,84 @@ final class RecordPrivacyMigratorTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: fixture.motionURL), beforeMotion)
     }
 
+    func testAnchoredUnversionedDarkSettingMigratesPhotoTimestampAndPreservesPayloadBytesIdempotently() throws {
+        let fixture = try MigrationFixture.anchoredUnversionedDarkSetting(origin: 500)
+        defer { fixture.remove() }
+        let beforeDNG = try Data(contentsOf: fixture.dngURL)
+        let beforeMotion = try Data(contentsOf: fixture.motionURL)
+        let legacyDark = try fixture.darkObject()
+        let legacyFrames = try XCTUnwrap(legacyDark["frames"] as? [[String: Any]])
+        XCTAssertEqual(legacyFrames.first?["photoTimestampSeconds"] as? Double, 700)
+        XCTAssertNil(legacyFrames.first?["photoTimestampAtSegmentStartSeconds"])
+
+        let first = RecordPrivacyMigrator.migrate(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+
+        XCTAssertEqual(first.migratedSessions, 1)
+        XCTAssertEqual(first.untouchedUnknownRecords, 0)
+        XCTAssertTrue(first.failures.isEmpty)
+        XCTAssertEqual(
+            try fixture.currentDarkSetting().frames.first?.photoTimestampAtSegmentStartSeconds,
+            200)
+        let migratedFrames = try XCTUnwrap(
+            try fixture.darkObject()["frames"] as? [[String: Any]])
+        XCTAssertEqual(
+            migratedFrames.first?["photoTimestampAtSegmentStartSeconds"] as? Double,
+            200)
+        XCTAssertNil(migratedFrames.first?["photoTimestampSeconds"])
+        XCTAssertEqual(try Data(contentsOf: fixture.dngURL), beforeDNG)
+        XCTAssertEqual(try Data(contentsOf: fixture.motionURL), beforeMotion)
+
+        let firstMetadata = try fixture.allMetadataBytes()
+        let second = RecordPrivacyMigrator.migrate(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+
+        XCTAssertEqual(second, RecordPrivacyMigrator.Report())
+        XCTAssertEqual(try fixture.allMetadataBytes(), firstMetadata)
+        XCTAssertEqual(try Data(contentsOf: fixture.dngURL), beforeDNG)
+        XCTAssertEqual(try Data(contentsOf: fixture.motionURL), beforeMotion)
+    }
+
+    func testUnanchoredUnversionedDarkSettingIsRejectedWithoutChangingPayloadOrMetadata() throws {
+        let fixture = try MigrationFixture.unanchoredUnversionedDarkSetting(origin: 500)
+        defer { fixture.remove() }
+        let beforeMetadata = try fixture.allMetadataBytes()
+        let beforeDNG = try Data(contentsOf: fixture.dngURL)
+        let beforeMotion = try Data(contentsOf: fixture.motionURL)
+
+        let first = RecordPrivacyMigrator.migrate(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+
+        XCTAssertEqual(first.migratedSessions, 0)
+        XCTAssertEqual(first.untouchedUnknownRecords, 0)
+        XCTAssertEqual(first.failures.count, 1)
+        XCTAssertTrue(first.failures[0].contains(
+            "dark-001.json contains legacy photoTimestampSeconds but the session anchor "
+                + "is unavailable"))
+        XCTAssertEqual(try fixture.allMetadataBytes(), beforeMetadata)
+        XCTAssertEqual(try Data(contentsOf: fixture.dngURL), beforeDNG)
+        XCTAssertEqual(try Data(contentsOf: fixture.motionURL), beforeMotion)
+        XCTAssertNil(try fixture.markerObject()["completedMigrationVersion"])
+
+        let markerAfterFirst = try Data(contentsOf: fixture.markerURL)
+        let second = RecordPrivacyMigrator.migrate(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+
+        XCTAssertEqual(second.failures.count, 1)
+        XCTAssertEqual(try fixture.allMetadataBytes(), beforeMetadata)
+        XCTAssertEqual(try Data(contentsOf: fixture.markerURL), markerAfterFirst)
+        XCTAssertEqual(try Data(contentsOf: fixture.dngURL), beforeDNG)
+        XCTAssertEqual(try Data(contentsOf: fixture.motionURL), beforeMotion)
+    }
+
     func testSecondRunIsACompleteNoOpAndPreservesNewRelativeLog() throws {
         let fixture = try MigrationFixture.legacyV4(origin: 500)
         defer { fixture.remove() }
@@ -702,6 +780,30 @@ final class RecordPrivacyMigratorTests: XCTestCase {
     }
 
     @MainActor
+    func testNoticeDistinguishesPrivacyMigrationFromSameLaunchOrphanCleanup() throws {
+        let fixture = try MigrationFixture.legacyV4(origin: 500)
+        defer { fixture.remove() }
+        try fm.removeItem(at: fixture.stationURL)
+
+        let maintenance = LaunchStorageMaintenance.run(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+        let notice = LaunchNoticeStore(
+            markerURL: fixture.markerURL,
+            orphanedFramesRemoved: maintenance.orphanedFramesRemoved)
+
+        XCTAssertTrue(maintenance.migration.failures.isEmpty)
+        XCTAssertEqual(maintenance.orphanedFramesRemoved, 1)
+        XCTAssertFalse(fm.fileExists(atPath: fixture.dngURL.path))
+        XCTAssertEqual(
+            notice.message,
+            "Earlier diagnostic logs were cleared so RAWForge no longer retains the phone's "
+                + "boot-time clock. Separately, launch cleanup removed 1 orphaned DNG file "
+                + "with no owning station metadata.")
+    }
+
+    @MainActor
     func testNoticeUsesExactCopyAndOneOKAcknowledgement() throws {
         let fixture = try MigrationFixture.legacyV4(origin: 500)
         defer { fixture.remove() }
@@ -710,7 +812,9 @@ final class RecordPrivacyMigratorTests: XCTestCase {
             logsRoot: fixture.logsRoot,
             markerURL: fixture.markerURL)
 
-        let first = LaunchNoticeStore(markerURL: fixture.markerURL)
+        let first = LaunchNoticeStore(
+            markerURL: fixture.markerURL,
+            orphanedFramesRemoved: 0)
         XCTAssertEqual(
             first.message,
             "Earlier diagnostic logs were cleared so RAWForge no longer retains the phone's "
@@ -719,7 +823,9 @@ final class RecordPrivacyMigratorTests: XCTestCase {
         first.acknowledge()
 
         XCTAssertNil(first.message)
-        XCTAssertNil(LaunchNoticeStore(markerURL: fixture.markerURL).message)
+        XCTAssertNil(LaunchNoticeStore(
+            markerURL: fixture.markerURL,
+            orphanedFramesRemoved: 0).message)
         XCTAssertEqual(try fixture.markerObject()["noticeState"] as? String, "acknowledged")
     }
 
@@ -846,6 +952,33 @@ private final class MigrationFixture {
         return fixture
     }
 
+    static func anchoredUnversionedDarkSetting(origin: TimeInterval) throws -> MigrationFixture {
+        let fixture = try legacyV4(origin: origin)
+        let setup = RecordPrivacyMigrator.migrate(
+            sessionsRoot: fixture.sessionsRoot,
+            logsRoot: fixture.logsRoot,
+            markerURL: fixture.markerURL)
+        XCTAssertEqual(setup.migratedSessions, 1)
+        XCTAssertTrue(setup.failures.isEmpty)
+
+        try fixture.mutateObject(at: fixture.sessionURL) {
+            $0["schemaVersion"] = 4
+            $0["openedAtUptime"] = origin
+        }
+        try fixture.writeUnversionedDarkSetting(photoTimestampSeconds: 700)
+        try fixture.fm.removeItem(at: fixture.markerURL)
+        return fixture
+    }
+
+    static func unanchoredUnversionedDarkSetting(origin: TimeInterval) throws -> MigrationFixture {
+        let fixture = try anchoredUnversionedDarkSetting(origin: origin)
+        try fixture.mutateObject(at: fixture.sessionURL) {
+            $0["schemaVersion"] = SessionRecord.currentSchemaVersion
+            $0.removeValue(forKey: "openedAtUptime")
+        }
+        return fixture
+    }
+
     func remove() {
         try? fm.removeItem(at: root)
     }
@@ -860,6 +993,11 @@ private final class MigrationFixture {
 
     func currentDarkSetting() throws -> DarkSettingRecord {
         try JSONDecoder.rawforgeMigration.decode(DarkSettingRecord.self, from: Data(contentsOf: darkURL))
+    }
+
+    func darkObject() throws -> [String: Any] {
+        try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: darkURL)) as? [String: Any])
     }
 
     func currentMotionSamples() throws -> [MotionSample] {
@@ -1019,6 +1157,35 @@ private final class MigrationFixture {
         var frames = try XCTUnwrap(object["frames"] as? [[String: Any]])
         makeFrameLegacy(&frames[0])
         object["frames"] = frames
+        try write(object, to: darkURL)
+    }
+
+    private func writeUnversionedDarkSetting(photoTimestampSeconds: TimeInterval) throws {
+        let object: [String: Any] = [
+            "sensor": "1x",
+            "shutterSeconds": 0.01,
+            "iso": 100,
+            "requestedRepeats": 1,
+            "frames": [[
+                "frameIndex": 1,
+                "filename": dngURL.lastPathComponent,
+                "sensor": "1x",
+                "requested": [
+                    "shutterSeconds": 0.01,
+                    "iso": 100
+                ],
+                "dng": [
+                    "exposureTimeSeconds": 0.01,
+                    "iso": 100,
+                    "uniqueCameraModel": "fixture"
+                ],
+                "capturedAtSegmentStartSeconds": 3,
+                "capturedAt": "1970-01-01T00:16:43Z",
+                "photoTimestampSeconds": photoTimestampSeconds
+            ]],
+            "rejections": [],
+            "aborted": false
+        ]
         try write(object, to: darkURL)
     }
 

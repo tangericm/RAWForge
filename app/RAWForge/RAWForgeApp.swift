@@ -19,7 +19,9 @@ struct RAWForgeApp: App {
             markerURL: markerURL)
         let migration = maintenance.migration
         _launchNotice = StateObject(
-            wrappedValue: LaunchNoticeStore(markerURL: markerURL))
+            wrappedValue: LaunchNoticeStore(
+                markerURL: markerURL,
+                orphanedFramesRemoved: maintenance.orphanedFramesRemoved))
 
         DebugLog.shared.start(device: DeviceIdentity.current())
         ProtocolLibrary.ensureDirectory()
