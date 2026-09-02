@@ -122,3 +122,43 @@ Release constraints, not Task 4 defects:
 - The hosted policy source has been created but not published, and the public URL has not been fetched or verified. Publication is intentionally outside this task.
 - Data Not Collected and Tracking: No remain valid only while the audited no-backend/no-account/no-analytics/no-tracking/no-third-party-SDK/no-Photos/no-new-network architecture remains unchanged.
 - Bayer RAW capture requires a compatible physical iPhone; simulator coverage proves build metadata and resources, not hardware capture.
+
+## Fix Round 1
+
+### Exact change
+
+Corrected `docs/app-store/review-notes.md` to identify the actual viewfinder status and its exact text.
+
+Replaced:
+
+```text
+If the primary action says **No Bayer sensor on this device**, please use a compatible physical iPhone; the message is the intended capability gate rather than a login or connectivity failure.
+```
+
+With:
+
+```text
+If the viewfinder status says **No Bayer sensor**, please use a compatible physical iPhone.
+```
+
+No surrounding review instructions or other artifacts changed.
+
+### Regression command and output
+
+```text
+cd app
+xcodegen generate
+xcodebuild -project RAWForge.xcodeproj -scheme RAWForge -destination "platform=iOS Simulator,name=iPhone 17 Pro" -only-testing:RAWForgeTests/BuildIdentityTests test
+```
+
+Exit: `0`
+
+```text
+Test Suite 'BuildIdentityTests' passed.
+Executed 9 tests, with 1 test skipped and 0 failures (0 unexpected)
+** TEST SUCCEEDED **
+```
+
+### Fix SHA
+
+`62b525dfb125f2fb5539bb3d90f112c6766c3f16`
