@@ -129,18 +129,44 @@ enum RecordPrivacyMigrator {
         return report
     }
 
-    /// Successful cleanup events accumulate while the migration notice is pending,
-    /// so a later launch cannot erase an earlier disclosure before acknowledgement.
-    static func recordPendingOrphanedFramesRemoved(
+    struct PendingOrphanRemovalDisclosure {
+        let count: Int
+        let persistenceFailure: String?
+    }
+
+    /// Successful cleanup events accumulate while the migration notice is pending.
+    /// The returned count remains truthful for this launch even if persistence fails.
+    static func pendingOrphanRemovalDisclosure(
         _ count: Int,
         markerURL: URL
-    ) throws {
-        guard count > 0 else { return }
-        var marker = try PrivacyMigrationMarkerStore.load(from: markerURL)
-        guard marker.noticeState == .pending else { return }
-        marker.pendingOrphanedFramesRemoved =
-            (marker.pendingOrphanedFramesRemoved ?? 0) + count
-        try PrivacyMigrationMarkerStore.save(marker, to: markerURL)
+    ) -> PendingOrphanRemovalDisclosure {
+        do {
+            var marker = try PrivacyMigrationMarkerStore.load(from: markerURL)
+            guard marker.noticeState == .pending else {
+                return PendingOrphanRemovalDisclosure(count: 0, persistenceFailure: nil)
+            }
+            let accumulatedCount = (marker.pendingOrphanedFramesRemoved ?? 0) + count
+            guard count > 0 else {
+                return PendingOrphanRemovalDisclosure(
+                    count: accumulatedCount,
+                    persistenceFailure: nil)
+            }
+            marker.pendingOrphanedFramesRemoved = accumulatedCount
+            do {
+                try PrivacyMigrationMarkerStore.save(marker, to: markerURL)
+                return PendingOrphanRemovalDisclosure(
+                    count: accumulatedCount,
+                    persistenceFailure: nil)
+            } catch {
+                return PendingOrphanRemovalDisclosure(
+                    count: accumulatedCount,
+                    persistenceFailure: "\(error)")
+            }
+        } catch {
+            return PendingOrphanRemovalDisclosure(
+                count: count,
+                persistenceFailure: "\(error)")
+        }
     }
 
     private enum MetadataKind: String, Codable, Equatable {
@@ -1410,14 +1436,11 @@ final class LaunchNoticeStore: ObservableObject {
     @Published private(set) var message: String?
     private let markerURL: URL
 
-    init(markerURL: URL, orphanedFramesRemoved: Int) {
+    init(markerURL: URL, orphanedFramesToDisclose: Int) {
         self.markerURL = markerURL
         let marker = try? PrivacyMigrationMarkerStore.load(from: markerURL)
-        let pendingOrphanedFramesRemoved = max(
-            marker?.pendingOrphanedFramesRemoved ?? 0,
-            orphanedFramesRemoved)
         message = marker?.noticeState == .pending
-            ? Self.noticeMessage(orphanedFramesRemoved: pendingOrphanedFramesRemoved)
+            ? Self.noticeMessage(orphanedFramesRemoved: orphanedFramesToDisclose)
             : nil
     }
 

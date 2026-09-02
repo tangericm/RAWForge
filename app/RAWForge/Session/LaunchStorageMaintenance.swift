@@ -9,6 +9,7 @@ enum LaunchStorageMaintenance {
     struct Report {
         let migration: RecordPrivacyMigrator.Report
         let orphanedFramesRemoved: Int
+        let orphanedFramesToDisclose: Int
     }
 
     static func run(
@@ -26,17 +27,19 @@ enum LaunchStorageMaintenance {
         let orphanedFramesRemoved = migration.failures.isEmpty
             ? SessionStore.sweepOrphanedFrames(sessionsRoot: sessionsRoot)
             : 0
-        if orphanedFramesRemoved > 0 {
-            do {
-                try RecordPrivacyMigrator.recordPendingOrphanedFramesRemoved(
-                    orphanedFramesRemoved,
-                    markerURL: markerURL)
-            } catch {
-                migration.failures.append("launch notice marker: \(error)")
+        var orphanedFramesToDisclose = 0
+        if migration.failures.isEmpty {
+            let disclosure = RecordPrivacyMigrator.pendingOrphanRemovalDisclosure(
+                orphanedFramesRemoved,
+                markerURL: markerURL)
+            orphanedFramesToDisclose = disclosure.count
+            if let failure = disclosure.persistenceFailure {
+                migration.failures.append("launch notice marker: \(failure)")
             }
         }
         return Report(
             migration: migration,
-            orphanedFramesRemoved: orphanedFramesRemoved)
+            orphanedFramesRemoved: orphanedFramesRemoved,
+            orphanedFramesToDisclose: orphanedFramesToDisclose)
     }
 }

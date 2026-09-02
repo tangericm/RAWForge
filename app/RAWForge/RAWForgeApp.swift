@@ -21,7 +21,7 @@ struct RAWForgeApp: App {
         _launchNotice = StateObject(
             wrappedValue: LaunchNoticeStore(
                 markerURL: markerURL,
-                orphanedFramesRemoved: maintenance.orphanedFramesRemoved))
+                orphanedFramesToDisclose: maintenance.orphanedFramesToDisclose))
 
         DebugLog.shared.start(device: DeviceIdentity.current())
         ProtocolLibrary.ensureDirectory()
