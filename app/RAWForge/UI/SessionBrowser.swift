@@ -15,6 +15,7 @@ import UIKit
 /// cross it, and would put a tone-mapped image on screen while appearing to
 /// show the data being kept.
 struct SessionBrowser: View {
+    var protectedSessionID: String? = nil
     @State private var sessions: [String] = []
     @State private var pendingDelete: String?
     @State private var deleteError: String?
@@ -23,11 +24,11 @@ struct SessionBrowser: View {
         Group {
             if sessions.isEmpty { empty } else { list }
         }
-        .navigationTitle("Sessions")
+        .navigationTitle("Captured Runs")
         .toolbar { if !sessions.isEmpty { EditButton() } }
         .onAppear { reload() }
         .confirmationDialog(
-            "Delete this session permanently?",
+            "Delete this Run permanently?",
             isPresented: Binding(get: { pendingDelete != nil },
                                  set: { if !$0 { pendingDelete = nil } }),
             titleVisibility: .visible
@@ -39,16 +40,15 @@ struct SessionBrowser: View {
             Button("Cancel", role: .cancel) { pendingDelete = nil }
         } message: {
             Text("The frames and the log go together. There is no undo, and the app "
-                 + "does not track whether this session was transferred.")
+                 + "does not track whether this Run was transferred.")
         }
     }
 
     private var empty: some View {
         ContentUnavailableView {
-            Label("No sessions yet", systemImage: "folder")
+            Label("No captured Runs yet", systemImage: "folder")
         } description: {
-            Text("A session is opened from the Capture screen, and everything shot into it "
-                 + "lands in one directory — the frames and the log together.")
+            Text("Choose a Recipe on Shoot and tap Capture. Your Takes are grouped into a Run automatically, ready to review or export here.")
         }
     }
 
@@ -69,7 +69,10 @@ struct SessionBrowser: View {
                 }
             }
             .onDelete { offsets in
-                pendingDelete = offsets.first.map { sessions[$0] }
+                guard let index = offsets.first else { return }
+                if sessions[index] == protectedSessionID {
+                    deleteError = "Finish the current Run on Shoot before deleting it."
+                } else { pendingDelete = sessions[index] }
             }
         }
     }
@@ -91,7 +94,7 @@ private struct SessionRow: View {
         let counts = SessionStore.frameAndStationCount(sessionId: sessionId)
         VStack(alignment: .leading, spacing: 2) {
             Text(sessionId).font(.callout).monospaced()
-            Text("\(counts.stations) station(s) · \(counts.frames) frame(s) · \(counts.megabytes) MB")
+            Text("\(counts.stations) Takes · \(counts.frames) frames · \(counts.megabytes) MB")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -114,13 +117,13 @@ private struct SessionDetail: View {
             if !unreadable.isEmpty {
                 Section("Unreadable records") {
                     ForEach(unreadable, id: \.self) { Text($0).font(.caption).monospaced() }
-                    Text("These station files exist but did not parse. Their frames are still "
+                    Text("These Take records exist but did not parse. Their frames are still "
                          + "on disk; the log for them is not.")
                         .font(.caption2).foregroundStyle(.orange)
                 }
             }
             if let r = record {
-                Section("Session") {
+                Section("Run details") {
                     LabeledContent("Device", value: r.capability.device.modelIdentifier)
                     LabeledContent("OS", value: r.capability.device.systemVersion)
                     LabeledContent("App", value: "\(r.capability.device.appVersion) (\(r.capability.device.appBuild))")
@@ -135,13 +138,18 @@ private struct SessionDetail: View {
                 }
             }
             ForEach(stations, id: \.stationIndex) { st in
-                Section("Station \(st.stationIndex)\(st.poseIntent.map { " · \($0)" } ?? "")") {
+                Section("Take \(st.stationIndex)\(st.poseIntent.map { " · \($0)" } ?? "")") {
+                    if let recipe = st.recipeSnapshot {
+                        Text("\(recipe.name) · v\(recipe.version)").font(.headline)
+                    } else {
+                        Text("Legacy capture").font(.subheadline).foregroundStyle(.secondary)
+                    }
                     if let m = st.motion {
                         Text(String(format: "%@ · gyro p50 %.5f p99 %.5f max %.5f",
                                     m.advisory.operatorNote, m.gyroP50, m.gyroP99, m.gyroMax))
                             .font(.caption2).foregroundStyle(.secondary)
                     }
-                    ForEach(st.sensorSwaps, id: \.toSensor) { s in
+                    ForEach(Array(st.sensorSwaps.enumerated()), id: \.offset) { _, s in
                         Text("\(s.fromSensor ?? "open") → \(s.toSensor): \(Int(s.durationSeconds * 1000)) ms")
                             .font(.caption2).foregroundStyle(.secondary)
                     }

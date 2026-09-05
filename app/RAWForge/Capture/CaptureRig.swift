@@ -679,6 +679,7 @@ final class CaptureRig: @unchecked Sendable {
     /// Bayer buffers while asking for more is what exhausts the pipeline, and
     /// the caller writes each frame to disk as it arrives anyway.
     func captureBracket(_ specs: [CaptureSpec],
+                        shouldStop: @MainActor () -> Bool = { false },
                         bank: (AVCapturePhoto, CaptureSpec) throws -> Void) async throws -> BracketRun {
         guard let d = device else { throw RigError.notConfigured }
         try assertZoomInvariant()
@@ -715,9 +716,6 @@ final class CaptureRig: @unchecked Sendable {
         try await prepareCaptureResources(shapes, representative: specs[0])
 
         for (i, chunk) in chunks.enumerated() {
-            if i > 0 {
-                try await Task.sleep(nanoseconds: UInt64(Self.interRequestSettle * 1_000_000_000))
-            }
             let bracket = chunk.map { s in
                 AVCaptureManualExposureBracketedStillImageSettings.manualExposureSettings(
                     exposureDuration: CMTime(seconds: s.shutterSeconds, preferredTimescale: 1_000_000_000),
@@ -729,7 +727,11 @@ final class CaptureRig: @unchecked Sendable {
                 bracketedSettings: bracket)
             let timeout = CaptureReliability.requestTimeout(
                 exposureSeconds: chunk.map(\.shutterSeconds))
-            let delivered = try await run(settings, timeout: timeout)
+            let delivered = try await CaptureRequestBoundary.perform(shouldStop: shouldStop, wait: {
+                if i > 0 {
+                    try await Task.sleep(nanoseconds: UInt64(Self.interRequestSettle * 1_000_000_000))
+                }
+            }, capture: { try await self.run(settings, timeout: timeout) })
             guard delivered.count == chunk.count else {
                 throw RigError.captureFailed(
                     "request \(i + 1) of \(chunks.count) returned \(delivered.count) "
@@ -737,6 +739,7 @@ final class CaptureRig: @unchecked Sendable {
             }
             // Written and released here, before the next request is issued.
             for (photo, spec) in zip(delivered, chunk) { try bank(photo, spec) }
+            if await shouldStop() { throw CaptureInterruption.stopRequested }
         }
         return chunks.map(\.count)
     }

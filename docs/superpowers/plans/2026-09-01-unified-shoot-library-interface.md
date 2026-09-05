@@ -4,6 +4,8 @@
 
 **Goal:** Replace the four-tab/manual-lifecycle interface with a production-ready Shoot + Library product that preserves exact Recipe controls, witnesses, diagnostics, and device information.
 
+**Checkpoint (2026-09-05):** An initial integrated implementation now has two tabs, one-action Recipe capture, automatic Run recovery, an ordered Step editor, exact-frame editing, compatibility review, and the existing record browser under Library. This is a working interface delivery, not completion of every item below. Presentation-model consolidation, graphical per-Step estimates, the UI-test target, direct preview-tap focus, richer Run/Take presentation, and remaining import/search/history tools are still pending. See `docs/testing/2026-09-05-workflow-delivery.md` for verification and scope.
+
 **Architecture:** `RecipeCoordinator` owns workflow intent; focused screen models derive presentation without republishing through `CaptureModel`. Shoot is camera-first and dispatches one capture intent. Library presents Recipes and Runs/Takes through one navigation hierarchy. Existing technical views are reused behind progressively disclosed, user-language routes.
 
 **Tech Stack:** SwiftUI, AVFoundation preview layer, XCTest presentation tests, XCUITest with deterministic demo adapters, SF Symbols, existing dark design system.

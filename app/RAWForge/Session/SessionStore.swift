@@ -93,15 +93,6 @@ enum SessionStore {
                      sessionType: String = "scene",
                      calibration: (id: String, ageSeconds: Double)? = nil,
                      backupExclusion: BackupExclusion = .live) throws -> SessionRecord {
-        let record = SessionRecord(
-            sessionId: makeSessionId(now),
-            openedAt: now,
-            capability: capability,
-            availableCapacityBytes: availableCapacityBytes(),
-            sessionType: sessionType,
-            calibrationSessionId: calibration?.id,
-            calibrationAgeSeconds: calibration?.ageSeconds)
-
         // Backup exclusion is a privacy precondition for capture. Create only
         // the empty root, set the value, and read it back before creating any
         // session directory or writing its header/data.
@@ -123,12 +114,26 @@ enum SessionStore {
                 "the sessions root did not report isExcludedFromBackup=true")
         }
 
-        let dir = directory(for: record.sessionId)
-        do {
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: false)
-        } catch {
-            throw StoreError.cannotCreateDirectory(error.localizedDescription)
+        let baseID = makeSessionId(now)
+        var sessionID = baseID
+        var allocated: URL?
+        for _ in 0..<10 {
+            let candidate = directory(for: sessionID)
+            do {
+                try FileManager.default.createDirectory(at: candidate, withIntermediateDirectories: false)
+                allocated = candidate
+                break
+            } catch let error as NSError where error.domain == NSCocoaErrorDomain
+                && error.code == CocoaError.fileWriteFileExists.rawValue {
+                sessionID = baseID + "-" + UUID().uuidString
+            } catch {
+                throw StoreError.cannotCreateDirectory(error.localizedDescription)
+            }
         }
+        guard let dir = allocated else { throw StoreError.cannotCreateDirectory("could not allocate a unique Run") }
+        let record = SessionRecord(sessionId: sessionID, openedAt: now, capability: capability,
+            availableCapacityBytes: availableCapacityBytes(), sessionType: sessionType,
+            calibrationSessionId: calibration?.id, calibrationAgeSeconds: calibration?.ageSeconds)
 
         do {
             let encoder = JSONEncoder()
@@ -157,7 +162,7 @@ enum SessionStore {
     static func writeFrame(_ data: Data, named filename: String, sessionId: String) throws -> URL {
         let url = directory(for: sessionId).appendingPathComponent(filename)
         do {
-            try data.write(to: url)
+            try data.write(to: url, options: .withoutOverwriting)
         } catch {
             throw StoreError.cannotWriteHeader("frame \(filename): \(error.localizedDescription)")
         }
@@ -167,14 +172,12 @@ enum SessionStore {
     /// The per-station write unit (#9). A station either completed or never
     /// existed (#10), so this is written once, at close — there is no partial
     /// station on disk to interpret later.
-    static func writeStation(_ station: StationRecord) throws {
+    static func writeStation(_ station: StationRecord,
+                             beforeCommit: (URL) throws -> Void = { _ in }) throws {
         let name = String(format: "station-%03d.json", station.stationIndex)
         let url = directory(for: station.sessionId).appendingPathComponent(name)
         do {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            encoder.dateEncodingStrategy = .iso8601
-            try encoder.encode(station).write(to: url)
+            try RecipeFile.write(station, to: url, immutable: true, beforeCommit: beforeCommit)
         } catch {
             throw StoreError.cannotWriteHeader("\(name): \(error.localizedDescription)")
         }
@@ -247,12 +250,19 @@ enum SessionStore {
         sessionsRoot: URL
     ) -> (stations: [StationRecord], unreadable: [String]) {
         let dir = sessionsRoot.appendingPathComponent(sessionId, isDirectory: true)
-        let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+        let files: [URL]
+        do {
+            files = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+        } catch {
+            return ([], ["The run folder could not be read: \(error.localizedDescription)"])
+        }
         var stations: [StationRecord] = []
         var unreadable: [String] = []
         for f in files where f.lastPathComponent.hasPrefix("station-") && f.pathExtension == "json" {
             guard let data = try? Data(contentsOf: f),
-                  let record = try? decoder.decode(StationRecord.self, from: data) else {
+                  let record = try? decoder.decode(StationRecord.self, from: data),
+                  record.sessionId == sessionId, record.stationIndex > 0,
+                  f.lastPathComponent == String(format: "station-%03d.json", record.stationIndex) else {
                 unreadable.append(f.lastPathComponent); continue
             }
             stations.append(record)

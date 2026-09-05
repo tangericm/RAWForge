@@ -276,6 +276,8 @@ struct StationRecord: Codable, Equatable {
     let openedAt: Date
     let closedAt: Date
     let brackets: [BracketRecord]
+    let recipeSnapshot: RecipeSnapshot?
+    let correlationID: UUID?
 
     /// What the operator declared this station to be — mounting condition,
     /// scene, whatever makes it identifiable later.
@@ -324,14 +326,17 @@ struct StationRecord: Codable, Equatable {
     }
 
     static let currentFormat = "rawforge.station"
-    static let currentSchemaVersion = 4
+    static let currentSchemaVersion = 5
 
     init(stationIndex: Int, sessionId: String, openedAt: Date, closedAt: Date,
          brackets: [BracketRecord], captureTimebase: CaptureTimebase,
          sensorSwaps: [SwapRecord] = [],
          motion: MotionSummary? = nil, motionStreamFile: String? = nil,
          motionRequestedHz: Double? = nil, poseIntent: String? = nil,
-         estimatedSeconds: Double? = nil) {
+         estimatedSeconds: Double? = nil, recipeSnapshot: RecipeSnapshot? = nil,
+         correlationID: UUID? = nil) {
+        self.recipeSnapshot = recipeSnapshot
+        self.correlationID = correlationID
         self.estimatedSeconds = estimatedSeconds
         self.poseIntent = poseIntent?.isEmpty == true ? nil : poseIntent
         self.sensorSwaps = sensorSwaps
@@ -353,14 +358,14 @@ struct StationRecord: Codable, Equatable {
         case format, schemaVersion, stationIndex, sessionId
         case captureSegmentID, monotonicTimebase, openedAt, closedAt, brackets
         case poseIntent, estimatedSeconds, sensorSwaps, motion, motionStreamFile
-        case motionRequestedHz
+        case motionRequestedHz, recipeSnapshot, correlationID
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         format = try container.decode(String.self, forKey: .format)
         schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
-        guard format == Self.currentFormat, schemaVersion == Self.currentSchemaVersion else {
+        guard format == Self.currentFormat, [4, Self.currentSchemaVersion].contains(schemaVersion) else {
             throw DecodingError.dataCorruptedError(
                 forKey: .schemaVersion,
                 in: container,
@@ -373,6 +378,8 @@ struct StationRecord: Codable, Equatable {
         openedAt = try container.decode(Date.self, forKey: .openedAt)
         closedAt = try container.decode(Date.self, forKey: .closedAt)
         brackets = try container.decode([BracketRecord].self, forKey: .brackets)
+        recipeSnapshot = try container.decodeIfPresent(RecipeSnapshot.self, forKey: .recipeSnapshot)
+        correlationID = try container.decodeIfPresent(UUID.self, forKey: .correlationID)
         poseIntent = try container.decodeIfPresent(String.self, forKey: .poseIntent)
         estimatedSeconds = try container.decodeIfPresent(Double.self, forKey: .estimatedSeconds)
         sensorSwaps = try container.decode([SwapRecord].self, forKey: .sensorSwaps)

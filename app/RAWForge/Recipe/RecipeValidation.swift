@@ -8,6 +8,19 @@ struct RecipeValidation: Equatable {
         case unusableSensor(reason: String)
         case invalidExposure(rungIndex: Int)
         case noSupportedRungs
+        case unsupportedSchema
+
+        var message: String {
+            switch self {
+            case .emptyRecipe: return "Add a step to this recipe."
+            case .invalidStep: return "A step has invalid timing or no frames."
+            case .missingSensor: return "A camera required by this recipe is not available on this phone."
+            case .unusableSensor(let reason): return reason
+            case .invalidExposure(let index): return "Frame \(index + 1) has an invalid exposure."
+            case .noSupportedRungs: return "No frame in a step is within this camera's limits."
+            case .unsupportedSchema: return "This recipe format requires a newer version of RAWForge."
+            }
+        }
     }
 
     struct StepResult: Equatable {
@@ -54,7 +67,9 @@ enum RecipeValidator {
         let steps = recipe.steps.enumerated().map { index, step in
             validate(step, index: index, against: report)
         }
-        return RecipeValidation(steps: steps, recipeBlockers: recipe.steps.isEmpty ? [.emptyRecipe] : [])
+        var blockers: [RecipeValidation.Blocker] = recipe.steps.isEmpty ? [.emptyRecipe] : []
+        if recipe.schemaVersion != 1 { blockers.append(.unsupportedSchema) }
+        return RecipeValidation(steps: steps, recipeBlockers: blockers)
     }
 
     static func adaptedCopy(of recipe: Recipe, against report: CapabilityReport,

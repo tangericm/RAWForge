@@ -26,7 +26,7 @@ final class RecordPrivacyMigratorTests: XCTestCase {
         XCTAssertFalse(sessionText.contains("openedAtUptime"))
 
         let station = try fixture.currentStation()
-        XCTAssertEqual(station.schemaVersion, 4)
+        XCTAssertEqual(station.schemaVersion, 5)
         XCTAssertEqual(station.monotonicTimebase, CaptureTimebase.persistedName)
         XCTAssertNotNil(station.captureSegmentID)
         let frame = try XCTUnwrap(station.brackets.first?.frames.first)
@@ -125,7 +125,7 @@ final class RecordPrivacyMigratorTests: XCTestCase {
         XCTAssertEqual(first.untouchedUnknownRecords, 0)
         XCTAssertTrue(first.failures.isEmpty)
         let station = try fixture.currentStation()
-        XCTAssertEqual(station.schemaVersion, 4)
+        XCTAssertEqual(station.schemaVersion, 5)
         XCTAssertEqual(
             station.brackets.first?.frames.first?.photoTimestampAtSegmentStartSeconds,
             200)
@@ -411,7 +411,7 @@ final class RecordPrivacyMigratorTests: XCTestCase {
         XCTAssertEqual(recovered.migratedSessions, 1)
         XCTAssertTrue(recovered.failures.isEmpty)
         XCTAssertEqual(try fixture.currentSession().schemaVersion, 5)
-        XCTAssertEqual(try fixture.currentStation().schemaVersion, 4)
+        XCTAssertEqual(try fixture.currentStation().schemaVersion, 5)
         XCTAssertTrue(try fixture.privacyArtifacts().isEmpty)
         XCTAssertEqual(try fixture.markerObject()["completedMigrationVersion"] as? Int, 1)
     }
@@ -443,7 +443,7 @@ final class RecordPrivacyMigratorTests: XCTestCase {
         let installedBytes = try fixture.allMetadataBytes()
         XCTAssertNotEqual(installedBytes, originalBytes)
         XCTAssertEqual(try fixture.currentSession().schemaVersion, 5)
-        XCTAssertEqual(try fixture.currentStation().schemaVersion, 4)
+        XCTAssertEqual(try fixture.currentStation().schemaVersion, 5)
         let interruptedArtifacts = try fixture.privacyArtifacts()
         XCTAssertTrue(interruptedArtifacts.contains(".privacy-metadata-transaction-v1.json"))
         XCTAssertEqual(

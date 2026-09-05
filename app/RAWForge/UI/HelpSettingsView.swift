@@ -150,6 +150,14 @@ struct HelpSettingsView: View {
                     }
                 }
             }
+            #if DEBUG
+            if let model {
+                Section("Development") {
+                    NavigationLink("Console") { LogConsoleView() }
+                    NavigationLink("Instrument bench") { BenchView(model: model) }
+                }
+            }
+            #endif
         }
         .navigationTitle("Help & Settings")
         .navigationBarTitleDisplayMode(.inline)

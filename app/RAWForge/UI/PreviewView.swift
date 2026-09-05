@@ -150,8 +150,8 @@ struct ViewfinderPanel: View {
             Text(model.report?.canCapture == true ? "Viewfinder idle" : "No Bayer sensor")
                 .font(.caption).foregroundStyle(.secondary)
             if model.report?.canCapture == true {
-                Text("It comes up between stations, and goes down while a set is firing.")
-                    .font(.caption2).foregroundStyle(.tertiary)
+                Text("Preview pauses during capture.")
+                    .font(.caption2).foregroundStyle(.secondary)
                     .multilineTextAlignment(.center).padding(.horizontal, 32)
             }
         }
@@ -171,8 +171,8 @@ struct ViewfinderPanel: View {
     }
 
     private var caveat: some View {
-        Text("framing only · not the payload")
-            .font(.system(size: 9))
+        Text("Framing preview · not RAW")
+            .font(.caption2)
             .foregroundStyle(.secondary)
             .padding(.horizontal, 7).padding(.vertical, 3)
             .background(.ultraThinMaterial, in: Capsule())

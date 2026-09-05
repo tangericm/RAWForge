@@ -118,13 +118,20 @@ struct ContentView: View {
             #if DEBUG
             if DemoSeed.isRequested {
                 DemoSeed.apply(to: model)
+                if let report = model.report {
+                    do { try model.workflow.boot(report: report) }
+                    catch { bootState = .failed(error.localizedDescription); return }
+                }
                 bootState = .ready
                 return
             }
             #endif
             await model.probe()
             model.refreshProtocols()
-            model.restoreShotList()
+            if let report = model.report {
+                do { try model.workflow.boot(report: report) }
+                catch { bootState = .failed(error.localizedDescription); return }
+            }
             bootState = model.report == nil
                 ? .failed(model.status)
                 : .ready
@@ -183,23 +190,19 @@ struct ContentView: View {
     private var tabs: some View {
         TabView(selection: $tab) {
             NavigationStack {
-                CaptureFlowView(model: model, showConsole: { tab = 2 })
+                ShootView(model: model)
                     .toolbar {
                         ToolbarItem(placement: .topBarTrailing) { helpSettingsButton }
                     }
             }
-                .tabItem { Label("Capture", systemImage: "camera.aperture") }.tag(0)
+                .tabItem { Label("Shoot", systemImage: "camera.aperture") }.tag(0)
             NavigationStack {
-                SessionBrowser()
+                CaptureLibraryView(model: model)
                     .toolbar {
                         ToolbarItem(placement: .topBarTrailing) { helpSettingsButton }
                     }
             }
-                .tabItem { Label("Sessions", systemImage: "folder") }.tag(1)
-            NavigationStack { LogConsoleView() }
-                .tabItem { Label("Console", systemImage: "text.alignleft") }.tag(2)
-            NavigationStack { BenchView(model: model) }
-                .tabItem { Label("Bench", systemImage: "wrench.and.screwdriver") }.tag(3)
+                .tabItem { Label("Library", systemImage: "folder") }.tag(1)
         }
     }
 

@@ -49,7 +49,7 @@ Inspection found that existing AppStorageTests remove the live shot-list/device-
 3. Replace the primary flow with Recipe → frame/focus → Capture; Run/Take boundaries become automatic.
 4. Replace current navigation with Shoot and Library plus an ordered Step editor. Preserve explicit Burst/Sequential firing and exact controls under progressive disclosure.
 
-No source changes from this pass have been pushed or merged into main.
+The foundation was subsequently merged and pushed to `main` at `62f5b3e`. The first visible workflow delivery followed; see [workflow delivery](2026-09-05-workflow-delivery.md). Git publication and installation on the phone are separate actions.
 
 ## Implementation choices
 

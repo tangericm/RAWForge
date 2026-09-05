@@ -2,6 +2,10 @@
 
 **Status:** accepted, amended 2026-09-01 · **Date:** 2026-08-14 · **Issues:** [#28](https://github.com/tangericm/RAWForge/issues/28), [#32](https://github.com/tangericm/RAWForge/issues/32)
 
+## 2026-09-05 composition-root clarification
+
+`CaptureModel` constructs one immutable `RecipeCoordinator` reference alongside its immutable `StationController` reference. The coordinator owns Recipe selection, versioned storage, Run bookmarks and workflow notices. Views observe it directly; none of those published fields is mirrored onto `CaptureModel`. Calibration outcomes no longer replace the scene controller's active session. This is dependency composition, not permission to add workflow state to the root.
+
 ## 2026-09-01 amendment — the station moved
 
 The revisit condition below has been met: #17 and #18 passed their hardware

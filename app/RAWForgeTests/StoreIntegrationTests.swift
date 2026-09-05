@@ -128,6 +128,61 @@ final class StoreIntegrationTests: XCTestCase {
 
     // MARK: - Backup exclusion
 
+    func testTwoRunsOpenedAtIdenticalTimeUseDistinctDirectories() throws {
+        let now = Date(timeIntervalSince1970: 4_102_444_803)
+        let report = CapabilityReport(device: .current(), sensors: [])
+        let first = try SessionStore.open(capability: report, now: now)
+        created.append(first.sessionId)
+        let header = SessionStore.directory(for: first.sessionId).appendingPathComponent("session.json")
+        let bytes = try Data(contentsOf: header)
+        let second = try SessionStore.open(capability: report, now: now)
+        created.append(second.sessionId)
+        XCTAssertNotEqual(first.sessionId, second.sessionId)
+        XCTAssertEqual(try Data(contentsOf: header), bytes)
+        XCTAssertEqual(SessionStore.loadSession(second.sessionId)?.sessionId, second.sessionId)
+    }
+
+    func testMismatchedStationFilenameIsUnreadableRatherThanReusable() throws {
+        let id = try makeSession("MismatchedSlot")
+        try writeStation(id, index: 1)
+        let directory = SessionStore.directory(for: id)
+        try FileManager.default.moveItem(at: directory.appendingPathComponent("station-001.json"),
+                                         to: directory.appendingPathComponent("station-002.json"))
+        let listing = SessionStore.loadStationsDetailed(id)
+        XCTAssertTrue(listing.stations.isEmpty)
+        XCTAssertEqual(listing.unreadable, ["station-002.json"])
+    }
+
+    func testFrameAndStationPublicationRefuseExistingFiles() throws {
+        let id = try makeSession("OccupiedSlot")
+        try writeFrame(id, station: 1, frame: 1)
+        try writeStation(id, index: 1)
+        let station = try XCTUnwrap(SessionStore.loadStations(id).first)
+        let url = SessionStore.directory(for: id).appendingPathComponent("station-001.json")
+        let bytes = try Data(contentsOf: url)
+        XCTAssertThrowsError(try SessionStore.writeStation(station))
+        XCTAssertThrowsError(try writeFrame(id, station: 1, frame: 1))
+        XCTAssertEqual(try Data(contentsOf: url), bytes)
+    }
+
+    func testFailedStationPublicationLeavesNoPartialRecordAndRetainsEarlierTake() throws {
+        let id = try makeSession("AtomicBank")
+        try writeStation(id, index: 1)
+        let next = StationRecord(stationIndex: 2, sessionId: id, openedAt: Date(), closedAt: Date(),
+            brackets: [], captureTimebase: CaptureTimebase(segmentID: "test", originUptime: 1))
+        XCTAssertThrowsError(try SessionStore.writeStation(next, beforeCommit: { destination in
+            XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+            let files = try FileManager.default.contentsOfDirectory(atPath: destination.deletingLastPathComponent().path)
+            XCTAssertTrue(files.contains { $0.hasSuffix(".tmp") }, "failure occurs after staging, not before serialization")
+            throw CocoaError(.fileWriteOutOfSpace)
+        }))
+        let listing = SessionStore.loadStationsDetailed(id)
+        XCTAssertEqual(listing.stations.map(\.stationIndex), [1])
+        XCTAssertTrue(listing.unreadable.isEmpty)
+        let files = try FileManager.default.contentsOfDirectory(atPath: SessionStore.directory(for: id).path)
+        XCTAssertFalse(files.contains { $0.hasSuffix(".tmp") })
+    }
+
     func testOpenRefusesToCreateSessionWhenBackupExclusionSetterThrows() {
         let now = Date(timeIntervalSince1970: 4_102_444_800)
         let id = SessionStore.makeSessionId(now)
