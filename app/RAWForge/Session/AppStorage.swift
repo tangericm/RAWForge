@@ -26,43 +26,66 @@ enum AppStorage {
     enum IsolationError: Error {
         case missingTestOptIn
         case unverifiedTestLaunch
+        case invalidUITestFlag
+        case unsupportedUITestLaunch
+    }
+
+    /// A compile-time capability, never an environment assertion of support.
+    static var supportsUILaunchIsolation: Bool {
+        #if DEBUG && targetEnvironment(simulator)
+        true
+        #else
+        false
+        #endif
     }
 
     /// Resolve once, before launch migrations, logging or any store can run.
     /// XCTest is loaded into the host by the test runner, not linked by the app.
     /// Runner environment markers also fail closed if storage is accessed before
-    /// XCTest loads. A flag alone must never turn a normal launch into a test.
+    /// XCTest loads. UI-launched apps do not load XCTest, so their separate
+    /// opt-in is permitted only by the compiled Debug simulator capability.
     private static let processRoots: Roots = {
         do {
             return try resolveRoots(
                 environment: ProcessInfo.processInfo.environment,
-                isXCTest: NSClassFromString("XCTestCase") != nil)
+                isXCTest: NSClassFromString("XCTestCase") != nil,
+                supportsUITesting: supportsUILaunchIsolation)
         } catch {
             // Do not log via DebugLog here: it also depends on these roots.
             fatalError("AppStorage refused unsafe test storage: \(error)")
         }
     }()
 
-    /// No environment value is ever interpreted as a storage path. The runner
-    /// must both load XCTest and explicitly opt in (Debug AND Release).
+    /// No environment value is ever interpreted as a storage path. Hosted tests
+    /// must both load XCTest and opt in (Debug AND Release). The capability input
+    /// makes unsupported UI launches testable; process selection above always
+    /// derives it from the build, never from caller-supplied environment values.
     static func resolveRoots(environment: [String: String], isXCTest: Bool,
+                             supportsUITesting: Bool = supportsUILaunchIsolation,
                              fileManager: FileManager = .default) throws -> Roots {
         let flag = environment["RAWFORGE_TEST_STORAGE"]
         let hasRunnerMarker = ["XCTestConfigurationFilePath", "XCTestBundlePath",
                                "XCTestBundleInjectPath", "XCTestSessionIdentifier"]
             .contains { environment[$0] != nil }
-        guard isXCTest else {
+        if isXCTest {
+            guard flag == "1" else { throw IsolationError.missingTestOptIn }
+        } else {
             guard flag == nil && !hasRunnerMarker else {
                 throw IsolationError.unverifiedTestLaunch
             }
+        }
+        let uiFlag = environment["RAWFORGE_UI_TESTING"]
+        if let uiFlag {
+            guard uiFlag == "1" else { throw IsolationError.invalidUITestFlag }
+            guard supportsUITesting else { throw IsolationError.unsupportedUITestLaunch }
+        }
+        if !isXCTest && uiFlag == nil {
             // Preserve normal launch locations and lazy support-dir creation.
             return Roots(
                 documents: fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0],
                 support: fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0],
                 isIsolated: false)
         }
-        guard flag == "1" else { throw IsolationError.missingTestOptIn }
-
         // mkdtemp atomically creates a fresh private directory (0700). Unlike a
         // caller-supplied path or a reusable name, it cannot adopt old app data.
         var template = fileManager.temporaryDirectory

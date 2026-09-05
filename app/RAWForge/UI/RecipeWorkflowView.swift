@@ -24,8 +24,7 @@ struct ShootView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 if let recipe = workflow.selectedRecipe {
-                    Button { editing = recipe } label: {
-                        HStack(alignment: .firstTextBaseline) {
+                        HStack(alignment: .top, spacing: 16) {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(recipe.name).font(.title2).bold()
                                 Text("\(recipe.steps.count) \(recipe.steps.count == 1 ? "step" : "steps") · \(frameCount(recipe)) \(frameCount(recipe) == 1 ? "frame" : "frames") · v\(recipe.version)")
@@ -34,10 +33,14 @@ struct ShootView: View {
                                     .font(.footnote).foregroundStyle(.secondary)
                             }
                             Spacer()
-                            Image(systemName: "slider.horizontal.3")
-                        }.contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain).disabled(station.busy)
+                            Button { editing = recipe } label: {
+                                Label("Edit", systemImage: "slider.horizontal.3")
+                                    .font(.subheadline).frame(minWidth: 44, minHeight: 44)
+                            }
+                            .accessibilityLabel("Edit Recipe")
+                            .accessibilityHint("Edit the ordered Steps, cameras and exposure values")
+                            .disabled(station.busy)
+                        }
                     ViewfinderPanel(model: model)
                         .frame(height: max(220, geometry.size.height * 0.48))
                         .frame(maxWidth: .infinity)
@@ -48,6 +51,7 @@ struct ShootView: View {
                         if let estimate = estimate {
                             Text("≈ \(SessionEstimate.formatDuration(estimate.worstCaseSeconds)) · \(SessionEstimate.formatBytes(estimate.typicalBytes))")
                                 .font(.subheadline).monospacedDigit().foregroundStyle(.secondary)
+                                .accessibilityLabel("Estimated duration \(SessionEstimate.formatDuration(estimate.worstCaseSeconds)), typical storage \(SessionEstimate.formatBytes(estimate.typicalBytes))")
                         }
                     }.frame(minHeight: 44)
                     validationDetails
@@ -171,29 +175,36 @@ struct CaptureLibraryView: View {
             }
             Section {
                 ForEach(workflow.library) { recipe in
+                    HStack(spacing: 8) {
                     Button { perform { try workflow.select(recipe) } } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(recipe.name).foregroundStyle(.primary)
-                                Text("\(recipe.steps.count) steps · v\(recipe.version)").font(.caption).foregroundStyle(.secondary)
+                                Text("\(recipe.steps.count) \(recipe.steps.count == 1 ? "step" : "steps") · v\(recipe.version)").font(.subheadline).foregroundStyle(.secondary)
                             }
                             Spacer()
                             if workflow.selectedRecipe?.id == recipe.id && workflow.selectedRecipe?.version == recipe.version {
-                                Image(systemName: "checkmark")
+                                Image(systemName: "checkmark").accessibilityLabel("Selected")
                             }
                         }.frame(minHeight: 44)
                     }
-                    .disabled(station.busy)
+                    .buttonStyle(.borderless).disabled(station.busy)
                     .contextMenu {
                         Button("Edit", systemImage: "slider.horizontal.3") { editing = recipe }
                         Button("Duplicate", systemImage: "doc.on.doc") { perform { try workflow.duplicate(recipe) } }
                     }
+                    Menu {
+                        Button("Edit Recipe", systemImage: "slider.horizontal.3") { editing = recipe }
+                        Button("Duplicate Recipe", systemImage: "doc.on.doc") { perform { try workflow.duplicate(recipe) } }
+                    } label: {
+                        Image(systemName: "ellipsis").frame(minWidth: 44, minHeight: 44)
+                    }
+                    .accessibilityLabel("Options for \(recipe.name)")
+                    .disabled(station.busy)
+                    }
                 }
             } header: { Text("Recipes") }
-              footer: { Text("Select a Recipe, then return to Shoot. Hold a Recipe to edit or duplicate it.") }
-            if let selected = workflow.selectedRecipe {
-                Button("Edit selected Recipe") { editing = selected }.disabled(station.busy)
-            }
+              footer: { Text("Select a Recipe to use in Shoot. Use its options to edit or duplicate it.") }
             Section {
                 DisclosureGroup("Advanced library tools") {
                     NavigationLink("Existing protocol library") { ProtocolLibraryView(model: model) }
@@ -237,11 +248,13 @@ struct RecipeEditorView: View {
     let report: CapabilityReport?
     let save: (Recipe) throws -> Void
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var error: String?
+    @State private var editMode: EditMode = .inactive
 
     var body: some View {
         List {
-            Section {
+            Section("Name") {
                 TextField("Recipe name", text: $recipe.name)
             }
             Section {
@@ -249,12 +262,9 @@ struct RecipeEditorView: View {
                     NavigationLink {
                         RecipeStepEditor(step: $step, sensors: report?.sensors ?? [])
                     } label: {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("\((recipe.steps.firstIndex { $0.id == step.id } ?? 0) + 1). \(step.captureSet.name)").font(.headline)
-                            Text("\(step.sensor.rawValue) · \(step.captureSet.specs.count) \(step.captureSet.specs.count == 1 ? "frame" : "frames") · \(step.captureSet.firing.label)")
-                                .font(.subheadline).foregroundStyle(.secondary)
-                        }.padding(.vertical, 6)
+                        RecipeStepRow(step: step, position: (recipe.steps.firstIndex { $0.id == step.id } ?? 0) + 1)
                     }
+                    .accessibilityIdentifier("recipe.step.\((recipe.steps.firstIndex { $0.id == step.id } ?? 0) + 1)")
                 }
                 .onMove { recipe.steps.move(fromOffsets: $0, toOffset: $1) }
                 .onDelete { recipe.steps.remove(atOffsets: $0) }
@@ -267,9 +277,21 @@ struct RecipeEditorView: View {
                             Button(set.name) { add(set) }
                         }
                     }
-                } label: { Label("Add Step", systemImage: "plus") }
-            } header: { Text("Steps · captured from top to bottom") }
-              footer: { Text("Tap a Step for camera, exposure and timing. Use Edit to move or remove Steps.") }
+                } label: {
+                    Label("Add Step", systemImage: "plus")
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+            } header: {
+                if dynamicTypeSize.isAccessibilitySize {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Steps")
+                        reorderButton
+                    }
+                } else {
+                    HStack { Text("Steps"); Spacer(); reorderButton }
+                }
+            } footer: { Text("Tap a Step to edit. Capture runs every Step from top to bottom.") }
             Section {
                 TextField("Optional note", text: Binding(get: { recipe.note ?? "" }, set: { recipe.note = $0.isEmpty ? nil : $0 }), axis: .vertical)
             }
@@ -287,9 +309,9 @@ struct RecipeEditorView: View {
         }
         .navigationTitle("Edit Recipe")
         .navigationBarTitleDisplayMode(.inline)
+        .environment(\.editMode, $editMode)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-            ToolbarItem(placement: .bottomBar) { EditButton() }
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save") {
                     do { try save(recipe); dismiss() } catch { self.error = error.localizedDescription }
@@ -305,5 +327,13 @@ struct RecipeEditorView: View {
     private func add(_ set: CaptureSet) {
         guard let sensor = report?.usableSensors.first?.sensor else { return }
         recipe.steps.append(RecipeStep(id: UUID(), sensor: sensor, captureSet: set, dwellSeconds: 0))
+    }
+
+    private var reorderButton: some View {
+        Button(editMode.isEditing ? "Done" : "Reorder") {
+            withAnimation { editMode = editMode.isEditing ? .inactive : .active }
+        }
+        .font(.subheadline).textCase(nil).frame(minWidth: 44, minHeight: 44)
+        .accessibilityLabel(editMode.isEditing ? "Finish reordering Steps" : "Reorder or remove Steps")
     }
 }
