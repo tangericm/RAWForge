@@ -1,10 +1,10 @@
 {
   "_comment": "Written by app/tools/run-hardware-suite.sh. Read by app/tools/require-hardware-verification.sh, which the release preflight refuses to pass without. Never edited by hand \u2014 a hand-edited entry is a claim nobody made.",
-  "commit": "89090d0c4ae8d569f070bde03704825f1f366aac",
-  "verifiedAt": "2026-09-01T17:47:07Z",
+  "commit": "91888d6aca0faeee58bffbb6092583f5a69271aa",
+  "verifiedAt": "2026-09-05T16:53:01Z",
   "device": "iPhone16,1",
   "systemVersion": "26.6",
-  "testsExecuted": 162,
+  "testsExecuted": 271,
   "testsSkipped": 0,
   "note": null
 }
