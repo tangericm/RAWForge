@@ -17,7 +17,7 @@ import Foundation
 enum ProtocolLibrary {
 
     static var directory: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        AppStorage.documentsDirectory
             .appendingPathComponent("protocols", isDirectory: true)
     }
 

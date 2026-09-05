@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// Where the app's own state lives, as distinct from the user's data.
 ///
@@ -16,15 +17,83 @@ import Foundation
 /// over. A cursor into a half-walked shot list, no.
 enum AppStorage {
 
+    struct Roots {
+        let documents: URL
+        let support: URL
+        let isIsolated: Bool
+    }
+
+    enum IsolationError: Error {
+        case missingTestOptIn
+        case unverifiedTestLaunch
+    }
+
+    /// Resolve once, before launch migrations, logging or any store can run.
+    /// XCTest is loaded into the host by the test runner, not linked by the app.
+    /// Runner environment markers also fail closed if storage is accessed before
+    /// XCTest loads. A flag alone must never turn a normal launch into a test.
+    private static let processRoots: Roots = {
+        do {
+            return try resolveRoots(
+                environment: ProcessInfo.processInfo.environment,
+                isXCTest: NSClassFromString("XCTestCase") != nil)
+        } catch {
+            // Do not log via DebugLog here: it also depends on these roots.
+            fatalError("AppStorage refused unsafe test storage: \(error)")
+        }
+    }()
+
+    /// No environment value is ever interpreted as a storage path. The runner
+    /// must both load XCTest and explicitly opt in (Debug AND Release).
+    static func resolveRoots(environment: [String: String], isXCTest: Bool,
+                             fileManager: FileManager = .default) throws -> Roots {
+        let flag = environment["RAWFORGE_TEST_STORAGE"]
+        let hasRunnerMarker = ["XCTestConfigurationFilePath", "XCTestBundlePath",
+                               "XCTestBundleInjectPath", "XCTestSessionIdentifier"]
+            .contains { environment[$0] != nil }
+        guard isXCTest else {
+            guard flag == nil && !hasRunnerMarker else {
+                throw IsolationError.unverifiedTestLaunch
+            }
+            // Preserve normal launch locations and lazy support-dir creation.
+            return Roots(
+                documents: fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0],
+                support: fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0],
+                isIsolated: false)
+        }
+        guard flag == "1" else { throw IsolationError.missingTestOptIn }
+
+        // mkdtemp atomically creates a fresh private directory (0700). Unlike a
+        // caller-supplied path or a reusable name, it cannot adopt old app data.
+        var template = fileManager.temporaryDirectory
+            .appendingPathComponent("RAWForge-XCTest-XXXXXX").path.utf8CString
+        let sandbox: URL = try template.withUnsafeMutableBufferPointer { buffer in
+            guard let path = mkdtemp(buffer.baseAddress!) else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            return URL(fileURLWithPath: String(cString: path), isDirectory: true)
+        }
+        let roots = Roots(
+            documents: sandbox.appendingPathComponent("Documents", isDirectory: true),
+            support: sandbox.appendingPathComponent("Library/Application Support", isDirectory: true),
+            isIsolated: true)
+        // Any setup failure propagates to the process gate. Never return live
+        // roots, migrate live files, or clear a previous run to make tests work.
+        try fileManager.createDirectory(at: roots.documents, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: roots.support, withIntermediateDirectories: true)
+        return roots
+    }
+
     /// `Library/Application Support/`, created on first use.
     ///
     /// Backed up by iCloud and not purgeable, which is right for both files
     /// here — losing a device profile means re-measuring, and losing a shot
     /// list mid-shoot means re-authoring it at the pose.
     static var supportDirectory: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory,
-                                            in: .userDomainMask)[0]
-        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        let base = processRoots.support
+        if !processRoots.isIsolated {
+            try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        }
         return base
     }
 
@@ -34,7 +103,7 @@ enum AppStorage {
 
     /// The user's data, and only that. Shared to Files wholesale.
     static var documentsDirectory: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        processRoots.documents
     }
 
     /// Moves a file out of `Documents` on first launch after the split.

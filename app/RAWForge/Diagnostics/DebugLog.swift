@@ -143,14 +143,14 @@ final class DebugLog: @unchecked Sendable {
     // MARK: - Files
 
     static var directory: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        AppStorage.documentsDirectory
             .appendingPathComponent("logs-v2", isDirectory: true)
     }
 
     /// Kept separate so migration can quarantine legacy raw-uptime reports
     /// without ever placing them in a current-report share surface.
     static var legacyDirectory: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        AppStorage.documentsDirectory
             .appendingPathComponent("logs", isDirectory: true)
     }
 
