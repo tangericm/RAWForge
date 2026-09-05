@@ -43,7 +43,7 @@ enum SessionStore {
     }
 
     static var sessionsRoot: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        AppStorage.documentsDirectory
             .appendingPathComponent("sessions", isDirectory: true)
     }
 
@@ -58,7 +58,7 @@ enum SessionStore {
     /// purgeable space the system may or may not actually release, which is the
     /// wrong number to promise a field session against.
     static func availableCapacityBytes() -> Int64? {
-        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let url = AppStorage.documentsDirectory
         return (try? url.resourceValues(forKeys: [.volumeAvailableCapacityKey]))?
             .volumeAvailableCapacity.map(Int64.init)
     }

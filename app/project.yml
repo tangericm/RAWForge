@@ -41,6 +41,9 @@ schemes:
         RAWForgeTests: [test]
     test:
       targets: [RAWForgeTests]
+      # Test-action only, including xcodebuild -configuration Release. Never Run.
+      environmentVariables:
+        RAWFORGE_TEST_STORAGE: "1"
 
 targets:
   RAWForgeTests:
