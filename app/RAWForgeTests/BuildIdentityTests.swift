@@ -45,7 +45,7 @@ final class BuildIdentityTests: XCTestCase {
         let here = DeviceIdentity.current()
 
         let build = here.appBuild
-        try XCTSkipIf(build == "1", "built without the stamping phase")
+        XCTAssertNotEqual(build, "1", "the build-stamping phase must run after plist generation")
         XCTAssertEqual(build.count, 10, "expected YYMMDDHHmm, got \(build)")
         XCTAssertNotNil(Int(build), "the build number must be numeric to sort correctly")
 

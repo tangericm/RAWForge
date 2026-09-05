@@ -113,13 +113,15 @@ targets:
         Debug:
           ENABLE_TESTABILITY: "YES"
     preBuildScripts: []
-    postCompileScripts:
+    postBuildScripts:
         # Invoked through bash rather than executed directly: this repo has
         # core.fileMode = false, so git never records the executable bit and a
         # fresh clone — or a CI runner — would get "Permission denied".
       - script: "bash \"$SRCROOT/tools/stamp-build.sh\""
         name: Stamp build number and commit
         basedOnDependencyAnalysis: false
+        inputFiles:
+          - "$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)"
     info:
       path: Info.plist
       properties:
