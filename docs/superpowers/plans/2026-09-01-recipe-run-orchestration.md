@@ -4,6 +4,8 @@
 
 **Goal:** Add versioned Recipes, resumable Runs, immutable Recipe snapshots, and one atomic `captureTake` action over the existing verified capture engine.
 
+**Checkpoint (2026-09-05):** Task 1 is implemented and reviewed. Tasks 2–6 remain pending; the installed interface is still the old workflow. The reference-phone Release suite now passes 271 tests with no skips. The next delivery must connect the supporting layers to visible workflow simplification; see `docs/testing/2026-09-05-checkpoint.md`.
+
 **Architecture:** Recipe/Step is a facade over `CaptureSet` and `ShotListEntry`; it does not duplicate exposure rendering. `ActiveRunStore` persists only a validated session identifier, while `SessionStore` remains the data owner. `StationController` stays transaction owner and gains one high-level intent plus safe-boundary cancellation.
 
 **Tech Stack:** Swift 5, Swift Concurrency, Foundation `Codable`, existing AVFoundation adapters, XCTest with in-memory station adapters.
@@ -40,7 +42,7 @@
 - Produces: `RecipeValidator.adaptedCopy(of:against:now:) -> RecipeAdaptation`
 - Consumes: `CaptureSet`, `ExecutionMode`, `CapabilityReport`, existing rail validation
 
-- [ ] **Step 1: Write model and firing-invariant tests**
+- [x] **Step 1: Write model and firing-invariant tests**
 
 ```swift
 final class RecipeTests: XCTestCase {
@@ -75,11 +77,11 @@ final class RecipeTests: XCTestCase {
 }
 ```
 
-- [ ] **Step 2: Run the focused tests and confirm missing-type failures**
+- [x] **Step 2: Run the focused tests and confirm missing-type failures**
 
 Run the simulator suite with only `RecipeTests` and `RecipeValidationTests`. Expected: compilation fails because the Recipe types do not exist.
 
-- [ ] **Step 3: Implement focused value types**
+- [x] **Step 3: Implement focused value types**
 
 ```swift
 struct Recipe: Codable, Equatable, Identifiable {
@@ -122,13 +124,13 @@ Use a throwing `RecipeStep.validated` factory to reject negative dwell, negative
 
 Extend `ShotListEntry` with optional Codable fields `dwellSeconds` and `minimumGapSeconds`; legacy entries decode them as zero and nil. Existing global controller dwell/gap values remain only as a migration input until Task 5, where execution reads the Step values from each entry.
 
-- [ ] **Step 4: Implement capability validation and explicit adaptation**
+- [x] **Step 4: Implement capability validation and explicit adaptation**
 
 `RecipeValidation` contains ordered `StepResult` values with kept and dropped rungs plus blockers. A missing/unusable sensor is a blocker. A sensor with zero kept rungs is a blocker. Dropped rungs alone are a warning.
 
 `adaptedCopy` removes only already-reported dropped rungs, never changes firing, and refuses to invent a replacement for a missing sensor. It returns a new Recipe with a new UUID, version 1, a suffix using `CapabilityReport.device.modelIdentifier`, and a complete `changes` array for UI review.
 
-- [ ] **Step 5: Run focused and existing exposure tests; commit**
+- [x] **Step 5: Run focused and existing exposure tests; commit**
 
 ```bash
 cd app
