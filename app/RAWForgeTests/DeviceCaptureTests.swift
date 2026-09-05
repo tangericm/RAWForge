@@ -1,6 +1,50 @@
 import AVFoundation
+import UIKit
 import XCTest
 @testable import RAWForge
+
+/// Camera tests may exceed the phone's Auto-Lock interval. This affects only
+/// the hosted test app, and is restored even when a test fails or skips.
+@MainActor
+private final class CameraTestAwakeLease {
+    private let previous = UIApplication.shared.isIdleTimerDisabled
+
+    init() { UIApplication.shared.isIdleTimerDisabled = true }
+
+    func restore() { UIApplication.shared.isIdleTimerDisabled = previous }
+}
+
+class CameraHardwareTestCase: XCTestCase {
+    private var awakeLease: CameraTestAwakeLease?
+
+    override func setUp() async throws {
+        try await super.setUp()
+        awakeLease = await MainActor.run { CameraTestAwakeLease() }
+    }
+
+    override func tearDown() async throws {
+        if let lease = awakeLease {
+            await MainActor.run { lease.restore() }
+        }
+        awakeLease = nil
+        try await super.tearDown()
+    }
+}
+
+final class CameraAwakeLeaseTests: XCTestCase {
+    @MainActor
+    func testLeaseRestoresEitherPriorIdleTimerState() {
+        let original = UIApplication.shared.isIdleTimerDisabled
+        defer { UIApplication.shared.isIdleTimerDisabled = original }
+        for prior in [false, true] {
+            UIApplication.shared.isIdleTimerDisabled = prior
+            let lease = CameraTestAwakeLease()
+            XCTAssertTrue(UIApplication.shared.isIdleTimerDisabled)
+            lease.restore()
+            XCTAssertEqual(UIApplication.shared.isIdleTimerDisabled, prior)
+        }
+    }
+}
 
 /// The tests that need a real sensor.
 ///
@@ -12,7 +56,12 @@ import XCTest
 ///
 /// Every test skips rather than fails when there is no Bayer sensor, so the
 /// suite stays green on a simulator instead of being noise there.
-final class DeviceCaptureTests: XCTestCase {
+final class DeviceCaptureTests: CameraHardwareTestCase {
+
+    func testCameraHardwareHarnessKeepsApplicationAwake() async {
+        let keepsAwake = await MainActor.run { UIApplication.shared.isIdleTimerDisabled }
+        XCTAssertTrue(keepsAwake, "Auto-lock must not background a camera test mid-request")
+    }
 
     private var report: CapabilityReport!
     private var rig: CaptureRig!
@@ -429,7 +478,7 @@ final class DeviceCapabilitySummaryTests: XCTestCase {
 /// splits across requests, and the question this answers is what that costs:
 /// frames inside one request are pipeline-bound, and the seam between two
 /// requests is a second capture round trip.
-final class BracketSplittingTests: XCTestCase {
+final class BracketSplittingTests: CameraHardwareTestCase {
 
     func testASetPastTheCeilingSplitsAndTheSeamsAreMeasured() async throws {
         let report = CapabilityProbe.run()
