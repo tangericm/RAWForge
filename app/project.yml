@@ -34,6 +34,14 @@ settings:
       SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
 
 schemes:
+  RAWForgeUI:
+    build:
+      targets:
+        RAWForge: all
+        RAWForgeUITests: [test]
+    test:
+      config: Debug
+      targets: [RAWForgeUITests]
   RAWForge:
     build:
       targets:
@@ -46,6 +54,19 @@ schemes:
         RAWFORGE_TEST_STORAGE: "1"
 
 targets:
+  RAWForgeUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [RAWForgeUITests]
+    dependencies:
+      - target: RAWForge
+    settings:
+      base:
+        PRODUCT_NAME: "$(TARGET_NAME)"
+        PRODUCT_BUNDLE_IDENTIFIER: com.tangericm.rawforge.uitests
+        TEST_TARGET_NAME: RAWForge
+        SWIFT_VERSION: "5.0"
+        GENERATE_INFOPLIST_FILE: "YES"
   RAWForgeTests:
     type: bundle.unit-test
     platform: iOS

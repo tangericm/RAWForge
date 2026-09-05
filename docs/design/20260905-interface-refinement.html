@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RAWForge — clearer Recipe controls</title>
+<style>
+  :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, sans-serif; background:#151618; color:#f2f3f5; }
+  body { margin:0 auto; max-width:1100px; padding:40px 24px; }
+  h1 { font-size:clamp(28px,5vw,44px); letter-spacing:-.025em; margin:0 0 16px; }
+  p { max-width:68ch; line-height:1.6; color:#c0c4cb; }
+  .screens { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr)); gap:32px; margin-top:32px; }
+  figure { margin:0; }
+  img { width:100%; height:auto; display:block; border-radius:20px; }
+  figcaption { margin-bottom:16px; }
+  h2 { font-size:20px; margin:0 0 8px; }
+  figcaption p { margin:0; }
+  a { color:#8fc5ff; text-underline-offset:3px; }
+  a:focus-visible { outline:2px solid currentColor; outline-offset:4px; }
+  footer { margin-top:36px; border-top:1px solid #41444a; padding-top:20px; }
+</style>
+<main>
+  <h1>Clearer controls. The same capture precision.</h1>
+  <p>Refined with Impeccable and Taste: explicit editing actions, ordered Steps you can scan, and exact camera-adjusted values close at hand. These are real simulator renders of the app.</p>
+  <section class="screens" aria-label="Updated app screens">
+    <figure>
+      <figcaption><h2>Shoot</h2><p>A labelled Edit action and one primary Capture control.</p></figcaption>
+      <a href="screenshots/20260905-refined-shoot.png"><img src="screenshots/20260905-refined-shoot.png" alt="Shoot screen with a saved Window study Recipe, explicit Edit button and Capture control"></a>
+    </figure>
+    <figure>
+      <figcaption><h2>Ordered Steps</h2><p>Camera, firing, frame count and exposure values; Reorder and Add Step stay beside the work.</p></figcaption>
+      <a href="screenshots/20260905-refined-steps.png"><img src="screenshots/20260905-refined-steps.png" alt="Recipe editor with a single frame followed by a 16-frame Burst, including its proportional shutter pattern"></a>
+    </figure>
+    <figure>
+      <figcaption><h2>Larger text</h2><p>The header adapts instead of squeezing its actions into a narrow column.</p></figcaption>
+      <a href="screenshots/20260905-refined-large-text.png"><img src="screenshots/20260905-refined-large-text.png" alt="Recipe editor at the largest Dynamic Type setting with separate Steps heading and Reorder action"></a>
+    </figure>
+  </section>
+  <footer><p>No capture settings or formats were removed. These simulator checks do not establish camera performance or complete hardware verification. <a href="../testing/2026-09-05-interface-verification.md">Implementation and test notes</a></p></footer>
+</main>
+</html>

@@ -47,6 +47,8 @@ struct RecipeStepEditor: View {
                         TextField("Seconds", value: Binding(get: { step.sequentialGapSeconds ?? 0 },
                             set: { step.sequentialGapSeconds = $0 }), format: .number)
                             .keyboardType(.decimalPad).multilineTextAlignment(.trailing)
+                            .accessibilityLabel("Minimum frame interval in seconds")
+                            .accessibilityIdentifier("step.interval")
                     }
                     Text("Start-to-start minimum. Exposure and writing may take longer. Burst always fires as quickly as the camera allows.")
                         .font(.footnote).foregroundStyle(.secondary)
@@ -93,7 +95,7 @@ struct RecipeStepEditor: View {
         }
         .navigationTitle("Edit Step")
         .navigationBarTitleDisplayMode(.inline)
-        .confirmationDialog("Switch to Burst?", isPresented: $confirmingBurst, titleVisibility: .visible) {
+        .alert("Switch to Burst?", isPresented: $confirmingBurst) {
             Button("Use Burst and remove frame interval") {
                 step.captureSet.executionMode = .hardwareBracket
                 step.sequentialGapSeconds = nil

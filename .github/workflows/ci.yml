@@ -61,6 +61,29 @@ jobs:
       - name: Privacy and compliance contract
         run: bash app/tools/check-compliance.sh
 
+      # UI launches have private temporary storage and demo capabilities. This
+      # separate Debug-only scheme never adds UI flags to the hardware suite.
+      - name: Workflow interface tests
+        working-directory: app
+        run: |
+          set -o pipefail
+          xcodebuild -project RAWForge.xcodeproj -scheme RAWForgeUI \
+            -destination "platform=iOS Simulator,name=iPhone 17 Pro" \
+            -derivedDataPath /tmp/rawforge-ci-ui \
+            -parallel-testing-enabled NO \
+            -resultBundlePath "$RUNNER_TEMP/rawforge-ui.xcresult" \
+            test 2>&1 | tee "$RUNNER_TEMP/rawforge-ui.log"
+
+      - name: Retain interface test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow-interface-tests
+          path: |
+            ${{ runner.temp }}/rawforge-ui.xcresult
+            ${{ runner.temp }}/rawforge-ui.log
+          if-no-files-found: ignore
+
       # Release differs from Debug in whole-module optimisation, and had never
       # been built at all until late in this project. It also proves the
       # developer-only screens are absent — gating a NavigationLink is not the
