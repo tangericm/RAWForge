@@ -65,6 +65,54 @@ final class StoreIntegrationTests: XCTestCase {
 
     // MARK: - Filenames
 
+    func testCleanupJournalAcceptsMissingFrameUnderAliasedRoot() throws {
+        let fm = FileManager.default
+        let base = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? fm.removeItem(at: base) }
+        let root = base.appendingPathComponent("sessions", isDirectory: true)
+        let alias = base.appendingPathComponent("alias", isDirectory: true)
+        try fm.createDirectory(at: root.appendingPathComponent("S"),
+                               withIntermediateDirectories: true)
+        try fm.createSymbolicLink(at: alias, withDestinationURL: root)
+        let relative = "S/" + SessionStore.frameFilename(
+            sessionId: "S", station: 1, bracket: 1, frame: 1, sensor: "1x")
+        let frame = root.appendingPathComponent(relative)
+        try Data([1]).write(to: frame)
+        XCTAssertNotNil(SessionStore.validatedOrphanCleanupCandidate(
+            relativePath: relative, sessionsRoot: alias))
+        try fm.removeItem(at: frame)
+        XCTAssertNotNil(SessionStore.validatedOrphanCleanupCandidate(
+            relativePath: relative, sessionsRoot: alias),
+            "A journal must recognize its already-deleted candidate after relaunch")
+    }
+
+    func testCleanupJournalRejectsSymlinkEscapesIncludingMissingTargets() throws {
+        let fm = FileManager.default
+        let base = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? fm.removeItem(at: base) }
+        let root = base.appendingPathComponent("sessions", isDirectory: true)
+        let outside = base.appendingPathComponent("outside", isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        try fm.createDirectory(at: outside, withIntermediateDirectories: true)
+        let session = root.appendingPathComponent("S", isDirectory: true)
+        try fm.createSymbolicLink(at: session, withDestinationURL: outside)
+        let name = SessionStore.frameFilename(
+            sessionId: "S", station: 1, bracket: 1, frame: 1, sensor: "1x")
+        XCTAssertNil(SessionStore.validatedOrphanCleanupCandidate(
+            relativePath: "S/" + name, sessionsRoot: root))
+        try fm.removeItem(at: session)
+        try fm.createDirectory(at: session, withIntermediateDirectories: true)
+        let target = outside.appendingPathComponent(name)
+        try Data([42]).write(to: target)
+        try fm.createSymbolicLink(at: session.appendingPathComponent(name),
+                                 withDestinationURL: target)
+        XCTAssertNil(SessionStore.validatedOrphanCleanupCandidate(
+            relativePath: "S/" + name, sessionsRoot: root))
+        try fm.removeItem(at: target)
+        XCTAssertNil(SessionStore.validatedOrphanCleanupCandidate(
+            relativePath: "S/" + name, sessionsRoot: root))
+    }
+
     func testFrameFilenameIsZeroPaddedAndSelfDescribing() {
         let name = SessionStore.frameFilename(
             sessionId: "20260808T142211Z", station: 1, bracket: 3, frame: 2, sensor: "1x")

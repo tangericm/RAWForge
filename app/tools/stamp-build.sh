@@ -12,7 +12,7 @@
 set -euo pipefail
 
 PLIST="${TARGET_BUILD_DIR}/${INFOPLIST_PATH}"
-[ -f "$PLIST" ] || { echo "warning: no built Info.plist at $PLIST"; exit 0; }
+[ -f "$PLIST" ] || { echo "error: no built Info.plist at $PLIST"; exit 1; }
 
 BUILD=$(date -u +%y%m%d%H%M)
 

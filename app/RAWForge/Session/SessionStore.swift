@@ -433,7 +433,18 @@ enum SessionStore {
             .appendingPathComponent(sessionId, isDirectory: true)
             .appendingPathComponent(filename)
             .standardizedFileURL
-        let resolved = url.resolvingSymlinksInPath()
+        // iOS may leave an aliased /var path unresolved once the leaf is gone.
+        // A cleanup journal intentionally includes those already-deleted files.
+        // Resolve the existing parent first, then append the potentially absent leaf.
+        let parent = root.appendingPathComponent(sessionId, isDirectory: true)
+            .resolvingSymlinksInPath()
+        guard parent.path.hasPrefix(root.path + "/") else { return nil }
+        let candidate = parent.appendingPathComponent(filename)
+        // Reject dangling links too; fileExists alone cannot distinguish them
+        // from a journal candidate whose deletion already completed.
+        guard (try? FileManager.default.destinationOfSymbolicLink(
+            atPath: candidate.path)) == nil else { return nil }
+        let resolved = candidate.resolvingSymlinksInPath()
         guard resolved.path.hasPrefix(root.path + "/") else { return nil }
         return OrphanCleanupCandidate(
             relativePath: relativePath,
