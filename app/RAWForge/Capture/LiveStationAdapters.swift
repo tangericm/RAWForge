@@ -135,15 +135,22 @@ final class LiveStationCapture: StationCapturing {
                 do {
                     let achieved = try await rig.lockExposure(
                         shutterSeconds: spec.shutterSeconds, iso: spec.iso)
-                    if let lastFired, request.minimumGap > 0 {
-                        let elapsed = ProcessInfo.processInfo.systemUptime - lastFired
-                        if elapsed < request.minimumGap {
-                            try? await Task.sleep(nanoseconds: UInt64(
-                                (request.minimumGap - elapsed) * 1_000_000_000))
+                    let photo = try await CaptureRequestBoundary.perform(shouldStop: request.shouldStop, wait: {
+                        if let lastFired, request.minimumGap > 0 {
+                            let elapsed = ProcessInfo.processInfo.systemUptime - lastFired
+                            if elapsed < request.minimumGap {
+                                try await Task.sleep(nanoseconds: UInt64(
+                                    (request.minimumGap - elapsed) * 1_000_000_000))
+                            }
                         }
-                    }
-                    lastFired = ProcessInfo.processInfo.systemUptime
-                    try bank(try await rig.captureSingle(), spec, device: achieved)
+                    }, capture: {
+                        lastFired = ProcessInfo.processInfo.systemUptime
+                        return try await self.rig.captureSingle()
+                    })
+                    try bank(photo, spec, device: achieved)
+                    if request.shouldStop() { throw CaptureInterruption.stopRequested }
+                } catch CaptureInterruption.stopRequested {
+                    throw CaptureInterruption.stopRequested
                 } catch {
                     throw SequenceFault(sensor: request.sensor.rawValue,
                                         frameIndex: index + 1,
@@ -155,9 +162,11 @@ final class LiveStationCapture: StationCapturing {
         case .hardwareBracket:
             progress("\(request.sensor.rawValue) bracket of \(request.specs.count)")
             do {
-                requestSizes = try await rig.captureBracket(request.specs) { photo, spec in
+                requestSizes = try await rig.captureBracket(request.specs, shouldStop: request.shouldStop) { photo, spec in
                     try bank(photo, spec, device: nil)
                 }
+            } catch CaptureInterruption.stopRequested {
+                throw CaptureInterruption.stopRequested
             } catch {
                 throw SequenceFault(sensor: request.sensor.rawValue,
                                     frameIndex: frames.count + 1,
@@ -183,6 +192,11 @@ final class LiveStationCapture: StationCapturing {
 }
 
 final class LiveStationPersistence: StationPersisting {
+    func loadSession(_ id: String) -> SessionRecord? { SessionStore.loadSession(id) }
+    func loadStationsDetailed(_ id: String) -> (stations: [StationRecord], unreadable: [String]) {
+        SessionStore.loadStationsDetailed(id)
+    }
+
     func open(capability: CapabilityReport) throws -> SessionRecord {
         try SessionStore.open(
             capability: capability,

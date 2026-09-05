@@ -4,7 +4,7 @@
 
 **Goal:** Add versioned Recipes, resumable Runs, immutable Recipe snapshots, and one atomic `captureTake` action over the existing verified capture engine.
 
-**Checkpoint (2026-09-05):** Task 1 is implemented and reviewed. Tasks 2–6 remain pending; the installed interface is still the old workflow. The reference-phone Release suite now passes 271 tests with no skips. The next delivery must connect the supporting layers to visible workflow simplification; see `docs/testing/2026-09-05-checkpoint.md`.
+**Checkpoint (2026-09-05, workflow delivery):** The core interfaces of Tasks 1–6 are connected, and the first Shoot/Library/ordered-Step interface replaces the manual lifecycle. Recipe storage is committed as `f42bfe0`; the integration is recorded in `docs/testing/2026-09-05-workflow-delivery.md`. Remaining verification/parity items are listed there explicitly; unchecked steps below must not be read as completed merely because their runtime interface exists. The reference-phone 271-test ledger predates this workflow and is not evidence for its hardware behavior. No phone installation was performed for this delivery.
 
 **Architecture:** Recipe/Step is a facade over `CaptureSet` and `ShotListEntry`; it does not duplicate exposure rendering. `ActiveRunStore` persists only a validated session identifier, while `SessionStore` remains the data owner. `StationController` stays transaction owner and gains one high-level intent plus safe-boundary cancellation.
 

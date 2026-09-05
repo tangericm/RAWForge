@@ -32,10 +32,13 @@ struct StationCaptureRequest {
     let focus: FrameRecord.Focus?
     let minimumGap: TimeInterval
     let timebase: CaptureTimebase
+    var shouldStop: @MainActor () -> Bool = { false }
 }
 
 protocol StationPersisting: AnyObject {
     func open(capability: CapabilityReport) throws -> SessionRecord
+    func loadSession(_ id: String) -> SessionRecord?
+    func loadStationsDetailed(_ id: String) -> (stations: [StationRecord], unreadable: [String])
     func hasRoom(forFrames count: Int) -> Bool
     func writeMotionStream(_ samples: [MotionSample], sessionId: String,
                            station: Int) throws -> String
@@ -147,6 +150,7 @@ final class StationController: ObservableObject {
     @Published var session: SessionRecord?
     @Published var status = "not probed"
     @Published var busy = false
+    @Published private(set) var isCapturingTake = false
     @Published private(set) var progress = ""
     @Published var lastStation: StationRecord?
 
@@ -167,6 +171,9 @@ final class StationController: ObservableObject {
     private var pendingSwaps: [StationRecord.SwapRecord] = []
     private var focusContinuity = FocusContinuity()
     private var captureTimebase: CaptureTimebase?
+    private var takeSnapshot: RecipeSnapshot?
+    private var takeCorrelationID: UUID?
+    private var stopRequested = false
 
     private let capture: StationCapturing
     private let persistence: StationPersisting
@@ -191,6 +198,82 @@ final class StationController: ObservableObject {
 
     func capability(_ sensor: SensorCapability.Sensor) -> SensorCapability? {
         report?.sensors.first { $0.sensor == sensor }
+    }
+
+    /// A single intent uses the existing station transaction from start to
+    /// finish. No second camera engine or independently banked partial Take.
+    func captureTake(recipe: RecipeSnapshot,
+                     onRunReady: (SessionRecord) throws -> Void = { _ in }) async -> TakeOutcome {
+        guard !busy, !isCapturingTake, !phase.isInStation else {
+            return .blocked(message: "A capture is already in progress.")
+        }
+        guard let report else { return .blocked(message: "Camera checks have not finished.") }
+        let validation = RecipeValidator.validate(recipe.capturedDefinition, against: report)
+        guard validation.canCapture else {
+            return .blocked(message: validation.blockers.map(\.message).joined(separator: " · "))
+        }
+        if let existing = session {
+            do {
+                guard existing.sessionType == "scene" else { throw ActiveRunStore.Failure.invalidRun }
+                let validated = try ActiveRunStore.validate(sessionID: existing.sessionId,
+                    loadSession: persistence.loadSession, loadStations: persistence.loadStationsDetailed)
+                // Headers encode ISO-8601 dates at second precision. Compare
+                // in that persisted domain, not against transient fractions.
+                guard validated.session.openedAt.timeIntervalSince1970.rounded(.down)
+                    == existing.openedAt.timeIntervalSince1970.rounded(.down) else {
+                    throw ActiveRunStore.Failure.invalidRun
+                }
+                stationIndex = max(stationIndex, validated.run.nextTakeIndex - 1)
+            } catch {
+                return .blocked(message: "This Run changed or is unavailable. Finish it before starting another capture. Saved files have not been changed.")
+            }
+        }
+        let correlation = UUID()
+        isCapturingTake = true
+        busy = true
+        stopRequested = false
+        defer {
+            takeSnapshot = nil
+            takeCorrelationID = nil
+            isCapturingTake = false
+            busy = false
+            startFraming()
+        }
+        logInfo(.flow, "take \(correlation) · recipe \(recipe.recipeID) v\(recipe.version) starting")
+        if session == nil { openSession() }
+        guard let session else { return .failed(correlationID: correlation, message: status) }
+        do { try onRunReady(session) }
+        catch { return .failed(correlationID: correlation, message: error.localizedDescription) }
+        startFlow()
+        shotList = ShotList(entries: recipe.capturedDefinition.renderedEntries(), cursor: 0)
+        takeSnapshot = recipe
+        takeCorrelationID = correlation
+        declareStation()
+        guard phase == .stationOpen else { return .failed(correlationID: correlation, message: status) }
+        while canBeginSet {
+            if stopRequested {
+                abortStation(.abandoned)
+                return .cancelled(correlationID: correlation)
+            }
+            await beginNextSet()
+            guard phase == .stationOpen else {
+                return lastFault == .abandoned
+                    ? .cancelled(correlationID: correlation)
+                    : .failed(correlationID: correlation, message: status)
+            }
+        }
+        closeStation()
+        guard let record = lastStation, record.correlationID == correlation else {
+            return .failed(correlationID: correlation, message: status)
+        }
+        logInfo(.flow, "take \(correlation) complete")
+        return .completed(correlationID: correlation, station: record)
+    }
+
+    func requestStop() {
+        guard isCapturingTake else { return }
+        stopRequested = true
+        logInfo(.flow, "take \(takeCorrelationID?.uuidString ?? "unknown") stop requested at next safe boundary")
     }
 
     /// Diagnostic runs share the session's flat station namespace even though
@@ -250,6 +333,26 @@ final class StationController: ObservableObject {
         }
     }
 
+    func resumeRun(_ recovered: ActiveRunStore.RecoveredRun) throws {
+        guard !busy, phase == .noSession, session == nil else { throw ActiveRunStore.Failure.busy }
+        let validated = try ActiveRunStore.validate(sessionID: recovered.sessionID,
+            loadSession: persistence.loadSession, loadStations: persistence.loadStationsDetailed)
+        session = validated.session
+        stationIndex = validated.run.nextTakeIndex - 1
+        _ = beginCaptureSegment()
+        shotList.cursor = 0
+        resetFocusForNextPose()
+        set(.sessionOpen)
+        startFraming()
+    }
+
+    func recoverActiveRun(using store: ActiveRunStore) throws -> String? {
+        let recovery = try store.recover(loadSession: persistence.loadSession,
+                                        loadStations: persistence.loadStationsDetailed)
+        if let run = recovery.run { try resumeRun(run) }
+        return recovery.warning
+    }
+
     /// Brings the flow up and is safe to call each time the capture tab appears.
     func startFlow() {
         guard !phase.isInStation else { return }
@@ -258,7 +361,7 @@ final class StationController: ObservableObject {
     }
 
     func startFraming() {
-        guard !busy, phase == .sessionOpen || phase == .stationOpen else { return }
+        guard !busy, !isCapturingTake, phase == .noSession || phase == .sessionOpen || phase == .stationOpen else { return }
         guard let sensor = shotList.current?.sensor ?? report?.usableSensors.first?.sensor,
               capability(sensor)?.isUsable == true else { return }
         capture.prepareForFraming(sensor)
@@ -282,7 +385,7 @@ final class StationController: ObservableObject {
         focusContinuity.reset()
         shotList.cursor = 0
         stationEstimateSeconds = SessionEstimate.forShotList(
-            shotList.entries, minimumGap: minimumGap,
+            shotList.entries, minimumGap: isCapturingTake ? 0 : minimumGap,
             bracketCeiling: bracketCeiling).typicalSeconds
         motion.start(timebase: captureTimebase)
         set(.stationOpen)
@@ -306,7 +409,7 @@ final class StationController: ObservableObject {
 
         busy = true
         defer {
-            busy = false
+            busy = isCapturingTake
             // `startFraming()` refuses while busy. Doing this inside the body
             // used to call it one line before `defer` cleared busy, leaving a
             // frozen preview after both success and abort.
@@ -314,6 +417,9 @@ final class StationController: ObservableObject {
         }
 
         do {
+            let stepDwell = isCapturingTake ? entry.dwellSeconds : dwell
+            let stepGap = entry.captureSet.firing == .sequential
+                ? (isCapturingTake ? entry.minimumGapSeconds ?? 0 : minimumGap) : 0
             set(.swapping)
             let swapStart = clock.uptime()
             try await capture.configure(entry.sensor)
@@ -335,9 +441,9 @@ final class StationController: ObservableObject {
             stillnessLive = ""
 
             set(.settling)
-            if dwell > 0 {
-                logTrace(.flow, String(format: "extra dwell %.2f s", dwell))
-                await clock.sleep(dwell)
+            if stepDwell > 0 {
+                logTrace(.flow, String(format: "extra dwell %.2f s", stepDwell))
+                await clock.sleep(stepDwell)
             }
 
             let offset = entry.captureSet.perSensorEVOffsetStops[entry.sensor.rawValue] ?? 0
@@ -361,17 +467,20 @@ final class StationController: ObservableObject {
                     + (focus.note.map { " · \($0)" } ?? ""))
 
             set(.capturing)
+            if isCapturingTake && stopRequested { throw CaptureInterruption.stopRequested }
             let request = StationCaptureRequest(
                 specs: checked.kept, sensor: entry.sensor,
                 whiteBalance: whiteBalance, session: session,
                 stationIndex: stationIndex,
                 bracketIndex: pendingBrackets.count + 1,
                 firing: entry.captureSet.firing, focus: focus,
-                minimumGap: minimumGap,
-                timebase: captureTimebase)
+                minimumGap: stepGap,
+                timebase: captureTimebase,
+                shouldStop: { [weak self] in self?.stopRequested == true })
             let shot = try await capture.capture(request) { [weak self] message in
                 self?.progress = message
             }
+            if isCapturingTake && stopRequested { throw CaptureInterruption.stopRequested }
             pendingBrackets.append(BracketRecord(
                 bracketIndex: pendingBrackets.count + 1,
                 sensor: entry.sensor.rawValue,
@@ -382,11 +491,11 @@ final class StationController: ObservableObject {
                 executionMode: entry.captureSet.firing.rawValue,
                 bracketRequestSizes: shot.bracketRequestSizes,
                 droppedRungs: checked.dropped,
-                minimumInterFrameGapSeconds: minimumGap > 0 ? minimumGap : nil,
+                minimumInterFrameGapSeconds: stepGap > 0 ? stepGap : nil,
                 stillnessSettled: settled,
                 stillnessWaitSeconds: stillWait,
                 motionAtFire: motionAtFire,
-                dwellSeconds: dwell > 0 ? dwell : nil,
+                dwellSeconds: stepDwell > 0 ? stepDwell : nil,
                 note: nil,
                 frames: shot.frames))
 
@@ -396,6 +505,10 @@ final class StationController: ObservableObject {
             logInfo(.flow, String(format: "set banked — %d frame(s), stillness %@ after %.2f s",
                                   shot.frames.count, settled ? "settled" : "elevated", stillWait))
             set(.stationOpen)
+        } catch CaptureInterruption.stopRequested {
+            capture.stop()
+            progress = ""
+            abortStation(.abandoned)
         } catch {
             capture.stop()
             progress = ""
@@ -424,7 +537,8 @@ final class StationController: ObservableObject {
             motionStreamFile: streamFile,
             motionRequestedHz: motion.requestedHz,
             poseIntent: poseIntent,
-            estimatedSeconds: stationEstimateSeconds)
+            estimatedSeconds: stationEstimateSeconds,
+            recipeSnapshot: takeSnapshot, correlationID: takeCorrelationID)
         do {
             try persistence.writeStation(record)
             lastStation = record
@@ -436,9 +550,8 @@ final class StationController: ObservableObject {
                                   record.closedAt.timeIntervalSince(record.openedAt),
                                   stationEstimateSeconds ?? 0))
         } catch {
-            status = "could not write station \(stationIndex) — \(error)"
-            logError(.flow, "STATION RECORD NOT WRITTEN for station \(stationIndex) — \(error). "
-                     + "Its frames are on disk with no log describing them.")
+            abortStation(.captureError, detail: "Could not save the Take record: \(error)")
+            return
         }
         pendingBrackets = []
         pendingSwaps = []

@@ -8,6 +8,199 @@ import XCTest
 @MainActor
 final class StationControllerTests: XCTestCase {
 
+    func testRepeatedTakeWithRealStoredHeaderHandlesSerializedDatePrecision() async throws {
+        let capture = FakeStationCapture()
+        capture.emitsFrame = true
+        let controller = StationController(capture: capture, persistence: LiveStationPersistence(),
+            motion: FakeStationMotion(), health: FakeStationHealth(), clock: .immediate)
+        controller.report = capabilityReport()
+        defer { if let id = controller.session?.sessionId { try? SessionStore.deleteSession(id) } }
+        let recipe = recipeFixture(steps: [try .validated(sensor: .wide, captureSet: recipeSet())])
+        for index in [1, 2] {
+            let outcome = await controller.captureTake(recipe: RecipeSnapshot(recipe))
+            guard case .completed(_, let station) = outcome else { return XCTFail("\(outcome)") }
+            XCTAssertEqual(station.stationIndex, index)
+        }
+    }
+
+    func testCaptureRefusesMissingHeaderCalibrationOrUnreadableRunBeforeBookmarkAndCamera() async throws {
+        for invalid in ["missing", "calibration", "unreadable"] {
+            let report = capabilityReport()
+            let capture = FakeStationCapture()
+            let persistence = FakeStationPersistence(report: report)
+            let controller = makeController(report: report, capture: capture, persistence: persistence)
+            controller.startFlow()
+            persistence.missingHeader = invalid == "missing"
+            persistence.headerType = invalid == "calibration" ? "calibration" : "scene"
+            persistence.unreadable = invalid == "unreadable" ? ["station-001.json"] : []
+            let recipe = recipeFixture(steps: [try .validated(sensor: .wide, captureSet: recipeSet())])
+            let outcome = await controller.captureTake(recipe: RecipeSnapshot(recipe), onRunReady: { _ in XCTFail("must not replace bookmark") })
+            guard case .blocked = outcome else { return XCTFail("\(outcome)") }
+            XCTAssertTrue(capture.requests.isEmpty)
+            XCTAssertTrue(persistence.deletedStations.isEmpty)
+        }
+    }
+
+    func testCoordinatorBootSelectsStarterWithoutOpeningRunThenCapturesAndRecovers() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let selection = SelectedRecipeStore(url: root.appendingPathComponent("selected.json"))
+        let recipes = RecipeStore(root: root.appendingPathComponent("recipes"), selection: selection,
+                                  migrationURL: root.appendingPathComponent("migration.json"))
+        let runs = ActiveRunStore(url: root.appendingPathComponent("run.json"))
+        let report = capabilityReport()
+        let persistence = FakeStationPersistence(report: report)
+        let capture = FakeStationCapture()
+        capture.emitsFrame = true
+        func coordinator() -> RecipeCoordinator {
+            RecipeCoordinator(station: StationController(capture: capture, persistence: persistence,
+                motion: FakeStationMotion(), health: FakeStationHealth(), clock: .immediate),
+                recipes: recipes, selection: selection, runs: runs, loadLegacy: { nil }, clearLegacy: {})
+        }
+        let first = coordinator()
+        try first.boot(report: report)
+        XCTAssertNotNil(first.selectedRecipe)
+        XCTAssertEqual(persistence.openCount, 0)
+        XCTAssertTrue(capture.requests.isEmpty)
+        await first.capture()
+        XCTAssertEqual(capture.requests.count, 1)
+        XCTAssertEqual(try runs.pointer()?.sessionID, "test-session")
+        let relaunched = coordinator()
+        try relaunched.boot(report: report)
+        XCTAssertEqual(relaunched.selectedRecipe, first.selectedRecipe)
+        XCTAssertEqual(persistence.openCount, 1)
+        await relaunched.capture()
+        XCTAssertEqual(persistence.writtenStation?.stationIndex, 2)
+        XCTAssertEqual(persistence.openCount, 1)
+        try relaunched.finishRun()
+        XCTAssertNil(try runs.pointer())
+        XCTAssertEqual(persistence.writtenStations.count, 2)
+    }
+
+    func testRecipeEstimateChargesAuthoredDwellAndOnlyRealFrameIntervals() throws {
+        let base = ShotListEntry(index: 0, sensor: .wide, captureSet: recipeSet(count: 3, firing: .sequential))
+        let timed = ShotListEntry(index: 0, sensor: .wide, captureSet: base.captureSet,
+                                  dwellSeconds: 2, minimumGapSeconds: 1)
+        let estimate = SessionEstimate.forShotList([timed], minimumGap: 99)
+        let baseline = SessionEstimate.forShotList([base], minimumGap: 0)
+        XCTAssertEqual(estimate.breakdown.settles - baseline.breakdown.settles, 2, accuracy: 0.0001)
+        XCTAssertEqual(estimate.breakdown.gaps, 2, accuracy: 0.0001)
+        let single = ShotListEntry(index: 0, sensor: .wide, captureSet: recipeSet(firing: .sequential), minimumGapSeconds: 1)
+        XCTAssertEqual(SessionEstimate.forShotList([single], minimumGap: 99).breakdown.gaps, 0)
+    }
+
+    func testOneCaptureIntentBanksEveryStepAndRepeatsInSameRun() async throws {
+        let report = capabilityReport()
+        let persistence = FakeStationPersistence(report: report)
+        let capture = FakeStationCapture()
+        capture.emitsFrame = true
+        let controller = StationController(capture: capture, persistence: persistence,
+            motion: FakeStationMotion(), health: FakeStationHealth(), clock: .immediate)
+        controller.report = report
+        let recipe = recipeFixture(steps: [
+            try .validated(sensor: .wide, captureSet: recipeSet(), dwellSeconds: 0.2),
+            try .validated(sensor: .wide, captureSet: recipeSet(firing: .sequential),
+                           dwellSeconds: 0.3, sequentialGapSeconds: 0.5)])
+        for index in [1, 2] {
+            let result = await controller.captureTake(recipe: RecipeSnapshot(recipe))
+            guard case .completed(let correlation, let station) = result else { return XCTFail("\(result)") }
+            XCTAssertEqual(station.stationIndex, index)
+            XCTAssertEqual(station.brackets.count, 2)
+            XCTAssertEqual(station.recipeSnapshot?.capturedDefinition, recipe)
+            XCTAssertEqual(station.correlationID, correlation)
+            XCTAssertEqual(station.brackets.map(\.dwellSeconds), [0.2, 0.3])
+            XCTAssertEqual(station.brackets.map(\.minimumInterFrameGapSeconds), [nil, 0.5])
+            XCTAssertFalse(controller.busy)
+        }
+        XCTAssertEqual(persistence.openCount, 1)
+        XCTAssertEqual(capture.requests.map(\.minimumGap), [0, 0.5, 0, 0.5])
+    }
+
+    func testSecondStepFailureAndBankFailureDeleteWholeTake() async throws {
+        for failBank in [false, true] {
+            let report = capabilityReport()
+            let persistence = FakeStationPersistence(report: report)
+            persistence.failWrite = failBank
+            let capture = FakeStationCapture()
+            capture.emitsFrame = true
+            capture.errorOnRequest = failBank ? nil : 2
+            let controller = StationController(capture: capture, persistence: persistence,
+                motion: FakeStationMotion(), health: FakeStationHealth(), clock: .immediate)
+            controller.report = report
+            let recipe = recipeFixture(steps: [
+                try .validated(sensor: .wide, captureSet: recipeSet()),
+                try .validated(sensor: .wide, captureSet: recipeSet())])
+            let outcome = await controller.captureTake(recipe: RecipeSnapshot(recipe))
+            guard case .failed = outcome else { return XCTFail("\(outcome)") }
+            XCTAssertTrue(persistence.writtenStations.isEmpty)
+            XCTAssertEqual(persistence.deletedStations, [1])
+            XCTAssertEqual(controller.phase, .sessionOpen)
+            XCTAssertTrue(controller.pendingBrackets.isEmpty)
+            XCTAssertFalse(controller.busy)
+        }
+    }
+
+    func testStopAtReturnedRequestBoundaryDoesNotBankOrStartAnotherStep() async throws {
+        let report = capabilityReport()
+        let persistence = FakeStationPersistence(report: report)
+        let capture = FakeStationCapture()
+        capture.emitsFrame = true
+        let controller = StationController(capture: capture, persistence: persistence,
+            motion: FakeStationMotion(), health: FakeStationHealth(), clock: .immediate)
+        controller.report = report
+        capture.onCapture = { controller.requestStop() }
+        let recipe = recipeFixture(steps: [
+            try .validated(sensor: .wide, captureSet: recipeSet(firing: .sequential)),
+            try .validated(sensor: .wide, captureSet: recipeSet())])
+        let outcome = await controller.captureTake(recipe: RecipeSnapshot(recipe))
+        guard case .cancelled = outcome else { return XCTFail("\(outcome)") }
+        XCTAssertEqual(capture.requests.count, 1)
+        XCTAssertTrue(capture.requests[0].shouldStop())
+        XCTAssertTrue(persistence.writtenStations.isEmpty)
+        XCTAssertEqual(persistence.deletedStations, [1])
+        XCTAssertEqual(controller.lastFault, .abandoned)
+    }
+
+    func testUnsupportedRecipeDoesNotOpenARunOrDisturbCurrentDraft() async throws {
+        let report = capabilityReport()
+        let persistence = FakeStationPersistence(report: report)
+        let controller = StationController(capture: FakeStationCapture(), persistence: persistence,
+            motion: FakeStationMotion(), health: FakeStationHealth(), clock: .immediate)
+        controller.report = report
+        controller.shotList.entries = [entry(.wide, frames: 1)]
+        let before = controller.shotList
+        let invalid = recipeFixture(steps: [try .validated(sensor: .telephoto, captureSet: recipeSet())])
+        guard case .blocked = await controller.captureTake(recipe: RecipeSnapshot(invalid)) else { return XCTFail() }
+        XCTAssertEqual(persistence.openCount, 0)
+        XCTAssertEqual(controller.shotList, before)
+    }
+
+    func testResumeRevalidatesRecordsAndContinuesInANewTimeSegment() async throws {
+        let report = capabilityReport()
+        let persistence = FakeStationPersistence(report: report)
+        let capture = FakeStationCapture()
+        capture.emitsFrame = true
+        let old = makeController(report: report, capture: capture, persistence: persistence)
+        old.shotList.entries = [entry(.wide, frames: 1)]
+        old.phase = .sessionOpen
+        old.declareStation()
+        await old.beginNextSet()
+        old.closeStation()
+        let oldSegment = try XCTUnwrap(persistence.writtenStation?.captureSegmentID)
+        let resumed = StationController(capture: capture, persistence: persistence,
+            motion: FakeStationMotion(), health: FakeStationHealth(), clock: .immediate)
+        resumed.report = report
+        try resumed.resumeRun(.init(sessionID: "test-session", nextTakeIndex: 100))
+        XCTAssertEqual(resumed.stationIndex, 1, "derive from records again, not a stale recovery cursor")
+        resumed.shotList.entries = [entry(.wide, frames: 1)]
+        resumed.declareStation()
+        await resumed.beginNextSet()
+        resumed.closeStation()
+        XCTAssertEqual(persistence.writtenStation?.stationIndex, 2)
+        XCTAssertNotEqual(persistence.writtenStation?.captureSegmentID, oldSegment)
+        XCTAssertThrowsError(try resumed.resumeRun(.init(sessionID: "test-session", nextTakeIndex: 2)))
+    }
+
     func testDeclaringAStationOwnsTheWholeLifecycleState() {
         let report = capabilityReport()
         let motion = FakeStationMotion()
@@ -259,6 +452,8 @@ private final class TestClockBox {
 
 @MainActor
 private final class FakeStationCapture: StationCapturing {
+    var errorOnRequest: Int?
+    var onCapture: (() -> Void)?
     var configuredSensors: [SensorCapability.Sensor] = []
     var framingSensors: [SensorCapability.Sensor] = []
     var focusResolutions: [FocusResolution] = []
@@ -287,6 +482,8 @@ private final class FakeStationCapture: StationCapturing {
     func capture(_ request: StationCaptureRequest,
                  progress: @escaping (String) -> Void) async throws -> SetShot {
         requests.append(request)
+        onCapture?()
+        if errorOnRequest == requests.count { throw FakeError.capture }
         if let captureError { throw captureError }
         let frames = emitsFrame ? [frameFixture(request: request)] : []
         return SetShot(frames: frames, bracketRequestSizes: [request.specs.count])
@@ -295,20 +492,37 @@ private final class FakeStationCapture: StationCapturing {
 }
 
 private final class FakeStationPersistence: StationPersisting {
+    var openCount = 0
+    var failWrite = false
+    var missingHeader = false
+    var headerType = "scene"
+    var unreadable: [String] = []
     let report: CapabilityReport
     var hasRoom = true
     var writtenStations: [StationRecord] = []
     var deletedStations: [Int] = []
     var writtenStation: StationRecord? { writtenStations.last }
     init(report: CapabilityReport) { self.report = report }
+    func loadSession(_ id: String) -> SessionRecord? {
+        guard id == "test-session", !missingHeader else { return nil }
+        return SessionRecord(sessionId: id, openedAt: Date(timeIntervalSince1970: 10),
+                             capability: report, availableCapacityBytes: 1_000_000_000, sessionType: headerType)
+    }
+    func loadStationsDetailed(_ id: String) -> (stations: [StationRecord], unreadable: [String]) {
+        (writtenStations, unreadable)
+    }
     func open(capability: CapabilityReport) throws -> SessionRecord {
-        SessionRecord(sessionId: "test-session", openedAt: Date(timeIntervalSince1970: 10),
+        openCount += 1
+        return SessionRecord(sessionId: "test-session", openedAt: Date(timeIntervalSince1970: 10),
                       capability: capability, availableCapacityBytes: 1_000_000_000)
     }
     func hasRoom(forFrames count: Int) -> Bool { hasRoom }
     func writeMotionStream(_ samples: [MotionSample], sessionId: String,
                            station: Int) throws -> String { "motion.jsonl" }
-    func writeStation(_ station: StationRecord) throws { writtenStations.append(station) }
+    func writeStation(_ station: StationRecord) throws {
+        if failWrite { throw FakeError.capture }
+        writtenStations.append(station)
+    }
     func deleteStationFrames(sessionId: String, station: Int) { deletedStations.append(station) }
 }
 

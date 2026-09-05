@@ -8,17 +8,26 @@ import Foundation
 /// library and instrument-bench concerns.
 @MainActor
 final class CaptureModel: ObservableObject {
-    let rig = CaptureRig()
-    let motionRecorder = MotionRecorder()
-    let health = DeviceHealth()
+    let rig: CaptureRig
+    let motionRecorder: MotionRecorder
+    let health: DeviceHealth
+    private let liveStationCapture: LiveStationCapture
+    let station: StationController
+    let workflow: RecipeCoordinator
 
-    private lazy var liveStationCapture = LiveStationCapture(
-        rig: rig, motion: motionRecorder)
-    lazy var station = StationController(
-        capture: liveStationCapture,
-        persistence: LiveStationPersistence(),
-        motion: motionRecorder,
-        health: health)
+    init() {
+        let rig = CaptureRig()
+        let motion = MotionRecorder()
+        let health = DeviceHealth()
+        let adapter = LiveStationCapture(rig: rig, motion: motion)
+        let station = StationController(capture: adapter, persistence: LiveStationPersistence(), motion: motion, health: health)
+        self.rig = rig
+        self.motionRecorder = motion
+        self.health = health
+        self.liveStationCapture = adapter
+        self.station = station
+        self.workflow = RecipeCoordinator(station: station)
+    }
 
     /// App-wide screens still consume these values through the composition
     /// root; their source of truth is the station controller.
@@ -135,7 +144,8 @@ final class CaptureModel: ObservableObject {
         defer { busy = false }
         let outcome = await bench.runDarkCalibration(BenchModel.DarkRequest(
             report: report, sensors: sensors, set: set, repeats: bench.darkRepeats))
-        if let session = outcome.session { self.session = session }
+        // Calibration owns a separate session. Its outcome must not replace
+        // the scene Run retained by StationController and its active bookmark.
         status = outcome.status
     }
 

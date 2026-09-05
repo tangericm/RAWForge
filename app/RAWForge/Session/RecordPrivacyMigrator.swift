@@ -578,7 +578,7 @@ enum RecordPrivacyMigrator {
                     source: url,
                     data: try migratedStationV3Data(data, origin: origin),
                     kind: .station))
-            case (StationRecord.currentFormat, StationRecord.currentSchemaVersion):
+            case (StationRecord.currentFormat, 4), (StationRecord.currentFormat, StationRecord.currentSchemaVersion):
                 try validateCurrent(data, as: .station)
             default:
                 unknownRecords += 1

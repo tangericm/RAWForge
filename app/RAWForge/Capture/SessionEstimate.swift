@@ -126,6 +126,8 @@ struct SessionEstimate {
                 : profile.sameSensorSetupCost.value
             overhead += setup
             parts.setup += setup
+            overhead += entry.dwellSeconds
+            parts.settles += entry.dwellSeconds
             previousSensor = entry.sensor
 
             let specs = entry.captureSet.rendered(for: entry.sensor)
@@ -143,7 +145,7 @@ struct SessionEstimate {
                 parts.seams += Double(extra) * profile.bracketSeam.value
             }
 
-            for spec in specs {
+            for (index, spec) in specs.enumerated() {
                 exposure += spec.shutterSeconds
                 parts.exposure += spec.shutterSeconds
                 switch firing {
@@ -160,12 +162,18 @@ struct SessionEstimate {
                 // Only sequential can honour a gap — a burst is one request
                 // with nowhere to insert a wait — so charging for it in a burst
                 // predicted time the app was never going to spend.
-                if firing == .sequential { overhead += minimumGap; parts.gaps += minimumGap }
+                if firing == .sequential {
+                    // The authored floor exists between frames, never before
+                    // the first frame. Legacy callers retain their old estimate.
+                    let gap = entry.minimumGapSeconds.map { index > 0 ? $0 : 0 } ?? minimumGap
+                    overhead += gap
+                    parts.gaps += gap
+                }
             }
         }
         // Per set, for the same reason: the stillness wait runs on every set.
         if includeStillness {
-            parts.settles = Double(entries.count) * profile.stillnessTimeout.value
+            parts.settles += Double(entries.count) * profile.stillnessTimeout.value
         }
         return SessionEstimate(
             profile: profile,

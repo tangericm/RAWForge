@@ -40,4 +40,9 @@ enum ShotListStore {
     }
 
     static func clear() { try? FileManager.default.removeItem(at: url) }
+
+    /// Migration must not claim success when the old draft could not be cleared.
+    static func clearForMigration() throws {
+        if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+    }
 }
