@@ -9,6 +9,32 @@ struct ShotListEntry: Codable, Equatable, Identifiable {
     let index: Int
     let sensor: SensorCapability.Sensor
     let captureSet: CaptureSet
+    /// Per-Step timing. Execution switches from the controller's legacy global
+    /// values in Task 5; older stored entries retain zero dwell and no gap.
+    let dwellSeconds: TimeInterval
+    let minimumGapSeconds: TimeInterval?
+
+    init(index: Int, sensor: SensorCapability.Sensor, captureSet: CaptureSet,
+         dwellSeconds: TimeInterval = 0, minimumGapSeconds: TimeInterval? = nil) {
+        self.index = index
+        self.sensor = sensor
+        self.captureSet = captureSet
+        self.dwellSeconds = dwellSeconds
+        self.minimumGapSeconds = minimumGapSeconds
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case index, sensor, captureSet, dwellSeconds, minimumGapSeconds
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        index = try values.decode(Int.self, forKey: .index)
+        sensor = try values.decode(SensorCapability.Sensor.self, forKey: .sensor)
+        captureSet = try values.decode(CaptureSet.self, forKey: .captureSet)
+        dwellSeconds = try values.decodeIfPresent(TimeInterval.self, forKey: .dwellSeconds) ?? 0
+        minimumGapSeconds = try values.decodeIfPresent(TimeInterval.self, forKey: .minimumGapSeconds)
+    }
 
     var frameCount: Int { captureSet.specs.count }
     var label: String { "\(sensor.rawValue) · \(captureSet.name) v\(captureSet.version)" }
@@ -132,13 +158,15 @@ struct ShotList: Equatable {
             for e in entries where e.sensor == sensor { out.append(e) }
         }
         return out.enumerated().map {
-            ShotListEntry(index: $0.offset, sensor: $0.element.sensor, captureSet: $0.element.captureSet)
+            ShotListEntry(index: $0.offset, sensor: $0.element.sensor, captureSet: $0.element.captureSet,
+                          dwellSeconds: $0.element.dwellSeconds, minimumGapSeconds: $0.element.minimumGapSeconds)
         }
     }
 
     static func authored(_ entries: [ShotListEntry]) -> [ShotListEntry] {
         entries.enumerated().map {
-            ShotListEntry(index: $0.offset, sensor: $0.element.sensor, captureSet: $0.element.captureSet)
+            ShotListEntry(index: $0.offset, sensor: $0.element.sensor, captureSet: $0.element.captureSet,
+                          dwellSeconds: $0.element.dwellSeconds, minimumGapSeconds: $0.element.minimumGapSeconds)
         }
     }
 }
