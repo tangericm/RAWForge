@@ -52,8 +52,8 @@ struct RecipeStep: Codable, Equatable, Identifiable {
 
     var validationErrors: [ValidationError] {
         var errors: [ValidationError] = []
-        if !dwellSeconds.isFinite || dwellSeconds < 0 { errors.append(.invalidDwell) }
-        if let gap = sequentialGapSeconds, !gap.isFinite || gap < 0 {
+        if (try? CaptureTiming.nanoseconds(for: dwellSeconds)) == nil { errors.append(.invalidDwell) }
+        if let gap = sequentialGapSeconds, (try? CaptureTiming.nanoseconds(for: gap)) == nil {
             errors.append(.invalidSequentialGap)
         }
         if captureSet.specs.isEmpty { errors.append(.emptyCaptureSet) }

@@ -8,6 +8,24 @@ import XCTest
 @MainActor
 final class StationControllerTests: XCTestCase {
 
+    func testLegacyInvalidTimingIsRejectedBeforeConfiguringCamera() async {
+        for invalidWait in [true, false] {
+            let report = capabilityReport()
+            let capture = FakeStationCapture()
+            let controller = makeController(report: report, capture: capture)
+            controller.shotList.entries = [ShotListEntry(index: 0, sensor: .wide,
+                captureSet: recipeSet(firing: .sequential))]
+            controller.dwell = invalidWait ? 20_000_000_000 : 0
+            controller.minimumGap = invalidWait ? 0 : 20_000_000_000
+            controller.phase = .sessionOpen
+            controller.declareStation()
+            await controller.beginNextSet()
+            XCTAssertTrue(capture.configuredSensors.isEmpty)
+            XCTAssertTrue(capture.requests.isEmpty)
+            XCTAssertEqual(controller.lastFault, .captureError)
+        }
+    }
+
     func testRepeatedTakeWithRealStoredHeaderHandlesSerializedDatePrecision() async throws {
         let capture = FakeStationCapture()
         capture.emitsFrame = true

@@ -73,8 +73,12 @@ struct StationClock {
         date: Date.init,
         uptime: { ProcessInfo.processInfo.systemUptime },
         sleep: { seconds in
-            guard seconds > 0 else { return }
-            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            guard let nanoseconds = try? CaptureTiming.nanoseconds(for: seconds) else {
+                logError(.flow, "clock refused an unsupported duration: \(seconds)")
+                return
+            }
+            guard nanoseconds > 0 else { return }
+            try? await Task.sleep(nanoseconds: nanoseconds)
         })
 
     /// Advances whenever time is read and never actually sleeps. This keeps a
@@ -420,6 +424,10 @@ final class StationController: ObservableObject {
             let stepDwell = isCapturingTake ? entry.dwellSeconds : dwell
             let stepGap = entry.captureSet.firing == .sequential
                 ? (isCapturingTake ? entry.minimumGapSeconds ?? 0 : minimumGap) : 0
+            // Legacy station controls do not pass through RecipeValidator.
+            // Refuse invalid intent before configuring or firing the camera.
+            _ = try CaptureTiming.nanoseconds(for: stepDwell)
+            _ = try CaptureTiming.nanoseconds(for: stepGap)
             set(.swapping)
             let swapStart = clock.uptime()
             try await capture.configure(entry.sensor)
