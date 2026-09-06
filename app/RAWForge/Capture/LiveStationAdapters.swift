@@ -128,6 +128,7 @@ final class LiveStationCapture: StationCapturing {
 
         switch request.firing {
         case .sequential:
+            _ = try CaptureTiming.nanoseconds(for: request.minimumGap)
             var lastFired: TimeInterval?
             for (index, spec) in request.specs.enumerated() {
                 progress("\(request.sensor.rawValue) sequential \(index + 1)/"
@@ -139,8 +140,8 @@ final class LiveStationCapture: StationCapturing {
                         if let lastFired, request.minimumGap > 0 {
                             let elapsed = ProcessInfo.processInfo.systemUptime - lastFired
                             if elapsed < request.minimumGap {
-                                try await Task.sleep(nanoseconds: UInt64(
-                                    (request.minimumGap - elapsed) * 1_000_000_000))
+                                try await Task.sleep(nanoseconds: CaptureTiming.nanoseconds(
+                                    for: request.minimumGap - elapsed))
                             }
                         }
                     }, capture: {

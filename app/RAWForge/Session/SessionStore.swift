@@ -379,11 +379,15 @@ enum SessionStore {
                 at: dir, includingPropertiesForKeys: nil)) ?? []
             let sessionURL = dir.appendingPathComponent("session.json")
             guard let sessionData = try? Data(contentsOf: sessionURL),
-                  (try? decoder.decode(SessionRecord.self, from: sessionData)) != nil else {
+                  let header = try? decoder.decode(SessionRecord.self, from: sessionData) else {
                 // An unknown, malformed, or not-yet-migrated header may carry
                 // ownership facts that this build cannot interpret. Deleting
                 // anything from that directory would turn uncertainty into
                 // data loss.
+                continue
+            }
+            guard header.sessionId == sessionId else {
+                logWarn(.store, "orphan cleanup skipped \(sessionId): header identity does not match folder; preserving files")
                 continue
             }
             let ownedStations = Set(files.compactMap(stationIndexOwnedByMetadataFilename))

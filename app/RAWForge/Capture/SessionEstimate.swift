@@ -185,9 +185,14 @@ struct SessionEstimate {
     }
 
     static func formatDuration(_ t: TimeInterval) -> String {
+        guard t.isFinite, t >= 0 else { return "Unavailable" }
         if t < 1 { return String(format: "%.0f ms", t * 1000) }
         if t < 60 { return String(format: "%.1f s", t) }
-        return String(format: "%d min %02d s", Int(t) / 60, Int(t) % 60)
+        // Estimates can be displayed before a decoded/edited recipe validates.
+        // Never trap on conversion or truncate large minute counts to C Int32.
+        guard t < Double(Int.max) else { return String(format: "%.3g s", t) }
+        let seconds = Int(t)
+        return "\(seconds / 60) min " + String(format: "%02d s", seconds % 60)
     }
 
     static func formatBytes(_ b: Int64) -> String {
