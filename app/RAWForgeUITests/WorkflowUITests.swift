@@ -109,9 +109,33 @@ final class WorkflowUITests: XCTestCase {
         XCTAssertTrue(capture.waitForExistence(timeout: 10))
         XCTAssertTrue(capture.isHittable)
         XCTAssertGreaterThanOrEqual(capture.frame.height, 44)
+        attachShootScreen("Shoot · largest text")
         openEditor()
         XCTAssertTrue(app.buttons["Save"].isHittable)
         XCTAssertTrue(app.buttons["Cancel"].isHittable)
+    }
+
+    /// A height cap must not shrink the portrait viewfinder into a narrow tile.
+    func testViewfinderUsesScreenWidthWithoutCroppingOrHidingCapture() {
+        app.launch()
+        let preview = app.otherElements["viewfinder.preview"]
+        XCTAssertTrue(preview.waitForExistence(timeout: 10))
+        XCTAssertGreaterThan(preview.frame.width, app.frame.width * 0.85)
+        XCTAssertEqual(preview.frame.width / preview.frame.height, 0.75, accuracy: 0.01)
+        XCTAssertLessThanOrEqual(preview.frame.maxY, app.buttons["Capture"].frame.minY - 16,
+                                 "The full viewfinder must clear the pinned capture bar")
+        XCTAssertTrue(app.buttons["Capture"].isHittable)
+        attachShootScreen("Shoot · full-width preview")
+        let focus = app.buttons["Focus"]
+        if !focus.isHittable { app.scrollViews.firstMatch.swipeUp() }
+        XCTAssertTrue(focus.isHittable)
+    }
+
+    private func attachShootScreen(_ name: String) {
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = name
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
     }
 
     private func openEditor() {

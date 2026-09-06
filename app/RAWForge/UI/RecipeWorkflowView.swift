@@ -20,9 +20,8 @@ struct ShootView: View {
     }
 
     var body: some View {
-        GeometryReader { geometry in
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 12) {
                 if let recipe = workflow.selectedRecipe {
                         HStack(alignment: .top, spacing: 16) {
                             VStack(alignment: .leading, spacing: 4) {
@@ -42,7 +41,6 @@ struct ShootView: View {
                             .disabled(station.busy)
                         }
                     ViewfinderPanel(model: model)
-                        .frame(height: max(220, geometry.size.height * 0.48))
                         .frame(maxWidth: .infinity)
                     HStack {
                         Button { showFocus = true } label: { Label("Focus", systemImage: "viewfinder") }
@@ -69,7 +67,9 @@ struct ShootView: View {
                     ContentUnavailableView("No RAW camera available", systemImage: "camera",
                         description: Text("Check This iPhone in Help & Settings for the available camera capabilities."))
                 }
-            }.padding(16)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
         }
         .safeAreaInset(edge: .bottom) {
             if workflow.selectedRecipe != nil {
@@ -91,7 +91,6 @@ struct ShootView: View {
                 .padding(16)
                 .background(Color(uiColor: .systemBackground))
             }
-        }
         }
         .navigationTitle("Shoot")
         .navigationBarTitleDisplayMode(.inline)
