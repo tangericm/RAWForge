@@ -47,9 +47,9 @@ Local run logs: `/tmp/rawforge-safety-red.log`,
 `/tmp/rawforge-safety-full.log`, and `/tmp/rawforge-safety-release.log`.
 These temporary logs are evidence from this machine, not committed artifacts.
 
-## Remaining audit work
+## Subsequent audit work
 
 A02 sequential interval estimates, A03 interrupted recipe migration conflicts,
-A05 stop responsiveness during dwell, and A06 stale generated titles remain
-separate fixes. These two changes do not constitute hardware verification or
-App Store release approval.
+A05 stop responsiveness during dwell, and A06 stale generated titles were
+subsequently addressed in [the remaining audit fixes](2026-09-06-audit-resolution.md).
+These changes do not constitute hardware verification or App Store release approval.

@@ -26,7 +26,7 @@ struct RecipeStepEditor: View {
                         confirmingBurst = true
                         return
                     }
-                    step.captureSet.executionMode = $0
+                    replace(specs: step.captureSet.specs, generator: step.captureSet.generator, firing: $0)
                     step.sequentialGapSeconds = $0 == .sequential ? step.sequentialGapSeconds ?? 0 : nil
                 })) {
                     Text("Burst").tag(ExecutionMode.hardwareBracket)
@@ -97,7 +97,7 @@ struct RecipeStepEditor: View {
         .navigationBarTitleDisplayMode(.inline)
         .alert("Switch to Burst?", isPresented: $confirmingBurst) {
             Button("Use Burst and remove frame interval") {
-                step.captureSet.executionMode = .hardwareBracket
+                replace(specs: step.captureSet.specs, generator: step.captureSet.generator, firing: .hardwareBracket)
                 step.sequentialGapSeconds = nil
             }
             Button("Keep Sequential", role: .cancel) {}
@@ -146,9 +146,44 @@ struct RecipeStepEditor: View {
         replace(specs: specs, generator: .manual)
     }
 
-    private func replace(specs: [CaptureSpec], generator: CaptureSet.Generator, offsets: [String: Double]? = nil) {
+    private func replace(specs: [CaptureSpec], generator: CaptureSet.Generator,
+                         offsets: [String: Double]? = nil, firing: ExecutionMode? = nil) {
         let old = step.captureSet
-        step.captureSet = CaptureSet(name: old.name, version: old.version, specs: specs, generator: generator,
-            perSensorEVOffsetStops: offsets ?? old.perSensorEVOffsetStops, executionMode: old.firing)
+        step.captureSet = CaptureSetEditorDraft.replacing(old, specs: specs, generator: generator,
+            firing: firing ?? old.firing, offsets: offsets ?? old.perSensorEVOffsetStops)
+    }
+}
+
+/// Pure editor boundary shared by firing changes and explicit series replacement.
+enum CaptureSetEditorDraft {
+    static func replacing(_ old: CaptureSet, specs: [CaptureSpec], generator: CaptureSet.Generator,
+                          firing: ExecutionMode, offsets: [String: Double]) -> CaptureSet {
+        // Recipe-editor starters remain version zero, even when their Recipe
+        // is saved. Positive versions belong to named library protocols: never
+        // reinterpret those authored identifiers, even if they resemble a starter.
+        // Recognize the generated title's shape independently of the current
+        // mode/count: older builds may already have saved those out of sync.
+        let titleParts = old.name.components(separatedBy: " · ")
+        let stem = titleParts[0]
+        let repeatCount = stem.hasPrefix("Repeat ") ? Int(stem.dropFirst("Repeat ".count)) : nil
+        let manualCount = stem.hasPrefix("Frames ") ? Int(stem.dropFirst("Frames ".count)) : nil
+        let hasGeneratedMode = titleParts.count == 2
+            && ExecutionMode.allCases.contains { $0.label == titleParts[1] }
+        let isGenerated = old.version == 0 && (old.name == "Single Frame"
+            || (hasGeneratedMode && (stem == "Exposure Ladder" || (repeatCount ?? manualCount ?? 0) > 0)))
+        var name = old.name
+        if isGenerated {
+            switch generator {
+            case .repeated:
+                name = specs.count == 1 ? "Single Frame" : "Repeat \(specs.count) · \(firing.label)"
+            case .shutterSweep:
+                name = "Exposure Ladder · \(firing.label)"
+            case .manual:
+                // Individually authored frames need not repeat or form a ladder.
+                name = specs.count == 1 ? "Single Frame" : "Frames \(specs.count) · \(firing.label)"
+            }
+        }
+        return CaptureSet(name: name, version: old.version, specs: specs, generator: generator,
+                          perSensorEVOffsetStops: offsets, executionMode: firing)
     }
 }

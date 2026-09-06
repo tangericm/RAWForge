@@ -162,10 +162,14 @@ struct SessionEstimate {
                 // Only sequential can honour a gap — a burst is one request
                 // with nowhere to insert a wait — so charging for it in a burst
                 // predicted time the app was never going to spend.
-                if firing == .sequential {
-                    // The authored floor exists between frames, never before
-                    // the first frame. Legacy callers retain their old estimate.
-                    let gap = entry.minimumGapSeconds.map { index > 0 ? $0 : 0 } ?? minimumGap
+                if firing == .sequential, index > 0 {
+                    // The adapter measures start-to-start spacing. Exposure and
+                    // pipeline work from the previous frame already consume
+                    // part (or all) of that floor, including for legacy callers.
+                    let floor = entry.minimumGapSeconds ?? minimumGap
+                    let elapsed = specs[index - 1].shutterSeconds
+                        + profile.sequentialOverheadPerFrame.value
+                    let gap = Swift.max(0, floor - elapsed)
                     overhead += gap
                     parts.gaps += gap
                 }

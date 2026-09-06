@@ -77,6 +77,31 @@ final class WorkflowUITests: XCTestCase {
         XCTAssertTrue(app.buttons["recipe.step.2"].label.contains("Repeat 16"))
     }
 
+    /// A06: the generated title must agree with the mode after saving and reopening.
+    func testAuditRepeatTitleDoesNotKeepBurstAfterSwitchingToSequential() {
+        app.launch()
+        openEditor()
+        app.buttons["Add Step"].tap()
+        app.buttons["Repeat 16 · Burst"].tap()
+        let step = app.buttons["recipe.step.2"]
+        XCTAssertTrue(step.waitForExistence(timeout: 3))
+        step.tap()
+        app.segmentedControls.buttons["Sequential"].tap()
+        XCTAssertTrue(app.textFields["step.interval"].waitForExistence(timeout: 3))
+        app.navigationBars["Edit Step"].buttons["BackButton"].tap()
+        app.buttons["Save"].tap()
+        XCTAssertTrue(app.staticTexts["2 steps · 17 frames · v2"].waitForExistence(timeout: 3))
+
+        openEditor()
+        XCTAssertTrue(step.waitForExistence(timeout: 3))
+        let label = step.label
+        XCTAssertTrue(label.contains("Repeat 16 · Sequential"), "Generated title must reflect saved firing: \(label)")
+        XCTAssertFalse(label.contains("Burst"), "Generated title must not contradict saved firing: \(label)")
+        step.tap()
+        XCTAssertTrue(app.segmentedControls.buttons["Sequential"].isSelected)
+        XCTAssertTrue(app.textFields["step.interval"].exists)
+    }
+
     func testCaptureAndRecipeEditingRemainReachableAtLargestTextSize() {
         app.launchArguments = ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
         app.launch()
