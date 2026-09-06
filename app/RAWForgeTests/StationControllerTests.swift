@@ -8,6 +8,73 @@ import XCTest
 @MainActor
 final class StationControllerTests: XCTestCase {
 
+    func testStopDuringDwellReturnsBeforeTheUnexposedWaitElapses() async throws {
+        let report = capabilityReport()
+        let persistence = FakeStationPersistence(report: report)
+        let capture = FakeStationCapture()
+        let sleeping = expectation(description: "entered authored dwell")
+        let finished = expectation(description: "Stop returned before dwell ended")
+        let immediate = StationClock.immediate
+        let clock = StationClock(date: immediate.date, uptime: immediate.uptime, sleep: { seconds in
+            if seconds == 2 {
+                sleeping.fulfill()
+                await StationClock.live.sleep(seconds)
+            }
+        })
+        let controller = StationController(capture: capture, persistence: persistence,
+            motion: FakeStationMotion(), health: FakeStationHealth(), clock: clock)
+        controller.report = report
+        let recipe = recipeFixture(steps: [try .validated(sensor: .wide,
+            captureSet: recipeSet(), dwellSeconds: 2)])
+        let task = Task { @MainActor in
+            let outcome = await controller.captureTake(recipe: RecipeSnapshot(recipe))
+            finished.fulfill()
+            return outcome
+        }
+        await fulfillment(of: [sleeping], timeout: 2)
+        controller.requestStop()
+        controller.requestStop() // Repeated taps must remain harmless.
+        await fulfillment(of: [finished], timeout: 0.3)
+        let outcome = await task.value
+        guard case .cancelled = outcome else { return XCTFail("\(outcome)") }
+        XCTAssertTrue(capture.requests.isEmpty)
+        XCTAssertTrue(persistence.writtenStations.isEmpty)
+        XCTAssertFalse(controller.busy)
+        capture.emitsFrame = true
+        let next = recipeFixture(steps: [try .validated(sensor: .wide, captureSet: recipeSet())])
+        let nextOutcome = await controller.captureTake(recipe: RecipeSnapshot(next))
+        guard case .completed = nextOutcome else { return XCTFail("\(nextOutcome)") }
+        XCTAssertEqual(capture.requests.count, 1, "Stop must not leak into the next Take")
+    }
+
+    func testUncancelledDwellFinishesBeforeAnyCameraRequest() async throws {
+        let report = capabilityReport()
+        let capture = FakeStationCapture()
+        capture.emitsFrame = true
+        let immediate = StationClock.immediate
+        var dwellFinished = false
+        let clock = StationClock(date: immediate.date, uptime: immediate.uptime, sleep: { seconds in
+            if seconds == 0.08 {
+                XCTAssertTrue(capture.requests.isEmpty)
+                let start = ProcessInfo.processInfo.systemUptime
+                await StationClock.live.sleep(seconds)
+                XCTAssertGreaterThanOrEqual(ProcessInfo.processInfo.systemUptime - start, 0.08)
+                XCTAssertTrue(capture.requests.isEmpty)
+                dwellFinished = true
+            }
+        })
+        let controller = StationController(capture: capture,
+            persistence: FakeStationPersistence(report: report), motion: FakeStationMotion(),
+            health: FakeStationHealth(), clock: clock)
+        controller.report = report
+        let recipe = recipeFixture(steps: [try .validated(sensor: .wide,
+            captureSet: recipeSet(), dwellSeconds: 0.08)])
+        let outcome = await controller.captureTake(recipe: RecipeSnapshot(recipe))
+        guard case .completed = outcome else { return XCTFail("\(outcome)") }
+        XCTAssertTrue(dwellFinished)
+        XCTAssertEqual(capture.requests.count, 1)
+    }
+
     func testLegacyInvalidTimingIsRejectedBeforeConfiguringCamera() async {
         for invalidWait in [true, false] {
             let report = capabilityReport()
@@ -99,10 +166,12 @@ final class StationControllerTests: XCTestCase {
         let base = ShotListEntry(index: 0, sensor: .wide, captureSet: recipeSet(count: 3, firing: .sequential))
         let timed = ShotListEntry(index: 0, sensor: .wide, captureSet: base.captureSet,
                                   dwellSeconds: 2, minimumGapSeconds: 1)
-        let estimate = SessionEstimate.forShotList([timed], minimumGap: 99)
-        let baseline = SessionEstimate.forShotList([base], minimumGap: 0)
+        let estimate = SessionEstimate.forShotList([timed], minimumGap: 99, profile: .reference)
+        let baseline = SessionEstimate.forShotList([base], minimumGap: 0, profile: .reference)
         XCTAssertEqual(estimate.breakdown.settles - baseline.breakdown.settles, 2, accuracy: 0.0001)
-        XCTAssertEqual(estimate.breakdown.gaps, 2, accuracy: 0.0001)
+        // Two 1 s start-to-start intervals, each already covering .01 s of
+        // exposure and .233 s of pipeline work.
+        XCTAssertEqual(estimate.breakdown.gaps, 1.514, accuracy: 0.0001)
         let single = ShotListEntry(index: 0, sensor: .wide, captureSet: recipeSet(firing: .sequential), minimumGapSeconds: 1)
         XCTAssertEqual(SessionEstimate.forShotList([single], minimumGap: 99).breakdown.gaps, 0)
     }
@@ -177,6 +246,48 @@ final class StationControllerTests: XCTestCase {
         XCTAssertTrue(persistence.writtenStations.isEmpty)
         XCTAssertEqual(persistence.deletedStations, [1])
         XCTAssertEqual(controller.lastFault, .abandoned)
+    }
+
+    func testStopLeavesSuspendedCameraRequestAliveUntilItsResponseReturns() async throws {
+        let report = capabilityReport()
+        let capture = FakeStationCapture()
+        let persistence = FakeStationPersistence(report: report)
+        capture.emitsFrame = true
+        let entered = expectation(description: "camera request is in flight")
+        let finished = expectation(description: "Take finished after response release")
+        var release: CheckedContinuation<Void, Never>?
+        capture.holdResponse = {
+            await withCheckedContinuation { continuation in
+                release = continuation
+                entered.fulfill()
+            }
+            XCTAssertFalse(Task.isCancelled, "Stop must not cancel an active camera request")
+        }
+        let controller = StationController(capture: capture, persistence: persistence,
+            motion: FakeStationMotion(), health: FakeStationHealth(), clock: .immediate)
+        controller.report = report
+        let recipe = recipeFixture(steps: [
+            try .validated(sensor: .wide, captureSet: recipeSet()),
+            try .validated(sensor: .wide, captureSet: recipeSet())])
+        var result: TakeOutcome?
+        let task = Task {
+            result = await controller.captureTake(recipe: RecipeSnapshot(recipe))
+            finished.fulfill()
+        }
+        defer { task.cancel() }
+        await fulfillment(of: [entered], timeout: 2)
+        capture.holdResponse = nil // Any erroneously issued second request must not hang the test.
+        controller.requestStop()
+        XCTAssertTrue(controller.busy)
+        XCTAssertEqual(capture.stopCount, 0)
+        XCTAssertTrue(persistence.deletedStations.isEmpty)
+        release?.resume()
+        await fulfillment(of: [finished], timeout: 2)
+        let outcome = try XCTUnwrap(result)
+        guard case .cancelled = outcome else { return XCTFail("\(outcome)") }
+        XCTAssertEqual(capture.requests.count, 1)
+        XCTAssertEqual(persistence.deletedStations, [1])
+        XCTAssertTrue(persistence.writtenStations.isEmpty)
     }
 
     func testUnsupportedRecipeDoesNotOpenARunOrDisturbCurrentDraft() async throws {
@@ -472,6 +583,7 @@ private final class TestClockBox {
 private final class FakeStationCapture: StationCapturing {
     var errorOnRequest: Int?
     var onCapture: (() -> Void)?
+    var holdResponse: (() async -> Void)?
     var configuredSensors: [SensorCapability.Sensor] = []
     var framingSensors: [SensorCapability.Sensor] = []
     var focusResolutions: [FocusResolution] = []
@@ -501,6 +613,7 @@ private final class FakeStationCapture: StationCapturing {
                  progress: @escaping (String) -> Void) async throws -> SetShot {
         requests.append(request)
         onCapture?()
+        await holdResponse?()
         if errorOnRequest == requests.count { throw FakeError.capture }
         if let captureError { throw captureError }
         let frames = emitsFrame ? [frameFixture(request: request)] : []

@@ -165,6 +165,121 @@ final class RecipeStoreTests: XCTestCase {
         XCTAssertNil(try store.migrateShotListIfNeeded(legacy, now: now, clearLegacy: { XCTFail("must retain") }))
     }
 
+    func testInterruptedRecipeMigrationRejectsReplacedDefinitionBeforeClearingLegacy() throws {
+        let migrationURL = root.appendingPathComponent("support/recipe-migration-v1.json")
+        let selectionURL = root.appendingPathComponent("support/selected-recipe.json")
+        let legacyURL = root.appendingPathComponent("support/shot-list.json")
+        let legacy = ShotListStore.Stored(entries: [
+            .init(index: 0, sensor: .wide, captureSet: recipeSet())
+        ], groupedBySensor: false, savedAt: now)
+        try RecipeFile.write(legacy, to: legacyURL)
+        let legacyBytes = try Data(contentsOf: legacyURL)
+
+        var attemptedInitialClear = false
+        XCTAssertThrowsError(try store.migrateShotListIfNeeded(legacy, now: now, clearLegacy: {
+            attemptedInitialClear = true
+            throw CocoaError(.fileWriteNoPermission)
+        }))
+        XCTAssertTrue(attemptedInitialClear)
+        let original = try XCTUnwrap(store.all().first)
+        let journalBytes = try Data(contentsOf: migrationURL)
+
+        // A valid replacement retains the identity but contradicts the frozen source.
+        var replacement = original
+        replacement.steps[0].sensor = .telephoto
+        try RecipeFile.write(replacement, to: versionURL(original))
+        let replacementBytes = try Data(contentsOf: versionURL(original))
+        XCTAssertEqual(try store.load(id: original.id, version: 1), replacement)
+
+        // Make an accidental selection write observable, even though the conflict
+        // retains the imported recipe's ID and version.
+        let other = try store.create(draft(), now: now)
+        try selection.save(other)
+        let selectionBytes = try Data(contentsOf: selectionURL)
+        let relaunched = RecipeStore(root: root.appendingPathComponent("recipes"),
+                                    selection: selection, migrationURL: migrationURL)
+        for _ in 0..<2 {
+            var clearedLegacy = false
+            XCTAssertThrowsError(try relaunched.migrateShotListIfNeeded(nil, now: now, clearLegacy: {
+                clearedLegacy = true
+                try FileManager.default.removeItem(at: legacyURL)
+            }), "A conflicting version must remain blocked on every retry")
+            XCTAssertFalse(clearedLegacy)
+            XCTAssertEqual(try Data(contentsOf: legacyURL), legacyBytes)
+            XCTAssertEqual(try Data(contentsOf: migrationURL), journalBytes)
+            XCTAssertEqual(try Data(contentsOf: selectionURL), selectionBytes)
+            XCTAssertEqual(try selection.load()?.recipeID, other.id)
+            XCTAssertEqual(try Data(contentsOf: versionURL(original)), replacementBytes,
+                           "Do not silently overwrite the conflicting published definition")
+        }
+    }
+
+    func testInterruptedRecipeMigrationResumesMatchingDefinitionWithSerializedTimestampPrecision() throws {
+        let migrationURL = root.appendingPathComponent("support/recipe-migration-v1.json")
+        let legacyURL = root.appendingPathComponent("support/shot-list.json")
+        let fractionalNow = now.addingTimeInterval(0.875)
+        let legacy = ShotListStore.Stored(entries: [
+            .init(index: 0, sensor: .wide, captureSet: recipeSet(firing: .sequential))
+        ], groupedBySensor: false, savedAt: fractionalNow)
+        try RecipeFile.write(legacy, to: legacyURL)
+        var attemptedInitialClear = false
+        XCTAssertThrowsError(try store.migrateShotListIfNeeded(legacy, now: fractionalNow,
+            dwellSeconds: 0.2, sequentialGapSeconds: 0.5, clearLegacy: {
+                attemptedInitialClear = true
+                throw CocoaError(.fileWriteNoPermission)
+            }))
+        XCTAssertTrue(attemptedInitialClear)
+        let published = try XCTUnwrap(store.all().first)
+        let versionBytes = try Data(contentsOf: versionURL(published))
+        XCTAssertEqual(published.createdAt, now)
+        XCTAssertEqual(published.modifiedAt, now)
+
+        let relaunched = RecipeStore(root: root.appendingPathComponent("recipes"),
+                                    selection: selection, migrationURL: migrationURL)
+        var clearCount = 0
+        let resumed = try XCTUnwrap(relaunched.migrateShotListIfNeeded(nil,
+            now: fractionalNow.addingTimeInterval(60), dwellSeconds: 9,
+            sequentialGapSeconds: 8, clearLegacy: {
+                XCTAssertEqual(try self.selection.load()?.recipeID, published.id)
+                XCTAssertEqual(try self.selection.load()?.version, 1)
+                XCTAssertEqual(try relaunched.load(id: published.id, version: 1), published)
+                clearCount += 1
+                try FileManager.default.removeItem(at: legacyURL)
+            }))
+        XCTAssertEqual(clearCount, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacyURL.path))
+        XCTAssertEqual(resumed, published)
+        XCTAssertEqual(resumed.steps[0].dwellSeconds, 0.2)
+        XCTAssertEqual(resumed.steps[0].sequentialGapSeconds, 0.5)
+        XCTAssertEqual(try Data(contentsOf: versionURL(published)), versionBytes)
+        XCTAssertEqual(try relaunched.all().map(\.id), [published.id])
+        XCTAssertNil(try relaunched.migrateShotListIfNeeded(legacy, now: now,
+            clearLegacy: { XCTFail("A completed resume must not clear legacy again") }))
+    }
+
+    func testFreshRecipeMigrationAcceptsSubsecondTimestampWithoutFalseConflict() throws {
+        let fractionalNow = now.addingTimeInterval(0.875)
+        let legacy = ShotListStore.Stored(entries: [
+            .init(index: 0, sensor: .wide, captureSet: recipeSet())
+        ], groupedBySensor: false, savedAt: fractionalNow)
+        var clearCount = 0
+        let imported = try XCTUnwrap(store.migrateShotListIfNeeded(legacy, now: fractionalNow,
+            clearLegacy: {
+                let selected = try XCTUnwrap(self.selection.load())
+                let published = try XCTUnwrap(self.store.load(id: selected.recipeID, version: selected.version))
+                XCTAssertEqual(published.createdAt, self.now)
+                XCTAssertEqual(published.modifiedAt, self.now)
+                clearCount += 1
+            }))
+        XCTAssertEqual(clearCount, 1)
+        XCTAssertEqual(imported.createdAt, now)
+        XCTAssertEqual(imported.modifiedAt, now)
+        XCTAssertEqual(imported.steps.map(\.sensor), [.wide])
+        XCTAssertEqual(try store.all(), [imported])
+        XCTAssertNil(try store.migrateShotListIfNeeded(legacy, now: fractionalNow,
+            clearLegacy: { XCTFail("A completed migration must not clear legacy again") }))
+    }
+
     private func draft() throws -> Recipe {
         recipeFixture(steps: [try .validated(sensor: .wide, captureSet: recipeSet())])
     }

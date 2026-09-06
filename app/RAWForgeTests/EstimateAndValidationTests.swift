@@ -273,10 +273,11 @@ final class FiringModeTests: XCTestCase {
 
     func testAGapIsChargedToASequentialSetThatCanHonourIt() {
         let withGap = SessionEstimate.forShotList([entry(8, firing: .sequential)],
-                                                  minimumGap: 1.0, includeStillness: false)
+                                                  minimumGap: 1.0, includeStillness: false, profile: .reference)
         let without = SessionEstimate.forShotList([entry(8, firing: .sequential)],
-                                                  minimumGap: 0, includeStillness: false)
-        XCTAssertEqual(withGap.typicalSeconds - without.typicalSeconds, 8.0, accuracy: 1e-9)
+                                                  minimumGap: 0, includeStillness: false, profile: .reference)
+        // Seven intervals, each padded by 1 - (.004 exposure + .233 pipeline).
+        XCTAssertEqual(withGap.typicalSeconds - without.typicalSeconds, 5.341, accuracy: 1e-9)
     }
 }
 

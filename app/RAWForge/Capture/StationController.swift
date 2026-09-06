@@ -178,6 +178,7 @@ final class StationController: ObservableObject {
     private var takeSnapshot: RecipeSnapshot?
     private var takeCorrelationID: UUID?
     private var stopRequested = false
+    private var dwellTask: Task<Void, Never>?
 
     private let capture: StationCapturing
     private let persistence: StationPersisting
@@ -237,6 +238,8 @@ final class StationController: ObservableObject {
         busy = true
         stopRequested = false
         defer {
+            dwellTask?.cancel()
+            dwellTask = nil
             takeSnapshot = nil
             takeCorrelationID = nil
             isCapturingTake = false
@@ -277,6 +280,9 @@ final class StationController: ObservableObject {
     func requestStop() {
         guard isCapturingTake else { return }
         stopRequested = true
+        // An authored wait has no in-flight exposure to protect. Cancel only
+        // that wait; camera requests continue to their existing safe boundary.
+        dwellTask?.cancel()
         logInfo(.flow, "take \(takeCorrelationID?.uuidString ?? "unknown") stop requested at next safe boundary")
     }
 
@@ -449,9 +455,14 @@ final class StationController: ObservableObject {
             stillnessLive = ""
 
             set(.settling)
+            if isCapturingTake && stopRequested { throw CaptureInterruption.stopRequested }
             if stepDwell > 0 {
                 logTrace(.flow, String(format: "extra dwell %.2f s", stepDwell))
-                await clock.sleep(stepDwell)
+                let wait = Task { await clock.sleep(stepDwell) }
+                dwellTask = wait
+                await wait.value
+                dwellTask = nil
+                if isCapturingTake && stopRequested { throw CaptureInterruption.stopRequested }
             }
 
             let offset = entry.captureSet.perSensorEVOffsetStops[entry.sensor.rawValue] ?? 0

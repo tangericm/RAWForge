@@ -5,7 +5,7 @@ import Foundation
 final class RecipeStore {
     enum Failure: LocalizedError {
         case invalidDefinition, unsupportedSchema(Int), identityMismatch, alreadyExists, missingRecipe
-        case selectedRecipe, noCompatibleSensor, unsafePath
+        case selectedRecipe, noCompatibleSensor, unsafePath, migrationConflict
 
         var errorDescription: String? {
             switch self {
@@ -17,6 +17,7 @@ final class RecipeStore {
             case .selectedRecipe: return "Select another recipe before deleting this one."
             case .noCompatibleSensor: return "No available RAW sensor has usable exposure limits."
             case .unsafePath: return "The recipe folder is a symbolic link. No files were changed."
+            case .migrationConflict: return "The published recipe differs from the pending import. The recipe, import journal, legacy draft, and selection have been preserved."
             }
         }
     }
@@ -182,6 +183,8 @@ final class RecipeStore {
             migration = Migration(recipe: Recipe(id: UUID(), name: "Imported capture", version: 1,
                 createdAt: now, modifiedAt: now, steps: steps, note: nil, schemaVersion: 1))
             try RecipeFile.write(migration, to: migrationURL, beforeCommit: beforeCommit)
+            // Compare in the durable date precision, including on the first attempt.
+            migration = try RecipeFile.read(Migration.self, from: migrationURL)
         }
         let recipe: Recipe
         if let existing = try load(id: migration.recipe.id, version: 1) {
@@ -189,6 +192,8 @@ final class RecipeStore {
         } else {
             recipe = try create(migration.recipe, now: migration.recipe.createdAt)
         }
+        // Matching identity alone cannot authorize deletion of the frozen source.
+        guard recipe == migration.recipe else { throw Failure.migrationConflict }
         try selection.save(recipe)
         try clearLegacy()
         migration.completed = true
