@@ -131,6 +131,8 @@ struct ViewfinderPanel: View {
         .aspectRatio(3.0 / 4.0, contentMode: .fit)
         .overlay(alignment: .topLeading) { badge }
         .overlay(alignment: .bottomTrailing) { caveat }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("viewfinder.preview")
         // `isRunning` is a plain AVFoundation property with no publisher, and
         // the session comes up on its own queue — so it is read on a timer
         // rather than pretended to be observable.
