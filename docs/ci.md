@@ -4,9 +4,9 @@ Settled in [#20](https://github.com/tangericm/RAWForge/issues/20).
 
 ## Where it runs
 
-Automatic CI runs on a **GitHub-hosted `macos-26` runner**, with Xcode and
+Automatic CI runs on a **GitHub-hosted `macos-26-intel` runner**, with Xcode and
 iPhone 17 Pro simulators supplied by the image. The workflow installs XcodeGen
-before generating the project. See the [runner software inventory](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-arm64-Readme.md).
+before generating the project. See the [runner software inventory](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-Readme.md).
 
 The repository is public, so [standard GitHub-hosted runners are free](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
 The earlier self-hosted setup left every verification job queued because no
