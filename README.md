@@ -1,136 +1,54 @@
 # RAWForge
 
-**An iPhone capture app for photometrically deterministic RAW — bracketed, undemosaiced Bayer
-frames with metadata you can calibrate against, shot to a protocol instead of by hand.**
+An iPhone app for repeatable RAW capture. Create an exposure recipe, capture the same sequence at each position, and export DNG files with the settings and motion records beside them.
 
-> **Status: production hardening.** The app captures multi-sensor Bayer stations to disk with a live
-> preview, authored protocols, focus preflight, timing and storage estimates, an IMU stream, a debug
-> flight recorder, and a four-witness exposure record. The numbers below were measured **by this app,
-> on frames it wrote**, not inherited from a third-party capture. Remaining work toward a public v1 is
-> tracked on the [App Store map](https://github.com/tangericm/RAWForge/issues/16).
+Built with Swift and SwiftUI. Captures stay on your iPhone until you choose to export them; no account or cloud service is required.
 
----
+**Status:** In development. Public release work is tracked in the [App Store roadmap](https://github.com/tangericm/RAWForge/issues/16). Install from source using the steps below.
 
-## What this is
+## What it includes
 
-An instrument, not a camera app. It captures true Bayer RAW under parameters that are fixed,
-measured or recorded — never inferred afterwards — so the frames can be calibrated against rather
-than merely looked at.
+- **Exposure recipes:** choose cameras, shutter speeds, ISO values and repeated frames, with Burst or Sequential capture.
+- **Shoot:** live preview, focus controls, and estimated capture time and storage.
+- **Runs and Takes:** repeat a Recipe at different positions, keeping each capture's settings and optional device motion together.
+- **Library and export:** review saved Runs and share an archive containing DNGs, the Recipe and capture records. Files are also accessible through the iOS Files app or a cable.
 
-The bar it is designed to: **a reader holding only the frames and the capture log, with no access
-to the photographer, can tell exactly what was shot and under what protocol.**
+## Install from source
 
-Consumer camera apps do not state, and cannot be assumed to hold, the properties that requires:
+Requires a Mac with Xcode and its iOS platform installed, Homebrew, and an Apple account for signing. Capture requires a compatible physical iPhone running **iOS 17 or later**. RAWForge checks which cameras support Bayer RAW; see [supported devices](docs/app-store/supported-devices.md).
 
-- **True Bayer RAW, undemosaiced.** ProRAW is disqualified — it ships `NoiseReductionApplied = 0.95`,
-  so the "clean" frame is already denoised and calibrating a noise model against it is circular.
-  The Bayer path is *not* the mirror image of that claim: it ships `NoiseReductionApplied = 0/0`,
-  which the DNG spec defines as **unknown, not zero**. Bayer being noise-reduction-free is
-  uncontradicted by the file, never asserted by it.
-- **Deterministic capture parameters.** Fixed white balance, known ISO and shutter, no per-frame
-  adaptation, no zoom-dependent sensor switching.
-- **Brackets that share a pose.** Exposure stacks from a fixed station, grouped explicitly rather
-  than left to filename convention.
-- **Metadata that survives.** Black level, active area, CFA pattern and per-sensor identity carried
-  through to the file, because the three iPhone sensors need three separate calibrations.
+```bash
+brew install xcodegen
+git clone https://github.com/tangericm/RAWForge.git
+cd RAWForge/app
+xcodegen generate
+open RAWForge.xcodeproj
+```
 
-Off-the-shelf manual apps clear the format bar — Halide's Process Zero emits genuine undemosaiced
-Bayer on all three rear sensors — but the protocol still lives in the photographer's head, and the
-capture path is closed to anything the app's author did not anticipate.
+1. In Xcode, select the **RAWForge** scheme and your connected iPhone.
+2. Open the app target's **Signing & Capabilities**, enable automatic signing and select your team. If the bundle identifier is unavailable, change it to a unique identifier.
+3. Follow Xcode's device-pairing and Developer Mode prompts, then click **Run**. Allow camera access when the app asks. Motion access is optional.
 
-## Why build it
+The Xcode project is generated from `app/project.yml`. The iOS Simulator can be used for interface testing, but cannot capture real RAW frames.
 
-Two things a third-party app cannot give:
+## Use it
 
-1. **Protocol as code.** Capture sets — ordered lists of `(shutter, ISO)` specs — authored on the
-   device and executed the same way every time, with the capture log written into the same folder as
-   the frames rather than reconstructed later from EXIF. The pose is the expensive thing: a scene
-   cannot be re-walked, because the second traversal's stations will not match the first.
-2. **The motion axis.** Rolling shutter and motion blur need per-frame device motion, and RAW
-   capture cannot coexist with ARKit on this platform. Recording the IMU stream alongside the frames
-   is a capture-side problem, and no off-the-shelf app does it.
-
-## Standalone by design
-
-RAWForge defines its own on-disk format and is complete when its output is self-describing. No
-consumer is designed for. [`photonforge`](https://github.com/tangericm/photonforge) — a linear-RAW
-scene reconstruction and sensor-model pipeline — is the intended eventual reader, and will be fitted
-to this format rather than the other way round. No decision here is settled by asking what something
-downstream expects.
-
-## How it behaves
-
-**One directory per session**, in the app's own storage, frames and capture log inside it together.
-Camera permission and nothing else — no photo library, no cloud. A session moves by dragging one
-folder out of Files or off a cable.
-
-**One failure rule.** A hard fault — storage exhausted, thermal, capture error or battery death —
-flags, aborts the **station**, and deletes that station's frames. Stations already banked survive. A
-station either completed or never existed, so there is no partial state to interpret later and no
-decision to make in the field. Motion is recorded and surfaced as an advisory; it never destroys a
-capture merely because the phone was handheld.
-
-Clipping is not a fault. Its statistics are recorded from the real Bayer payload and never judged on
-device: that is a question about a scene, and the workstation answers it better.
+1. In **Library**, select a Recipe or create one with **New Recipe**.
+2. In **Shoot**, check the preview and focus, then tap **Capture**. A Run starts automatically, and the Recipe's Steps form one Take at the current position.
+3. Move to the next position and tap **Capture** again. Choose **Run → Finish Run** when done; earlier captures stay saved.
+4. Open **Library → Captured Runs**, choose a Run and tap the share button to export it.
 
 ## What the sensors actually do
 
-Measured on an iPhone 15 Pro, not assumed — the numbers that constrain the design:
+For sensor limits, measured capture behavior and API notes, see the [capture findings](docs/capture-findings.md). Measurements there are specific to the tested iPhone 15 Pro.
 
-| Property | Finding |
-|---|---|
-| Format | True Bayer RAW on all three rear sensors; 12 MP only, 48 MP structurally unavailable |
-| Zoom | 2x is the main sensor cropped, not a fourth camera — it cannot be captured in RAW at all. Setting `videoZoomFactor != 1.0` **succeeds silently and then kills the process at capture**, with no catchable error, so the app enforces the invariant itself |
-| Useful ISO ceiling | ~8-9x each sensor's base ISO. Base ISO measured on device: **1x 55 · 0.5x 32 · tele 18** (hardware ceilings 12320 / 3072 / 2304) |
-| Consequence | Above that ceiling Apple applies pure digital gain — **bracket with shutter, not ISO** |
-| Exposure range | 1 s ceiling. Floor **advertised** as ~1/66,000 s by `minExposureDuration` on all three sensors — the earlier 1/2000 s figure did not come from the device. RAWForge records requested, device, photo and DNG values rather than assuming the advertised rail is exact |
-| CFA pattern | Not uniform across the phone — 1x is BGGR while 0.5x and tele are RGGB, confirmed in-file on frames RAWForge wrote |
-| Active area | `ImageWidth` 4224 against an `ActiveArea` of 4032 — 192 padding columns to crop. `DefaultCropSize` agrees independently. Note ImageIO reports the *cropped* 4032 and hides the padding |
-| Opcodes | `OpcodeList1` and `2` are **absent** — nothing is owed before demosaic and nothing has been applied to the payload. `FixVignetteRadial` sits in list 3 (post-demosaic), plus `WarpRectilinear2` on the ultra-wide only |
-| Black level | Scalar 528 (`BlackLevelRepeatDim 1 1`), identical on all three sensors. `WhiteLevel` declares 4095, but the wide sensor's mass saturation was measured at raw 3567 (3039 above black), so clipping cannot be inferred from the declared tag alone |
-| White balance | A locked WB reaches `AsShotNeutral` and **not the Bayer pixels** — measured at 1.00 where a pixel-level effect would have shown 9x. WB on this path is an annotation, not a transformation |
-| Bracket depth | `maxBracketedCapturePhotoCount` is **8** on all three sensors. A longer Burst is automatically divided into requests of at most 8 frames, banking each request before the next; Sequential remains a separate, explicitly authored firing mode |
-| Inter-frame gap | Within a hardware bracket: `max(33.4 ms, exposure)`. A split Burst pays a bank-and-release seam between requests. Sequential: 233-500 ms per frame, paid even when nothing changes between rungs |
-| Sensor swap | ~370-400 ms to reconfigure between sensors — longer than an entire 8-frame bracket |
-| `NoiseProfile` | A factor-of-2 sanity band, never a substitute for measured calibration |
-| Pose | Must come from SfM downstream — ARKit and RAW capture are mutually exclusive |
-| Motion | `CMDeviceMotion` is hard-capped at **100 Hz**, unaffected by capture in flight, and shares a timebase with `AVCapturePhoto.timestamp`. Handheld and tripod separate in the tail, not the median |
+## More information
 
-## What the API allows
-
-Established from Apple's documentation, [issue #2](https://github.com/tangericm/RAWForge/issues/2):
-
-- Deterministic Bayer capture is reachable from **public, un-entitled API**. `NSCameraUsageDescription`
-  is the only requirement.
-- Requesting Bayer RAW **forces** `photoQualityPrioritization = .speed` and `videoZoomFactor == 1.0` —
-  and `.speed` is separately the precondition for `setExposureModeCustom` being honoured rather than
-  overridden by fusion. Asking for Bayer is itself the request for determinism.
-- Bayer RAW is offered only on **single-camera** `AVCaptureDevice`s. Virtual devices get ProRAW only,
-  so sensor auto-switching cannot arise once a physical device is opened.
-- Manual-exposure brackets have a documented RAW initializer — no sequential-capture workaround needed.
-- Geometric distortion correction is never applied to RAW.
-
-What Apple does **not** document has now largely been measured on-device in
-[issue #14](https://github.com/tangericm/RAWForge/issues/14). The headline: a locked white balance
-reaches `AsShotNeutral` and **not** the Bayer pixels, and is not re-metered at capture — so the
-payload is the same data whatever the lock says.
-
-Two of Apple's documented claims turned out to need qualification. `videoZoomFactor == 1.0` is not
-*enforced* for Bayer: setting it away from 1.0 succeeds, and the violation terminates the process at
-capture rather than returning an error. And `photoQualityPrioritization` does not in practice block a
-manual-exposure Bayer bracket — an 8-frame bracket succeeds, which was the feared conflict.
-
-## Non-goals
-
-Not a consumer camera app. No editing, no filters, no ISP beyond what a viewfinder needs. No cloud,
-no accounts. No pose estimation on device — structurally blocked by the RAW/ARKit exclusion.
-
-## History
-
-This repository previously held a Python RAW ISP pipeline. That work is preserved on the
-[`isp-pipeline`](https://github.com/tangericm/RAWForge/tree/isp-pipeline) branch and tagged
-[`v0-isp-pipeline`](https://github.com/tangericm/RAWForge/releases/tag/v0-isp-pipeline).
+- [Privacy policy](docs/app-store/privacy-policy.md)
+- [Development and testing](docs/ci.md)
+- [Report an issue](https://github.com/tangericm/RAWForge/issues)
+- [Earlier Python RAW pipeline](https://github.com/tangericm/RAWForge/tree/isp-pipeline)
 
 ## License
 
-Apache-2.0.
+[Apache-2.0](LICENSE).
