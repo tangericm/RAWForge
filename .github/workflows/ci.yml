@@ -47,8 +47,7 @@ jobs:
           xcodebuild -project RAWForge.xcodeproj -scheme RAWForge \
             -destination "platform=iOS Simulator,name=iPhone 17 Pro" \
             -derivedDataPath /tmp/rawforge-ci \
-            test 2>&1 | tee /tmp/ci-test.log \
-            | grep -E "Executed [0-9]+ tests?, with|TEST SUCCEEDED|TEST FAILED|error:" || true
+            test 2>&1 | tee /tmp/ci-test.log
           grep -q "TEST SUCCEEDED" /tmp/ci-test.log
 
       - name: Privacy and compliance contract
