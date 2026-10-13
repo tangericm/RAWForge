@@ -2,23 +2,18 @@
 
 Settled in [#20](https://github.com/tangericm/RAWForge/issues/20).
 
-## Where it runs, and why not on GitHub's runners
+## Where it runs
 
-CI runs on a **self-hosted macOS runner** — the development Mac.
+Automatic CI runs on a **GitHub-hosted `macos-26` runner**, with Xcode and
+iPhone 17 Pro simulators supplied by the image. The workflow installs XcodeGen
+before generating the project. See the [runner software inventory](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-arm64-Readme.md).
 
-This repository is private. GitHub bills macOS runners at **10×** against
-included minutes, so a Free account's 2,000 minutes are 200 macOS minutes. A
-realistic hosted run — checkout, install `xcodegen`, boot a simulator, build,
-test, build Release — is four to six minutes, or **40–60 billed minutes**. That
-is three to five runs a month. Rationed CI is CI nobody trusts.
+The repository is public, so [standard GitHub-hosted runners are free](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
+The earlier self-hosted setup left every verification job queued because no
+runner was registered. Automatic checks now require no development Mac or phone.
 
-The same work takes **14 seconds** locally. The cost is GitHub's runner
-overhead, not this codebase.
-
-> **If this repository goes public**, change `runs-on: [self-hosted, macOS]` to
-> `macos-15` and nothing else. Public repositories get standard runners free.
-> The workflow deliberately avoids anything machine-specific so that this stays
-> a one-line change.
+The optional hardware job remains separate and needs a trusted self-hosted Mac
+with a tethered phone. It runs only on an explicit manual workflow dispatch.
 
 ## The three tiers
 
@@ -115,7 +110,7 @@ truth. Run `bash app/tools/require-hardware-verification.sh --warn` for the
 current answer; keeping a prose copy here only creates a second status that can
 go stale.
 
-## Setting up the runner
+## Optional phone runner
 
 Not done by an agent — registering a runner needs a repository token and a
 machine decision.
@@ -128,8 +123,6 @@ machine decision.
 4. Prerequisites on the machine: Xcode with an iOS 17+ simulator, `xcodegen`,
    `python3`, and a signing identity.
 
-The runner executes workflow code with the rights of the account it runs as.
-That is acceptable here because the repository is private and has no forks — it
-would **not** be acceptable on a public repository accepting pull requests,
-which is a second reason the public switch means moving to hosted runners rather
-than opening this one up.
+The phone runner executes workflow code with the rights of its local account.
+Use it only for deliberate hardware verification of trusted code. Pull-request
+jobs run on GitHub-hosted machines and must not be routed to the phone runner.

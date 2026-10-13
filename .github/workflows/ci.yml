@@ -1,18 +1,8 @@
 # What is checked automatically, and where it runs.
 #
-# This runs on a **self-hosted** runner, and that is a cost decision rather
-# than a preference. This repository is private, GitHub bills macOS runners at
-# 10× against the included minutes, and a realistic hosted run — checkout,
-# install xcodegen, boot a simulator, build, test, build Release — is four to
-# six minutes. That is forty to sixty billed minutes, so a Free account gets
-# three to five runs a month. Rationed CI is CI nobody trusts.
-#
-# The same work takes fourteen seconds on the Mac that wrote it.
-#
-# If this repository ever goes public, delete `runs-on: [self-hosted, macOS]`
-# in favour of `macos-15` and this file needs no other change: public
-# repositories get standard runners free. That is the only reason the steps
-# below avoid anything machine-specific.
+# Automatic checks use a GitHub-hosted Mac: this repository is public and
+# has no self-hosted runners. The optional hardware job still requires a
+# trusted Mac with a tethered phone.
 
 name: CI
 
@@ -29,7 +19,7 @@ concurrency:
 
 jobs:
   verify:
-    runs-on: [self-hosted, macOS]
+    runs-on: macos-26
     timeout-minutes: 30
 
     steps:
@@ -38,6 +28,9 @@ jobs:
           # The hardware gate compares HEAD against a recorded commit, which
           # needs the history between them. A shallow clone cannot answer it.
           fetch-depth: 0
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
 
       # .xcodeproj is not committed — project.yml is the source of truth, and a
       # generated project in git is a merge conflict waiting to happen.
